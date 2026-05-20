@@ -1,20 +1,36 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type {
+  AskUserAnnotation,
+  ClaudePermissionMode,
   ClientMsg,
+  PermissionDecision,
+  PermissionRequest,
   RunnerKind,
   Session,
   ServerMsg,
 } from "../../../shared/events.ts";
 import { WSClient, type WSStatus } from "../api/ws";
 
+export type PermissionResponsePayload = {
+  answers?: Record<string, string>;
+  annotations?: Record<string, AskUserAnnotation>;
+};
+
 const DEFAULT_URL = "ws://127.0.0.1:4567/ws";
 
 type State = {
   sessions: Session[];
   activeId: string | null;
+  pendingPermissions: PermissionRequest[];
+  rules: string[];
 };
 
-const initialState: State = { sessions: [], activeId: null };
+const initialState: State = {
+  sessions: [],
+  activeId: null,
+  pendingPermissions: [],
+  rules: [],
+};
 
 function reduce(state: State, msg: ServerMsg): State {
   switch (msg.type) {
@@ -23,12 +39,13 @@ function reduce(state: State, msg: ServerMsg): State {
       const activeId = state.activeId
         ? sessions.find((s) => s.id === state.activeId)?.id ?? sessions[0]?.id ?? null
         : sessions[0]?.id ?? null;
-      return { sessions, activeId };
+      return { ...state, sessions, activeId, rules: msg.permissions };
     }
 
     case "session_updated": {
       const next = upsert(state.sessions, msg.session);
       return {
+        ...state,
         sessions: next,
         activeId: state.activeId ?? msg.session.id,
       };
@@ -38,7 +55,10 @@ function reduce(state: State, msg: ServerMsg): State {
       const sessions = state.sessions.filter((s) => s.id !== msg.sessionId);
       const activeId =
         state.activeId === msg.sessionId ? sessions[0]?.id ?? null : state.activeId;
-      return { sessions, activeId };
+      const pendingPermissions = state.pendingPermissions.filter(
+        (p) => p.sessionId !== msg.sessionId,
+      );
+      return { ...state, sessions, activeId, pendingPermissions };
     }
 
     case "message_started": {
@@ -77,6 +97,27 @@ function reduce(state: State, msg: ServerMsg): State {
       return { ...state, sessions };
     }
 
+    case "permission_request": {
+      if (state.pendingPermissions.some((p) => p.requestId === msg.request.requestId)) {
+        return state;
+      }
+      return {
+        ...state,
+        pendingPermissions: [...state.pendingPermissions, msg.request],
+      };
+    }
+
+    case "permission_resolved": {
+      const pendingPermissions = state.pendingPermissions.filter(
+        (p) => p.requestId !== msg.requestId,
+      );
+      if (pendingPermissions.length === state.pendingPermissions.length) return state;
+      return { ...state, pendingPermissions };
+    }
+
+    case "permissions":
+      return { ...state, rules: msg.rules };
+
     case "error":
       // Surfaced via status bar / toast in v2. For now, keep state stable.
       return state;
@@ -85,7 +126,7 @@ function reduce(state: State, msg: ServerMsg): State {
 
 function upsert(list: Session[], session: Session): Session[] {
   const idx = list.findIndex((s) => s.id === session.id);
-  if (idx === -1) return [session, ...list];
+  if (idx === -1) return [...list, session];
   const next = [...list];
   next[idx] = session;
   return next;
@@ -123,6 +164,8 @@ export function useSessions() {
     activeId,
     active,
     status,
+    pendingPermissions: state.pendingPermissions,
+    rules: state.rules,
 
     setActive(id: string): void {
       setActiveOverride(id);
@@ -139,18 +182,58 @@ export function useSessions() {
     },
 
     createSession(title?: string, runner?: RunnerKind): void {
-      send(client, { type: "create_session", title, runner });
+      send(client, { type: "create_session", title, runner, cwd: process.cwd() });
     },
     deleteSession(id: string): void {
       send(client, { type: "delete_session", sessionId: id });
+    },
+    clearSession(id: string): void {
+      send(client, { type: "clear_session", sessionId: id });
     },
     setRunner(runner: RunnerKind): void {
       if (!activeId) return;
       send(client, { type: "set_runner", sessionId: activeId, runner });
     },
+    setModel(runner: RunnerKind, model: string | null): void {
+      if (!activeId) return;
+      send(client, { type: "set_model", sessionId: activeId, runner, model });
+    },
+    setClaudeMode(mode: ClaudePermissionMode): void {
+      if (!activeId) return;
+      send(client, { type: "set_claude_mode", sessionId: activeId, mode });
+    },
     send(text: string): void {
       if (!activeId) return;
       send(client, { type: "send", sessionId: activeId, text });
+    },
+    interrupt(): void {
+      if (!activeId) return;
+      send(client, { type: "interrupt", sessionId: activeId });
+    },
+    respondPermission(
+      requestId: string,
+      decision: PermissionDecision,
+      payload?: PermissionResponsePayload,
+    ): void {
+      send(client, {
+        type: "permission_response",
+        requestId,
+        decision,
+        answers: payload?.answers,
+        annotations: payload?.annotations,
+      });
+    },
+    addRule(rule: string): void {
+      send(client, { type: "add_permission", rule });
+    },
+    removeRule(rule: string): void {
+      send(client, { type: "remove_permission", rule });
+    },
+    clearRules(): void {
+      send(client, { type: "clear_permissions" });
+    },
+    refreshRules(): void {
+      send(client, { type: "list_permissions" });
     },
   };
 }

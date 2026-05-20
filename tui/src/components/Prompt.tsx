@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
+import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useCompletions, useHistory } from "../state/prompt";
+import type {
+  ClaudePermissionMode,
+  RunnerKind,
+} from "../../../shared/events.ts";
+import {
+  useCompletions,
+  useHistory,
+  useSlashCompletions,
+} from "../state/prompt";
 import { theme } from "../theme";
 
 const ENTER_KEYS = new Set(["return", "enter", "linefeed", "kpenter"]);
@@ -14,18 +23,45 @@ type PromptProps = {
   onUnfocus: () => void;
   onSubmit: (text: string) => void;
   hint?: string;
+  locked?: boolean;
+  streaming?: boolean;
+  onInterrupt?: () => void;
+  runner?: RunnerKind | null;
+  claudeMode?: ClaudePermissionMode;
+  onCycleClaudeMode?: () => void;
 };
 
-export function Prompt({ focused, onUnfocus, onSubmit, hint }: PromptProps) {
+export function Prompt({
+  focused,
+  onUnfocus,
+  onSubmit,
+  hint,
+  locked,
+  streaming,
+  onInterrupt,
+  runner,
+  claudeMode,
+  onCycleClaudeMode,
+}: PromptProps) {
   const [text, setText] = useState("");
   const history = useHistory();
   const completions = useCompletions();
+  const slash = useSlashCompletions();
 
   useEffect(() => {
-    const m = text.match(/(?:^|\s)@([^\s]*)$/);
-    if (m) {
-      if (!completions.active) completions.open(m[1]);
-      else completions.setQuery(m[1]);
+    const slashMatch = text.match(/^\/(\w*)$/);
+    if (slashMatch) {
+      if (completions.active) completions.close();
+      if (!slash.active) slash.open(slashMatch[1]);
+      else slash.setQuery(slashMatch[1]);
+      return;
+    }
+    if (slash.active) slash.close();
+
+    const fileMatch = text.match(/(?:^|\s)@([^\s]*)$/);
+    if (fileMatch) {
+      if (!completions.active) completions.open(fileMatch[1]);
+      else completions.setQuery(fileMatch[1]);
     } else if (completions.active) {
       completions.close();
     }
@@ -37,13 +73,48 @@ export function Prompt({ focused, onUnfocus, onSubmit, hint }: PromptProps) {
   }, [history.value]);
 
   useKeyboard((key) => {
-    if (!focused) return;
+    if (!focused || locked) return;
     const isEnter = isEnterKey(key.name);
 
-    if (key.name === "escape") {
+    // ctrl+b is the dedicated "browse" toggle — moves focus to the sidebar so
+    // j/k/n/dd work. Used to live on plain Esc, but Esc is now reserved for
+    // interrupting an in-flight turn or dismissing menus.
+    if (key.ctrl && key.name === "b") {
+      if (slash.active) slash.close();
       if (completions.active) completions.close();
-      else onUnfocus();
+      onUnfocus();
       return;
+    }
+
+    // shift+tab cycles Claude permission mode. Handle BEFORE the plain-tab
+    // completion branch so completion doesn't steal it. The StatusBar owns
+    // the visible indicator; this hook just dispatches the action.
+    if (key.name === "tab" && key.shift) {
+      if (!slash.active && !completions.active && onCycleClaudeMode) {
+        onCycleClaudeMode();
+      }
+      return;
+    }
+
+    if (key.name === "escape") {
+      // Priority while the prompt is focused:
+      //   1. close an open menu (slash → completions)
+      //   2. interrupt the active turn if one is streaming
+      //   3. no-op (browse mode is on ctrl+b now)
+      if (slash.active) slash.close();
+      else if (completions.active) completions.close();
+      else if (streaming && onInterrupt) onInterrupt();
+      return;
+    }
+
+    if (slash.active) {
+      if (key.name === "up") return slash.moveUp();
+      if (key.name === "down") return slash.moveDown();
+      if (key.name === "tab") return applySlashCompletion();
+      if (isEnter && slash.selected) {
+        applySlashCompletion();
+        return;
+      }
     }
 
     if (completions.active) {
@@ -56,12 +127,12 @@ export function Prompt({ focused, onUnfocus, onSubmit, hint }: PromptProps) {
       }
     }
 
-    if (isEnter && !completions.active) {
+    if (isEnter && !completions.active && !slash.active) {
       handleSubmit(text);
       return;
     }
 
-    if (!completions.active) {
+    if (!completions.active && !slash.active) {
       if (key.name === "up") return history.movePrev();
       if (key.name === "down") return history.moveNext();
     }
@@ -78,6 +149,13 @@ export function Prompt({ focused, onUnfocus, onSubmit, hint }: PromptProps) {
     completions.close();
   }
 
+  function applySlashCompletion(): void {
+    const sel = slash.selected;
+    if (!sel) return;
+    setText(`${sel.name} `);
+    slash.close();
+  }
+
   function handleSubmit(value: string): void {
     const trimmed = value.trim();
     if (!trimmed) return;
@@ -88,10 +166,35 @@ export function Prompt({ focused, onUnfocus, onSubmit, hint }: PromptProps) {
   }
 
   const completionRows = Math.min(completions.matches.length, 6);
+  const slashRows = Math.min(slash.matches.length, 8);
 
   return (
     <box flexDirection="column" flexShrink={0}>
-      {completions.active && completions.matches.length > 0 && (
+      {slash.active && slash.matches.length > 0 && (
+        <box
+          flexDirection="column"
+          borderStyle="single"
+          borderColor={theme.border}
+          backgroundColor={theme.bgPanel}
+          paddingLeft={1}
+          paddingRight={1}
+          height={slashRows + 2}
+        >
+          {slash.matches.slice(0, slashRows).map((m, i) => {
+            const isSel = i === slash.selectedIndex;
+            return (
+              <box key={m.name} flexDirection="row">
+                <text fg={isSel ? theme.text : theme.textMuted}>
+                  {isSel ? "› " : "  "}
+                  {m.name}
+                </text>
+                <text fg={theme.textFaint}>{"  " + m.help}</text>
+              </box>
+            );
+          })}
+        </box>
+      )}
+      {!slash.active && completions.active && completions.matches.length > 0 && (
         <box
           flexDirection="column"
           borderStyle="single"
@@ -121,15 +224,45 @@ export function Prompt({ focused, onUnfocus, onSubmit, hint }: PromptProps) {
         paddingLeft={1}
         paddingRight={1}
       >
-        <text fg={focused ? theme.accent : theme.textSubtle}>{"› "}</text>
+        {runner && (
+          <>
+            <text fg={theme.textFaint}>{"["}</text>
+            <text
+              fg={runner === "claude" ? theme.toolBash : theme.toolWeb}
+              attributes={TextAttributes.BOLD}
+            >
+              {runner}
+            </text>
+            <text fg={theme.textFaint}>{"] "}</text>
+          </>
+        )}
+        <text fg={focused && !locked ? theme.accent : theme.textSubtle}>{"› "}</text>
         <input
           value={text}
           onInput={setText}
-          focused={focused}
-          placeholder={hint ?? "ask anything — /switch flips runners"}
+          focused={focused && !locked}
+          placeholder={
+            locked
+              ? "waiting for permission decision…"
+              : placeholderForMode(claudeMode, runner) ??
+                hint ??
+                "ask anything — /switch flips runners"
+          }
           flexGrow={1}
         />
       </box>
     </box>
   );
+}
+
+function placeholderForMode(
+  mode: ClaudePermissionMode | undefined,
+  runner: RunnerKind | null | undefined,
+): string | null {
+  if (runner !== "claude") return null;
+  if (mode === "plan") return "plan mode — Claude will propose a plan, no tools will run";
+  if (mode === "acceptEdits") return "accept-edits mode — Claude auto-allows file edits";
+  if (mode === "bypassPermissions")
+    return "BYPASS mode — Claude will run every tool without asking";
+  return null;
 }

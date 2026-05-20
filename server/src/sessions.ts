@@ -1,6 +1,9 @@
 import { nanoid } from "nanoid";
 import type { WSContext } from "hono/ws";
 import type {
+  ClaudePermissionMode,
+  GitInfo,
+  ModelOverrides,
   RunEvent,
   RunnerKind,
   ServerMsg,
@@ -27,19 +30,23 @@ export class SessionManager {
     return this.sessions.find((s) => s.id === id) ?? null;
   }
 
-  create(opts: { title?: string; runner?: RunnerKind } = {}): Stored {
+  create(opts: { title?: string; runner?: RunnerKind; cwd?: string } = {}): Stored {
     const now = new Date().toISOString();
     const s: Stored = {
       id: nanoid(),
       title: opts.title?.trim() || `Session ${this.sessions.length + 1}`,
       activeRunner: opts.runner ?? "claude",
+      cwd: opts.cwd?.trim() || process.cwd(),
       messages: [],
       streaming: false,
       createdAt: now,
       updatedAt: now,
+      models: {},
+      claudeMode: "default",
+      git: null,
       runtime: {},
     };
-    this.sessions.unshift(s);
+    this.sessions.push(s);
     this.broadcast({ type: "session_updated", session: toWire(s) });
     return s;
   }
@@ -52,10 +59,56 @@ export class SessionManager {
     return true;
   }
 
+  // Flush messages + the runner-side conversation ids so the next turn starts
+  // fresh. Deliberately preserves: title, runner, cwd, models, claudeMode,
+  // git, createdAt. /clear should drop context, not preferences.
+  clearSession(id: string): Stored | null {
+    const s = this.get(id);
+    if (!s) return null;
+    s.messages = [];
+    s.streaming = false;
+    s.updatedAt = new Date().toISOString();
+    s.runtime = {};
+    this.broadcast({ type: "session_updated", session: toWire(s) });
+    return s;
+  }
+
   setRunner(id: string, runner: RunnerKind): Stored | null {
     const s = this.get(id);
     if (!s) return null;
     s.activeRunner = runner;
+    s.updatedAt = new Date().toISOString();
+    this.broadcast({ type: "session_updated", session: toWire(s) });
+    return s;
+  }
+
+  setClaudeMode(id: string, mode: ClaudePermissionMode): Stored | null {
+    const s = this.get(id);
+    if (!s) return null;
+    if (s.claudeMode === mode) return s;
+    s.claudeMode = mode;
+    s.updatedAt = new Date().toISOString();
+    this.broadcast({ type: "session_updated", session: toWire(s) });
+    return s;
+  }
+
+  setGit(id: string, git: GitInfo | null): Stored | null {
+    const s = this.get(id);
+    if (!s) return null;
+    s.git = git;
+    // Don't bump updatedAt — git polling shouldn't make a session appear
+    // "active" in the sidebar's recency ordering.
+    this.broadcast({ type: "session_updated", session: toWire(s) });
+    return s;
+  }
+
+  setModel(id: string, runner: RunnerKind, model: string | null): Stored | null {
+    const s = this.get(id);
+    if (!s) return null;
+    const next: ModelOverrides = { ...s.models };
+    if (model && model.trim()) next[runner] = model.trim();
+    else delete next[runner];
+    s.models = next;
     s.updatedAt = new Date().toISOString();
     this.broadcast({ type: "session_updated", session: toWire(s) });
     return s;

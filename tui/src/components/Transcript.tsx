@@ -1,13 +1,19 @@
-import { SyntaxStyle, TextAttributes } from "@opentui/core";
+import { useEffect, useRef } from "react";
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import type { Session, SessionMessage, ToolLog } from "../../../shared/events.ts";
 import { ToolCard } from "./ToolCard";
+import { NoticeCard } from "./NoticeCard";
 import { theme } from "../theme";
+import { markdownStyle } from "../markdown-style";
+import type { Notice } from "../util/notice";
 
-// Shared SyntaxStyle for markdown rendering. SyntaxStyle.create() returns a
-// default that <markdown> needs as a required prop.
-const markdownStyle = SyntaxStyle.create();
-
-export function Transcript({ session }: { session: Session | null }) {
+export function Transcript({
+  session,
+  notices,
+}: {
+  session: Session | null;
+  notices: Notice[];
+}) {
   if (!session) {
     return (
       <box flexGrow={1} alignItems="center" justifyContent="center">
@@ -16,8 +22,33 @@ export function Transcript({ session }: { session: Session | null }) {
     );
   }
 
+  type Entry =
+    | { kind: "message"; at: string; message: SessionMessage }
+    | { kind: "notice"; at: string; notice: Notice };
+
+  const entries: Entry[] = [
+    ...session.messages.map((m) => ({ kind: "message" as const, at: m.createdAt, message: m })),
+    ...notices.map((n) => ({ kind: "notice" as const, at: n.createdAt, notice: n })),
+  ].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+
+  const scrollRef = useRef<ScrollBoxRenderable>(null);
+  const lastMsg = session.messages[session.messages.length - 1];
+  const lastMsgLen = lastMsg?.text.length ?? 0;
+  const lastMsgEvents = lastMsg?.events.length ?? 0;
+  useEffect(() => {
+    const box = scrollRef.current;
+    if (!box) return;
+    box.scrollTo(box.scrollHeight);
+  }, [
+    session.messages.length,
+    notices.length,
+    lastMsgLen,
+    lastMsgEvents,
+  ]);
+
   return (
     <scrollbox
+      ref={scrollRef}
       flexGrow={1}
       paddingLeft={2}
       paddingRight={2}
@@ -26,85 +57,121 @@ export function Transcript({ session }: { session: Session | null }) {
       stickyScroll
       stickyStart="bottom"
       scrollbarOptions={{ showArrows: false }}
+      contentOptions={{ justifyContent: "flex-end" }}
     >
-      {session.messages.length === 0 && (
-        <text fg={theme.textSubtle}>
-          type a prompt, prefix with /claude /codex to pick a runner
-        </text>
+      {entries.map((e) =>
+        e.kind === "message" ? (
+          <Message key={e.message.id} message={e.message} />
+        ) : (
+          <NoticeCard key={e.notice.id} notice={e.notice} />
+        ),
       )}
-      {session.messages.map((m, i) => (
-        <Message
-          key={m.id}
-          message={m}
-          isLast={i === session.messages.length - 1}
-          streaming={session.streaming}
-        />
-      ))}
     </scrollbox>
   );
 }
 
-function Message({
-  message,
-  isLast,
-  streaming,
-}: {
-  message: SessionMessage;
-  isLast: boolean;
-  streaming: boolean;
-}) {
-  const isUser = message.role === "user";
-  const label = isUser ? "you" : "claude";
+function Message({ message }: { message: SessionMessage }) {
+  if (message.role === "user") return <UserMessage message={message} />;
+  return <AssistantMessage message={message} />;
+}
 
+function UserMessage({ message }: { message: SessionMessage }) {
   return (
     <box flexDirection="column" marginTop={1}>
-      <box flexDirection="row" height={1}>
-        <text fg={isUser ? theme.textMuted : theme.accent} attributes={TextAttributes.BOLD}>
-          {label.toUpperCase()}
-        </text>
-        {!isUser && isLast && streaming && (
-          <text fg={theme.textMuted}>{"  …"}</text>
-        )}
+      <box
+        flexDirection="row"
+        backgroundColor={theme.bgPanel}
+        paddingLeft={1}
+        paddingRight={1}
+      >
+        <text fg={theme.textMuted}>{"› "}</text>
+        <text fg={theme.text}>{message.text}</text>
       </box>
-      <box flexDirection="row" paddingLeft={2} marginTop={0}>
-        <box width={1} backgroundColor={isUser ? theme.textFaint : theme.border} />
-        <box flexDirection="column" paddingLeft={1} flexGrow={1}>
-          {isUser ? (
-            <text fg={theme.text}>{message.text}</text>
-          ) : (
-            <AssistantBody message={message} />
-          )}
-        </box>
-      </box>
+      <Rule />
     </box>
   );
 }
 
-function AssistantBody({ message }: { message: SessionMessage }) {
-  const tools: ToolLog[] = message.events
-    .filter((e): e is { type: "tool_log"; log: ToolLog } => e.type === "tool_log")
-    .map((e) => e.log);
-  const errors = message.events
-    .filter((e): e is { type: "error"; message: string } => e.type === "error")
-    .map((e) => e.message);
+type Block =
+  | { kind: "text"; text: string }
+  | { kind: "tool"; log: ToolLog }
+  | { kind: "error"; message: string };
+
+function blocksFromEvents(events: SessionMessage["events"]): Block[] {
+  const out: Block[] = [];
+  let buf = "";
+  const flush = () => {
+    if (buf.length > 0) {
+      out.push({ kind: "text", text: buf });
+      buf = "";
+    }
+  };
+  for (const ev of events) {
+    if (ev.type === "text_delta") {
+      buf += ev.delta;
+    } else if (ev.type === "tool_log") {
+      flush();
+      out.push({ kind: "tool", log: ev.log });
+    } else if (ev.type === "error") {
+      flush();
+      out.push({ kind: "error", message: ev.message });
+    }
+  }
+  flush();
+  return out;
+}
+
+function AssistantMessage({ message }: { message: SessionMessage }) {
+  const blocks = blocksFromEvents(message.events);
+
+  if (blocks.length === 0) {
+    return (
+      <box flexDirection="column" marginTop={1}>
+        <box flexDirection="row" paddingLeft={1} paddingRight={1}>
+          <text fg={theme.textMuted}>{"• "}</text>
+          <text fg={theme.textSubtle}>…</text>
+        </box>
+        <Rule />
+      </box>
+    );
+  }
 
   return (
-    <box flexDirection="column">
-      {message.text && (
-        <markdown
-          content={message.text}
-          syntaxStyle={markdownStyle}
-          fg={theme.text}
-        />
-      )}
-      {tools.map((log, i) => (
-        <ToolCard key={i} log={log} />
-      ))}
-      {errors.map((err, i) => (
-        <text key={`err-${i}`} fg={theme.accent} attributes={TextAttributes.BOLD}>
-          {`error: ${err}`}
-        </text>
-      ))}
+    <box flexDirection="column" marginTop={1}>
+      {blocks.map((b, i) => {
+        if (b.kind === "tool") return <ToolCard key={i} log={b.log} />;
+        if (b.kind === "error") {
+          return (
+            <box key={i} flexDirection="row" paddingLeft={1} paddingRight={1}>
+              <text fg={theme.textMuted}>{"• "}</text>
+              <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+                {`error: ${b.message}`}
+              </text>
+            </box>
+          );
+        }
+        return (
+          <box key={i} flexDirection="row" paddingLeft={1} paddingRight={1} marginTop={i === 0 ? 0 : 1}>
+            <text fg={theme.textMuted}>{"• "}</text>
+            <box flexGrow={1}>
+              <markdown content={b.text} syntaxStyle={markdownStyle} fg={theme.text} />
+            </box>
+          </box>
+        );
+      })}
+      <Rule />
     </box>
+  );
+}
+
+function Rule() {
+  return (
+    <box
+      marginTop={1}
+      border={["bottom"]}
+      borderStyle="single"
+      borderColor={theme.border}
+      height={1}
+    />
   );
 }

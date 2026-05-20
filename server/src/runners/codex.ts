@@ -3,8 +3,10 @@ import type { RunEvent } from "../../../shared/events.js";
 
 type CodexRunArgs = {
   prompt: string;
+  cwd?: string;
   threadId?: string;
   model?: string;
+  signal?: AbortSignal;
   onEvent: (ev: RunEvent) => void;
   onThreadId: (id: string | null) => void;
 };
@@ -18,7 +20,7 @@ function getCodex(): Codex {
 }
 
 export async function runCodex(args: CodexRunArgs): Promise<void> {
-  const { prompt, threadId, model, onEvent, onThreadId } = args;
+  const { prompt, cwd, threadId, model, signal, onEvent, onThreadId } = args;
 
   if (!process.env.OPENAI_API_KEY) {
     onEvent({
@@ -30,6 +32,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
 
   try {
     const threadOptions: any = { skipGitRepoCheck: true };
+    if (cwd) threadOptions.workingDirectory = cwd;
     if (model) threadOptions.model = model;
 
     const client = getCodex();
@@ -52,7 +55,31 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
       onEvent({ type: "text_delta", delta });
     };
 
-    for await (const ev of streamed.events as AsyncIterable<any>) {
+    // The Codex SDK doesn't accept an AbortSignal on runStreamed, so race the
+    // iterator's next() against the abort. Checking signal.aborted between
+    // iterations isn't enough — the SDK may block awaiting the model for
+    // seconds between user-visible events.
+    const events = streamed.events as AsyncIterable<any>;
+    const iter = events[Symbol.asyncIterator]();
+    const aborted = signal
+      ? new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        })
+      : null;
+    const SENTINEL = Symbol("aborted");
+
+    while (true) {
+      if (signal?.aborted) break;
+      const next = aborted
+        ? await Promise.race<IteratorResult<any> | typeof SENTINEL>([
+            iter.next(),
+            aborted.then(() => SENTINEL),
+          ])
+        : await iter.next();
+      if (next === SENTINEL || signal?.aborted) break;
+      if (next.done) break;
+      const ev = next.value;
       switch (ev.type) {
         case "thread.started":
           if (!threadId && ev.thread_id) onThreadId(ev.thread_id);
@@ -103,6 +130,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
       }
     }
   } catch (err: any) {
+    if (signal?.aborted) return;
     onEvent({ type: "error", message: `codex sdk: ${err?.message ?? String(err)}` });
   }
 }

@@ -1,21 +1,144 @@
 import type { RunnerKind } from "../../../shared/events.ts";
 
+export type PermissionsAction =
+  | { kind: "list" }
+  | { kind: "add"; rule: string }
+  | { kind: "remove"; rule: string }
+  | { kind: "clear" };
+
+// /model action grammar:
+//   list (no args)                — show current models for both runners
+//   set <name>                    — set for the active runner
+//   setRunner <runner> <name>     — set for a specific runner
+//   reset                          — clear the active runner's override
+//   resetRunner <runner>          — clear a specific runner's override
+export type ModelAction =
+  | { kind: "picker" } // open the interactive model picker for active runner
+  | { kind: "show" }   // print a notice listing current models for both runners
+  | { kind: "set"; model: string }
+  | { kind: "setRunner"; runner: RunnerKind; model: string }
+  | { kind: "reset" }
+  | { kind: "resetRunner"; runner: RunnerKind };
+
+// /plan grammar:
+//   (no args) — toggle plan mode for the active session
+//   on/off/status — explicit
+export type PlanAction =
+  | { kind: "toggle" }
+  | { kind: "on" }
+  | { kind: "off" }
+  | { kind: "status" };
+
 export type SlashCommand =
   | { type: "claude"; rest: string }
   | { type: "codex"; rest: string }
-  | { type: "switch"; rest: string };
+  | { type: "switch"; rest: string }
+  | { type: "clear"; rest: string }
+  | { type: "help"; rest: string }
+  | { type: "context"; rest: string }
+  | { type: "tree"; rest: string }
+  | { type: "permissions"; action: PermissionsAction }
+  | { type: "model"; action: ModelAction }
+  | { type: "plan"; action: PlanAction }
+  | { type: "unknown"; name: string; rest: string };
 
 export function parseSlash(text: string): SlashCommand | null {
   const m = text.match(/^\/(\w+)(?:\s+(.*))?$/s);
   if (!m) return null;
   const cmd = m[1].toLowerCase();
   const rest = (m[2] ?? "").trim();
-  if (cmd === "claude") return { type: "claude", rest };
-  if (cmd === "codex") return { type: "codex", rest };
-  if (cmd === "switch") return { type: "switch", rest };
-  return null;
+  switch (cmd) {
+    case "claude":
+      return { type: "claude", rest };
+    case "codex":
+      return { type: "codex", rest };
+    case "switch":
+      return { type: "switch", rest };
+    case "clear":
+      return { type: "clear", rest };
+    case "help":
+    case "?":
+      return { type: "help", rest };
+    case "context":
+    case "info":
+      return { type: "context", rest };
+    case "tree":
+    case "ls":
+      return { type: "tree", rest };
+    case "permissions":
+    case "perms":
+      return { type: "permissions", action: parsePermissionsAction(rest) };
+    case "model":
+      return { type: "model", action: parseModelAction(rest) };
+    case "plan":
+      return { type: "plan", action: parsePlanAction(rest) };
+    default:
+      return { type: "unknown", name: cmd, rest };
+  }
+}
+
+function parsePlanAction(rest: string): PlanAction {
+  const v = rest.trim().toLowerCase();
+  if (!v) return { kind: "toggle" };
+  if (v === "on" || v === "enable") return { kind: "on" };
+  if (v === "off" || v === "disable") return { kind: "off" };
+  if (v === "status") return { kind: "status" };
+  return { kind: "toggle" };
+}
+
+function parseModelAction(rest: string): ModelAction {
+  if (!rest) return { kind: "picker" };
+  const tokens = rest.split(/\s+/);
+  const first = tokens[0].toLowerCase();
+  if (first === "show" || first === "status" || first === "list") {
+    return { kind: "show" };
+  }
+  if (first === "reset" || first === "clear") {
+    return { kind: "reset" };
+  }
+  if (first === "claude" || first === "codex") {
+    const tail = tokens.slice(1).join(" ").trim();
+    if (!tail || tail.toLowerCase() === "reset" || tail.toLowerCase() === "clear") {
+      return { kind: "resetRunner", runner: first };
+    }
+    return { kind: "setRunner", runner: first, model: tail };
+  }
+  return { kind: "set", model: rest.trim() };
+}
+
+function parsePermissionsAction(rest: string): PermissionsAction {
+  if (!rest) return { kind: "list" };
+  const [verb, ...rule] = rest.split(/\s+/);
+  const tail = rule.join(" ").trim();
+  switch (verb.toLowerCase()) {
+    case "add":
+      return { kind: "add", rule: tail };
+    case "remove":
+    case "rm":
+    case "delete":
+      return { kind: "remove", rule: tail };
+    case "clear":
+      return { kind: "clear" };
+    default:
+      // Treat unknown verb as no-op list so users get the current state and
+      // can read the usage line.
+      return { kind: "list" };
+  }
 }
 
 export function toggleRunner(current: RunnerKind): RunnerKind {
   return current === "claude" ? "codex" : "claude";
 }
+
+export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
+  { name: "/claude [text]", help: "switch active runner to Claude (and optionally send)" },
+  { name: "/codex [text]", help: "switch active runner to Codex (and optionally send)" },
+  { name: "/switch [text]", help: "toggle between Claude and Codex" },
+  { name: "/clear", help: "start a fresh session and drop the current one" },
+  { name: "/help", help: "show this help" },
+  { name: "/context", help: "show session info: runner, cwd, tokens, messages" },
+  { name: "/tree [depth]", help: "show project tree of the session's cwd (default depth 3)" },
+  { name: "/permissions [add|remove|clear]", help: "manage Claude tool-permission rules (Claude only)" },
+  { name: "/model [show | <name> | <runner> <name> | reset]", help: "open model picker for active runner; show prints status; <name> sets directly" },
+  { name: "/plan [on|off]", help: "plan-only mode — model proposes a plan, no tools run (Claude only)" },
+];
