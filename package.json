@@ -1,0 +1,22 @@
+{
+  "name": "adverserial-code",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local terminal UI for Claude Code and Codex on OpenTUI. The TUI talks to a local backend that drives @anthropic-ai/claude-agent-sdk and @openai/codex-sdk.",
+  "type": "module",
+  "workspaces": [
+    "server"
+  ],
+  "bin": {
+    "adverserial-code": "./bin/start.mjs"
+  },
+  "scripts": {
+    "start": "node ./bin/start.mjs",
+    "server": "npm --workspace server run dev",
+    "tui": "bun --cwd tui run dev",
+    "typecheck": "npm --workspace server run typecheck && (cd tui && bun run typecheck)"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
