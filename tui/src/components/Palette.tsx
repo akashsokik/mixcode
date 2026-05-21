@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import fuzzysort from "fuzzysort";
@@ -37,6 +37,13 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
   const [index, setIndex] = useState(0);
   const [actionSheet, setActionSheet] = useState<PaletteItem | null>(null);
   const [pendingDestructive, setPendingDestructive] = useState<string | null>(null);
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pendingTimerRef.current !== null) clearTimeout(pendingTimerRef.current);
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return items;
@@ -63,6 +70,10 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
   useKeyboard((key) => {
     if (actionSheet) {
       if (key.name === "escape") {
+        if (pendingTimerRef.current !== null) {
+          clearTimeout(pendingTimerRef.current);
+          pendingTimerRef.current = null;
+        }
         setActionSheet(null);
         setPendingDestructive(null);
         return;
@@ -71,17 +82,30 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
       if (!action) return;
       if (action.destructive) {
         if (pendingDestructive === action.key) {
+          if (pendingTimerRef.current !== null) {
+            clearTimeout(pendingTimerRef.current);
+            pendingTimerRef.current = null;
+          }
           action.run();
           setActionSheet(null);
           setPendingDestructive(null);
         } else {
+          if (pendingTimerRef.current !== null) clearTimeout(pendingTimerRef.current);
           setPendingDestructive(action.key);
-          setTimeout(() => setPendingDestructive((p) => (p === action.key ? null : p)), 1500);
+          pendingTimerRef.current = setTimeout(() => {
+            setPendingDestructive(null);
+            pendingTimerRef.current = null;
+          }, 1500);
         }
         return;
       }
+      if (pendingTimerRef.current !== null) {
+        clearTimeout(pendingTimerRef.current);
+        pendingTimerRef.current = null;
+      }
       action.run();
       setActionSheet(null);
+      setPendingDestructive(null);
       return;
     }
 
@@ -98,8 +122,11 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
     }
     if (key.name === "space") {
       const item = filtered[safeIndex];
-      if (item?.actions?.length) setActionSheet(item);
-      return;
+      if (item?.actions?.length) {
+        setActionSheet(item);
+        return;
+      }
+      // fall through — let the input receive the space
     }
     if (key.ctrl && key.name === "n" && onCreate) {
       onCreate();
@@ -134,7 +161,13 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
         {filtered.length === 0 && <text fg={theme.textFaint}>(no matches)</text>}
       </box>
       {actionSheet && (
-        <box flexDirection="column" borderStyle="single" borderColor={theme.toolError} paddingLeft={1} paddingRight={1}>
+        <box
+          flexDirection="column"
+          borderStyle="single"
+          borderColor={actionSheet.actions!.some((a) => a.destructive) ? theme.toolError : theme.accent}
+          paddingLeft={1}
+          paddingRight={1}
+        >
           <text fg={theme.textMuted}>{`actions: ${actionSheet.label}`}</text>
           {actionSheet.actions!.map((a) => {
             const pending = pendingDestructive === a.key;
@@ -147,7 +180,9 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
           <text fg={theme.textFaint}>{"esc back"}</text>
         </box>
       )}
-      <text fg={theme.textFaint}>{footer ?? "↑↓ nav   enter activate   space actions   esc close"}</text>
+      {!actionSheet && (
+        <text fg={theme.textFaint}>{footer ?? "↑↓ nav   enter activate   space actions   esc close"}</text>
+      )}
     </box>
   );
 }
