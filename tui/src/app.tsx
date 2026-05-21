@@ -6,6 +6,7 @@ import { Prompt } from "./components/Prompt";
 import { Spinner } from "./components/Spinner";
 import { PermissionPanel } from "./components/PermissionPanel";
 import { ModelPicker } from "./components/ModelPicker";
+import { Palette, type PaletteItem } from "./components/Palette";
 import type { ClaudePermissionMode } from "../../shared/events.ts";
 import { useSessions } from "./state/sessions";
 import { parseSlash, toggleRunner } from "./util/slash";
@@ -13,13 +14,21 @@ import {
   contextLines,
   helpLines,
   makeNotice,
+  mcpActionLines,
+  mcpListLines,
+  mcpTestLines,
   modelLines,
   permissionsLines,
   planLines,
+  sessionsLines,
+  skillInfoLines,
+  skillsLines,
   type Notice,
 } from "./util/notice";
 import { treeLines } from "./util/tree";
 import { normalizeRule } from "./util/permission-rule";
+import { addSkill, listSkills, readSkillFrontmatter, removeSkill } from "./util/skills";
+import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
 import { theme } from "./theme";
 import {
   contextLimit,
@@ -43,6 +52,9 @@ export function App() {
   // App only needs to track which runner it's for so it can keep the selected
   // model up to date if the user switches runners while it's open (closes).
   const [modelPicker, setModelPicker] = useState<{ runner: "claude" | "codex" } | null>(null);
+  const [paletteMode, setPaletteMode] = useState<
+    "sessions" | "skills" | "mcp" | "global" | null
+  >(null);
   const lastDeleteRef = useRef(0);
 
   useEffect(() => {
@@ -85,7 +97,8 @@ export function App() {
       s.git && s.git.branch
         ? { name: s.git.branch, dirty: s.git.dirty }
         : null;
-    return { modelLabel, contextPercent, projectLabel, branch };
+    const delegations = s.delegations ?? null;
+    return { modelLabel, contextPercent, projectLabel, branch, delegations };
   }, [api.active]);
 
   const addNotice = useCallback(
@@ -100,6 +113,10 @@ export function App() {
   );
 
   useKeyboard((key) => {
+    if (key.ctrl && key.name === "k") {
+      setPaletteMode((m) => (m === "global" ? null : "global"));
+      return;
+    }
     if (focus === "prompt") return;
     // ctrl+b is the symmetric back-to-prompt key when already in browse mode.
     if (key.ctrl && key.name === "b") {
@@ -158,6 +175,9 @@ export function App() {
           return;
         case "context":
           if (sid) addNotice(sid, "/context", contextLines(api.active));
+          return;
+        case "sessions":
+          if (sid) addNotice(sid, "/sessions", sessionsLines(api.sessions, api.activeId));
           return;
         case "tree": {
           if (!sid || !api.active) return;
@@ -350,6 +370,119 @@ export function App() {
           );
           return;
         }
+        case "skills": {
+          if (!sid || !api.active) return;
+          const runner = api.active.activeRunner;
+          const action = slash.action;
+          switch (action.kind) {
+            case "list":
+              addNotice(sid, "/skills", skillsLines(runner, listSkills(runner)));
+              return;
+            case "add": {
+              if (!action.path) {
+                addNotice(sid, "/skills add", [
+                  "missing path. example: /skills add ~/Workspace/my-skills/my-skill",
+                ]);
+                return;
+              }
+              const res = addSkill(runner, action.path);
+              if (!res.ok) {
+                addNotice(sid, "/skills add", skillsLines(runner, listSkills(runner), `failed: ${res.error}`));
+                return;
+              }
+              addNotice(
+                sid,
+                "/skills add",
+                skillsLines(runner, listSkills(runner), `added: ${res.name} → ${res.source}`),
+              );
+              return;
+            }
+            case "remove": {
+              if (!action.name) {
+                addNotice(sid, "/skills remove", [
+                  "missing name. example: /skills remove a2a-delegate",
+                ]);
+                return;
+              }
+              const res = removeSkill(runner, action.name);
+              if (!res.ok) {
+                addNotice(sid, "/skills remove", skillsLines(runner, listSkills(runner), `failed: ${res.error}`));
+                return;
+              }
+              addNotice(
+                sid,
+                "/skills remove",
+                skillsLines(runner, listSkills(runner), `removed: ${res.name}`),
+              );
+              return;
+            }
+            case "info": {
+              if (!action.name) {
+                addNotice(sid, "/skills info", ["missing name. example: /skills info brainstorm"]);
+                return;
+              }
+              const fm = readSkillFrontmatter(runner, action.name);
+              addNotice(sid, "/skills info", skillInfoLines(runner, action.name, fm));
+              return;
+            }
+          }
+          return;
+        }
+        case "mcp": {
+          if (!sid || !api.active) return;
+          const runner = api.active.activeRunner;
+          const action = slash.action;
+          switch (action.kind) {
+            case "list": {
+              const out = listMcp(runner);
+              addNotice(
+                sid,
+                "/mcp",
+                mcpListLines(runner, out.stdout, out.stderr, out.ok, out.errorReason),
+              );
+              return;
+            }
+            case "add": {
+              if (!action.name || !action.command) {
+                addNotice(sid, "/mcp add", [
+                  "usage: /mcp add <name> <command> [args...]",
+                  "example: /mcp add fetch npx -y @kazuph/mcp-fetch",
+                ]);
+                return;
+              }
+              const out = addMcp(runner, action.name, action.command, action.args);
+              addNotice(sid, "/mcp add", mcpActionLines(runner, "add", action.name, out));
+              return;
+            }
+            case "remove": {
+              if (!action.name) {
+                addNotice(sid, "/mcp remove", ["missing name. example: /mcp remove fetch"]);
+                return;
+              }
+              const out = removeMcp(runner, action.name);
+              addNotice(sid, "/mcp remove", mcpActionLines(runner, "remove", action.name, out));
+              return;
+            }
+            case "test": {
+              if (!action.name) {
+                addNotice(sid, "/mcp test", ["missing name. example: /mcp test fetch"]);
+                return;
+              }
+              const captureSid = sid;
+              const captureRunner = runner;
+              addNotice(captureSid, "/mcp test", [`testing ${captureRunner}/${action.name} — spawning for 2s…`]);
+              testMcp(captureRunner, action.name)
+                .then((res) => {
+                  addNotice(captureSid, "/mcp test", mcpTestLines(captureRunner, action.name, res));
+                })
+                .catch((err) => {
+                  addNotice(captureSid, "/mcp test", [`test crashed: ${(err as Error).message}`]);
+                });
+              return;
+            }
+          }
+          return;
+        }
         case "unknown":
           if (sid) {
             addNotice(sid, `/${slash.name}`, [
@@ -446,11 +579,19 @@ export function App() {
               onCancel={() => setModelPicker(null)}
             />
           )}
+          {paletteMode && (
+            <Palette
+              title={titleForMode(paletteMode)}
+              placeholder="type to filter…"
+              items={[]}
+              onClose={() => setPaletteMode(null)}
+            />
+          )}
           <Prompt
             focused={focus === "prompt"}
             onUnfocus={() => setFocus("browse")}
             onSubmit={handleSubmit}
-            locked={api.pendingPermissions.length > 0 || modelPicker !== null}
+            locked={api.pendingPermissions.length > 0 || modelPicker !== null || paletteMode !== null}
             streaming={api.active?.streaming ?? false}
             onInterrupt={api.interrupt}
             runner={api.active?.activeRunner ?? null}
@@ -460,9 +601,19 @@ export function App() {
             contextPercent={promptMeta?.contextPercent ?? null}
             projectLabel={promptMeta?.projectLabel ?? null}
             branch={promptMeta?.branch ?? null}
+            delegations={promptMeta?.delegations ?? null}
           />
         </box>
       </box>
     </box>
   );
+}
+
+function titleForMode(mode: "sessions" | "skills" | "mcp" | "global"): string {
+  switch (mode) {
+    case "sessions": return "switch session";
+    case "skills":   return "skills";
+    case "mcp":      return "mcp servers";
+    case "global":   return "jump to anything";
+  }
 }
