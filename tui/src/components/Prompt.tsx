@@ -237,19 +237,23 @@ export function Prompt({
             </>
           )}
           <text fg={focused && !locked ? theme.accent : theme.textSubtle}>{"› "}</text>
-          <input
-            value={text}
-            onInput={setText}
-            focused={focused && !locked}
-            placeholder={
-              locked
-                ? "waiting for permission decision…"
-                : placeholderForMode(claudeMode, runner) ??
-                  hint ??
-                  "ask anything — /switch flips runners"
-            }
-            flexGrow={1}
-          />
+          {locked ? (
+            <text fg={theme.textFaint}>
+              {text || "input disabled — palette/permission overlay active"}
+            </text>
+          ) : (
+            <input
+              value={text}
+              onInput={setText}
+              focused={focused}
+              placeholder={
+                placeholderForMode(claudeMode, runner) ??
+                hint ??
+                "ask anything — /switch flips runners"
+              }
+              flexGrow={1}
+            />
+          )}
         </box>
         <MetaRow
           runner={runner ?? null}
