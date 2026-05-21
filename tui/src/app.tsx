@@ -4,7 +4,6 @@ import { Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { Prompt } from "./components/Prompt";
 import { Spinner } from "./components/Spinner";
-import { StatusBar } from "./components/StatusBar";
 import { PermissionPanel } from "./components/PermissionPanel";
 import { ModelPicker } from "./components/ModelPicker";
 import type { ClaudePermissionMode } from "../../shared/events.ts";
@@ -22,6 +21,12 @@ import {
 import { treeLines } from "./util/tree";
 import { normalizeRule } from "./util/permission-rule";
 import { theme } from "./theme";
+import {
+  contextLimit,
+  latestContextTokens,
+  prettyModelLabel,
+  projectName,
+} from "./util/status";
 
 const SIDEBAR_WIDTH = 28;
 
@@ -64,6 +69,24 @@ export function App() {
     () => (api.activeId ? notices[api.activeId] ?? [] : []),
     [notices, api.activeId],
   );
+
+  const promptMeta = useMemo(() => {
+    const s = api.active;
+    if (!s) return null;
+    const modelId =
+      s.activeRunner === "claude" ? s.models.claude : s.models.codex;
+    const modelLabel = prettyModelLabel(modelId, s.activeRunner);
+    const limit = contextLimit(modelId, s.activeRunner);
+    const used = latestContextTokens(s);
+    const contextPercent =
+      limit > 0 ? Math.round(Math.min(1, used / limit) * 100) : null;
+    const projectLabel = projectName(s.cwd);
+    const branch =
+      s.git && s.git.branch
+        ? { name: s.git.branch, dirty: s.git.dirty }
+        : null;
+    return { modelLabel, contextPercent, projectLabel, branch };
+  }, [api.active]);
 
   const addNotice = useCallback(
     (sessionId: string, command: string, lines: string[]) => {
@@ -339,8 +362,6 @@ export function App() {
     api.send(text);
   }
 
-  const rightWidth = Math.max(0, width - SIDEBAR_WIDTH);
-
   // shift+tab from the prompt cycles Claude permission modes. The cycle puts
   // bypass last so a single press from default escalates to the safe option
   // (acceptEdits), never the dangerous one. Codex sessions ignore the keystroke
@@ -435,15 +456,12 @@ export function App() {
             runner={api.active?.activeRunner ?? null}
             claudeMode={api.active?.claudeMode ?? "default"}
             onCycleClaudeMode={cycleClaudeMode}
+            modelLabel={promptMeta?.modelLabel ?? null}
+            contextPercent={promptMeta?.contextPercent ?? null}
+            projectLabel={promptMeta?.projectLabel ?? null}
+            branch={promptMeta?.branch ?? null}
           />
         </box>
-        <StatusBar
-          status={api.status}
-          active={api.active}
-          sessionCount={api.sessions.length}
-          focus={focus}
-          width={rightWidth}
-        />
       </box>
     </box>
   );

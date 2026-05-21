@@ -3,6 +3,7 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import type { Session, SessionMessage, ToolLog } from "../../../shared/events.ts";
 import { ToolCard } from "./ToolCard";
 import { NoticeCard } from "./NoticeCard";
+import { Welcome } from "./Welcome";
 import { theme } from "../theme";
 import { markdownStyle } from "../markdown-style";
 import type { Notice } from "../util/notice";
@@ -15,11 +16,7 @@ export function Transcript({
   notices: Notice[];
 }) {
   if (!session) {
-    return (
-      <box flexGrow={1} alignItems="center" justifyContent="center">
-        <text fg={theme.textSubtle}>no session selected</text>
-      </box>
-    );
+    return <Welcome />;
   }
 
   type Entry =
@@ -30,6 +27,10 @@ export function Transcript({
     ...session.messages.map((m) => ({ kind: "message" as const, at: m.createdAt, message: m })),
     ...notices.map((n) => ({ kind: "notice" as const, at: n.createdAt, notice: n })),
   ].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+
+  if (entries.length === 0) {
+    return <Welcome />;
+  }
 
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const lastMsg = session.messages[session.messages.length - 1];

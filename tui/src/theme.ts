@@ -41,4 +41,16 @@ export const theme = {
   diffRemBg: "#1c0f0f",
   diffAddFg: "#a8d896",
   diffRemFg: "#e08080",
+
+  // Sidebar runner identity. Active row uses the full hue on the accent bar
+  // and on the streaming dot; inactive rows use the idle hue on a faint
+  // marker so the runner is still legible at a glance.
+  runnerClaude: "#a8d896",
+  runnerClaudeIdle: "#506b48",
+  runnerCodex: "#e0b878",
+  runnerCodexIdle: "#6b5638",
+
+  // Dirty-worktree marker. Distinct enough from both runner hues that it
+  // doesn't get confused with the codex amber on a codex session.
+  gitDirty: "#c89060",
 } as const;
