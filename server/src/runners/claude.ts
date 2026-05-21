@@ -31,8 +31,15 @@ type ClaudeRunArgs = {
   permissionMode?: ClaudePermissionMode;
   canUseTool?: CanUseToolBridge;
   abortController?: AbortController;
+  // In-process MCP servers (e.g. the orchestrator's delegate_run tool).
+  // Forwarded verbatim to the SDK's mcpServers option.
+  mcpServers?: Record<string, unknown>;
   onEvent: (ev: RunEvent) => void;
   onResumeId: (id: string | null) => void;
+  // Audit hook — fires for every raw SDK message before translation to a
+  // RunEvent. The transcript NDJSON uses this to preserve detail (session
+  // init, tool_use ids, result summaries) that the normalized stream drops.
+  onRaw?: (msg: unknown) => void;
 };
 
 export async function runClaude(args: ClaudeRunArgs): Promise<void> {
@@ -46,8 +53,10 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     permissionMode,
     canUseTool,
     abortController,
+    mcpServers,
     onEvent,
     onResumeId,
+    onRaw,
   } = args;
 
   const options: Record<string, unknown> = { includePartialMessages: true };
@@ -55,6 +64,9 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
   if (model) options.model = model;
   if (resumeId) options.resume = resumeId;
   if (abortController) options.abortController = abortController;
+  if (mcpServers && Object.keys(mcpServers).length > 0) {
+    options.mcpServers = mcpServers;
+  }
   if (systemPrompt && systemPrompt.trim()) {
     options.systemPrompt = {
       type: "preset",
@@ -126,8 +138,13 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
   const pendingTool = new Map<string, { name: string; input: unknown }>();
 
   try {
-    const streamedBlocks = new Set<number>();
+    // Per-message index → start timestamp for thinking blocks, used to attach
+    // elapsed seconds to the "thinking" marker emitted on content_block_stop.
+    const thinkingBlockStart = new Map<number, number>();
+    const elapsedSeconds = (startedAt: number): number =>
+      Math.max(0, Math.round((Date.now() - startedAt) / 1000));
     for await (const message of query({ prompt, options: options as any })) {
+      onRaw?.(message);
       switch (message.type) {
         case "system":
           if ((message as any).subtype === "init" && (message as any).session_id) {
@@ -139,30 +156,48 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
           const ev = (message as any).event;
           if (!ev) break;
           if (ev.type === "content_block_start") {
-            if (ev.content_block?.type === "text") streamedBlocks.add(ev.index);
+            if (ev.content_block?.type === "thinking") {
+              thinkingBlockStart.set(ev.index, Date.now());
+            }
           } else if (ev.type === "content_block_delta") {
             const d = ev.delta;
             if (d?.type === "text_delta" && typeof d.text === "string" && d.text.length > 0) {
-              streamedBlocks.add(ev.index);
               onEvent({ type: "text_delta", delta: d.text });
+            }
+            // thinking_delta is intentionally dropped — the SDK exposes the
+            // model's private reasoning text, but we only surface a collapsed
+            // "> Thought (Ns)" marker. Forwarding the deltas as text_delta
+            // leaked the raw thoughts into the transcript bullet.
+          } else if (ev.type === "content_block_stop") {
+            const startedAt = thinkingBlockStart.get(ev.index);
+            if (startedAt !== undefined) {
+              thinkingBlockStart.delete(ev.index);
+              // Atomic mode (text: "") so the marker doesn't steal preceding
+              // text_delta buf in the client's blocksFromEvents — interleaved
+              // thinking can land after a text block.
+              onEvent({ type: "thinking", seconds: elapsedSeconds(startedAt), text: "" });
             }
           }
           break;
         }
 
         case "assistant": {
+          // Text and thinking are streamed via stream_event because we always
+          // set includePartialMessages: true. Re-emitting them from the
+          // assembled assistant message caused the response to be duplicated
+          // in the transcript (and historically leaked thinking text via the
+          // fallback path). Only tool_use needs to be captured here — the
+          // stream_event content_block_start for a tool_use carries no input,
+          // and the input_json_delta partials aren't currently accumulated.
           const blocks = (message as any).message?.content ?? [];
-          blocks.forEach((b: any, idx: number) => {
-            if (b.type === "text") {
-              if (streamedBlocks.has(idx)) return;
-              if (b.text) onEvent({ type: "text_delta", delta: b.text });
-            } else if (b.type === "tool_use") {
+          for (const b of blocks) {
+            if (b?.type === "tool_use") {
               pendingTool.set(b.id ?? "", { name: b.name ?? "", input: b.input ?? {} });
             }
-          });
+          }
           const mu = (message as any).message?.usage;
           if (mu) onEvent({ type: "usage", ...normalizeUsage(mu) });
-          streamedBlocks.clear();
+          thinkingBlockStart.clear();
           break;
         }
 

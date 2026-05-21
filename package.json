@@ -8,10 +8,12 @@
     "server"
   ],
   "bin": {
-    "adverserial-code": "./bin/start.mjs"
+    "adverserial-code": "./bin/start.mjs",
+    "mixcode": "./bin/mixcode.mjs"
   },
   "scripts": {
     "start": "node ./bin/start.mjs",
+    "mixcode": "node ./bin/mixcode.mjs",
     "server": "npm --workspace server run dev",
     "tui": "bun --cwd tui run dev",
     "typecheck": "npm --workspace server run typecheck && (cd tui && bun run typecheck)"
