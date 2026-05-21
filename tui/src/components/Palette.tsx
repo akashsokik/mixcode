@@ -55,6 +55,30 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
       .map((x) => x.item);
   }, [items, query]);
 
+  // Clamp index when filtered shrinks below it.
+  const safeIndex = Math.min(index, Math.max(0, filtered.length - 1));
+
+  useKeyboard((key) => {
+    if (key.name === "escape") return onClose();
+    if (key.name === "up") {
+      setIndex(() => Math.max(0, safeIndex - 1));
+      return;
+    }
+    if (key.name === "down") {
+      setIndex(() => Math.min(filtered.length - 1, safeIndex + 1));
+      return;
+    }
+    if (key.ctrl && key.name === "n" && onCreate) {
+      onCreate();
+      return;
+    }
+    if (ENTER_KEYS.has(key.name ?? "")) {
+      const item = filtered[safeIndex];
+      if (item) item.onActivate();
+      return;
+    }
+  });
+
   return (
     <box
       flexDirection="column"
@@ -72,7 +96,7 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
       </box>
       <box flexDirection="column" flexShrink={0}>
         {filtered.slice(0, 10).map((item, i) => (
-          <Row key={item.id} item={item} selected={i === index} />
+          <Row key={item.id} item={item} selected={i === safeIndex} />
         ))}
         {filtered.length === 0 && <text fg={theme.textFaint}>(no matches)</text>}
       </box>
