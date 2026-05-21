@@ -9,7 +9,7 @@ import { ModelPicker } from "./components/ModelPicker";
 import { Palette, type PaletteItem } from "./components/Palette";
 import type { ClaudePermissionMode } from "../../shared/events.ts";
 import { useSessions } from "./state/sessions";
-import { parseSlash, toggleRunner } from "./util/slash";
+import { parseSlash, SLASH_COMMANDS, toggleRunner } from "./util/slash";
 import {
   contextLines,
   helpLines,
@@ -251,12 +251,30 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api.active?.activeRunner, paletteMode]);
 
+  const commandItems = useMemo<PaletteItem[]>(() => {
+    return SLASH_COMMANDS.map((cmd) => ({
+      id: `cmd:${cmd.name}`,
+      label: cmd.name,
+      detail: cmd.help,
+      badge: { text: "cmd", color: theme.textMuted },
+      onActivate: () => {
+        // For commands with arguments, drop the name into the prompt and let
+        // the user finish typing. For zero-arg commands, run immediately.
+        const bare = cmd.name.split(" ")[0];
+        const hasArgs = cmd.name.includes("[") || cmd.name.includes("<");
+        setPaletteMode(null);
+        if (!hasArgs) handleSubmit(bare);
+        else handleSubmit(bare); // bare form is fine for our commands — args are optional
+      },
+    }));
+  }, []);
+
   function itemsForMode(mode: "sessions" | "skills" | "mcp" | "global"): PaletteItem[] {
     switch (mode) {
       case "sessions": return sessionItems;
       case "skills":   return skillItems;
       case "mcp":      return mcpItems;
-      case "global":   return [...sessionItems, ...skillItems, ...mcpItems];
+      case "global":   return [...sessionItems, ...commandItems, ...skillItems, ...mcpItems];
     }
   }
 
