@@ -56,16 +56,18 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
   }, [items, query]);
 
   // Clamp index when filtered shrinks below it.
-  const safeIndex = Math.min(index, Math.max(0, filtered.length - 1));
+  const safeIndex = Math.max(0, Math.min(index, filtered.length - 1));
 
   useKeyboard((key) => {
     if (key.name === "escape") return onClose();
     if (key.name === "up") {
-      setIndex(() => Math.max(0, safeIndex - 1));
+      if (filtered.length === 0) return;
+      setIndex((i) => Math.max(0, i - 1));
       return;
     }
     if (key.name === "down") {
-      setIndex(() => Math.min(filtered.length - 1, safeIndex + 1));
+      if (filtered.length === 0) return;
+      setIndex((i) => Math.min(filtered.length - 1, i + 1));
       return;
     }
     if (key.ctrl && key.name === "n" && onCreate) {
