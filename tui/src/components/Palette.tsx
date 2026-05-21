@@ -35,6 +35,8 @@ type Props = {
 export function Palette({ title, placeholder, items, onClose, footer, onCreate }: Props) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
+  const [actionSheet, setActionSheet] = useState<PaletteItem | null>(null);
+  const [pendingDestructive, setPendingDestructive] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return items;
@@ -59,6 +61,30 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
   const safeIndex = Math.max(0, Math.min(index, filtered.length - 1));
 
   useKeyboard((key) => {
+    if (actionSheet) {
+      if (key.name === "escape") {
+        setActionSheet(null);
+        setPendingDestructive(null);
+        return;
+      }
+      const action = actionSheet.actions?.find((a) => a.key === key.name);
+      if (!action) return;
+      if (action.destructive) {
+        if (pendingDestructive === action.key) {
+          action.run();
+          setActionSheet(null);
+          setPendingDestructive(null);
+        } else {
+          setPendingDestructive(action.key);
+          setTimeout(() => setPendingDestructive((p) => (p === action.key ? null : p)), 1500);
+        }
+        return;
+      }
+      action.run();
+      setActionSheet(null);
+      return;
+    }
+
     if (key.name === "escape") return onClose();
     if (key.name === "up") {
       if (filtered.length === 0) return;
@@ -68,6 +94,11 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
     if (key.name === "down") {
       if (filtered.length === 0) return;
       setIndex((i) => Math.min(filtered.length - 1, i + 1));
+      return;
+    }
+    if (key.name === "space") {
+      const item = filtered[safeIndex];
+      if (item?.actions?.length) setActionSheet(item);
       return;
     }
     if (key.ctrl && key.name === "n" && onCreate) {
@@ -102,7 +133,21 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
         ))}
         {filtered.length === 0 && <text fg={theme.textFaint}>(no matches)</text>}
       </box>
-      <text fg={theme.textFaint}>{footer ?? "↑↓ nav   enter activate   esc close"}</text>
+      {actionSheet && (
+        <box flexDirection="column" borderStyle="single" borderColor={theme.toolError} paddingLeft={1} paddingRight={1}>
+          <text fg={theme.textMuted}>{`actions: ${actionSheet.label}`}</text>
+          {actionSheet.actions!.map((a) => {
+            const pending = pendingDestructive === a.key;
+            return (
+              <text key={a.key} fg={a.destructive ? theme.toolError : theme.textMuted}>
+                {`  ${a.key}  ${a.label}${pending ? "  (press again to confirm)" : ""}`}
+              </text>
+            );
+          })}
+          <text fg={theme.textFaint}>{"esc back"}</text>
+        </box>
+      )}
+      <text fg={theme.textFaint}>{footer ?? "↑↓ nav   enter activate   space actions   esc close"}</text>
     </box>
   );
 }
