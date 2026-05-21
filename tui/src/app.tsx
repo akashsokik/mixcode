@@ -768,7 +768,7 @@ export function App() {
           onCreate={paletteMode === "sessions" ? () => { api.createSession(); setPaletteMode(null); } : undefined}
           footer={
             paletteMode === "sessions"
-              ? "↑↓ nav   enter switch   space actions   ctrl+n new   esc close"
+              ? "↑↓ nav   enter switch   tab actions   ctrl+n new   esc close"
               : undefined
           }
         />

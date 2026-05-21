@@ -120,13 +120,13 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
       setIndex((i) => Math.min(filtered.length - 1, i + 1));
       return;
     }
-    if (key.name === "space") {
+    if (key.name === "tab") {
       const item = filtered[safeIndex];
       if (item?.actions?.length) {
         setActionSheet(item);
         return;
       }
-      // fall through — let the input receive the space
+      return; // tab without actions still doesn't reach the input
     }
     if (key.ctrl && key.name === "n" && onCreate) {
       onCreate();
@@ -181,7 +181,7 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
         </box>
       )}
       {!actionSheet && (
-        <text fg={theme.textFaint}>{footer ?? "↑↓ nav   enter activate   space actions   esc close"}</text>
+        <text fg={theme.textFaint}>{footer ?? "↑↓ nav   enter activate   tab actions   esc close"}</text>
       )}
     </box>
   );
