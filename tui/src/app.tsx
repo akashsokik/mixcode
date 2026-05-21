@@ -146,6 +146,14 @@ export function App() {
     return { modelLabel, contextPercent, projectLabel, branch, delegations };
   }, [api.active]);
 
+  const sessionPill = useMemo(
+    () => ({
+      total: api.sessions.length,
+      streaming: api.sessions.filter((s) => s.streaming).length,
+    }),
+    [api.sessions],
+  );
+
   const sessionItems = useMemo<PaletteItem[]>(() => {
     return api.sessions.map((s) => {
       const runnerColor = s.activeRunner === "claude" ? theme.runnerClaude : theme.runnerCodex;
@@ -792,6 +800,7 @@ export function App() {
             projectLabel={promptMeta?.projectLabel ?? null}
             branch={promptMeta?.branch ?? null}
             delegations={promptMeta?.delegations ?? null}
+            sessionPill={sessionPill}
           />
         </box>
       </box>

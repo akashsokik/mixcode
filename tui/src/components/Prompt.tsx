@@ -3,6 +3,7 @@ import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import type {
   ClaudePermissionMode,
+  DelegationStats,
   RunnerKind,
 } from "../../../shared/events.ts";
 import {
@@ -34,6 +35,8 @@ type PromptProps = {
   contextPercent?: number | null;
   projectLabel?: string | null;
   branch?: { name: string; dirty: boolean } | null;
+  delegations?: DelegationStats | null;
+  sessionPill?: { total: number; streaming: number } | null;
 };
 
 export function Prompt({
@@ -51,6 +54,8 @@ export function Prompt({
   contextPercent,
   projectLabel,
   branch,
+  delegations,
+  sessionPill,
 }: PromptProps) {
   const [text, setText] = useState("");
   const history = useHistory();
@@ -267,8 +272,67 @@ export function Prompt({
           projectLabel={projectLabel ?? null}
           branch={branch ?? null}
           streaming={!!streaming}
+          sessionPill={sessionPill ?? null}
         />
+        <DelegationRow stats={delegations ?? null} />
       </box>
+    </box>
+  );
+}
+
+// Second meta row, rendered only when this session has delegated at least
+// once. Shows lifetime total, currently-running peers (with name), and
+// terminal-state counts. Hidden completely when total === 0 so the prompt
+// stays a single row for non-orchestrating sessions.
+function DelegationRow({ stats }: { stats: DelegationStats | null }) {
+  if (!stats || stats.total === 0) return null;
+
+  const segments: Array<{ label: string; value: string; color: string }> = [];
+  // Total first — it's the primary "I've delegated N times" metric.
+  segments.push({
+    label: "peers",
+    value: String(stats.total),
+    color: theme.toolTask,
+  });
+  if (stats.running > 0) {
+    const peer = stats.activePeer ? ` ${stats.activePeer}` : "";
+    segments.push({
+      label: "running",
+      value: `${stats.running}${peer}`,
+      color: stats.activePeer === "claude"
+        ? theme.runnerClaude
+        : stats.activePeer === "codex"
+          ? theme.runnerCodex
+          : theme.text,
+    });
+  }
+  if (stats.ok > 0) {
+    segments.push({ label: "ok", value: String(stats.ok), color: theme.toolEdit });
+  }
+  if (stats.error > 0) {
+    segments.push({
+      label: "err",
+      value: String(stats.error),
+      color: theme.toolError,
+    });
+  }
+  if (stats.cancelled > 0) {
+    segments.push({
+      label: "cxl",
+      value: String(stats.cancelled),
+      color: theme.textMuted,
+    });
+  }
+
+  return (
+    <box flexDirection="row" height={1} paddingLeft={1}>
+      {segments.map((seg, i) => (
+        <box key={seg.label} flexDirection="row">
+          {i > 0 && <Dot />}
+          <text fg={theme.textMuted}>{`${seg.label} `}</text>
+          <text fg={seg.color} attributes={TextAttributes.BOLD}>{seg.value}</text>
+        </box>
+      ))}
     </box>
   );
 }
@@ -281,6 +345,7 @@ function MetaRow({
   projectLabel,
   branch,
   streaming,
+  sessionPill,
 }: {
   runner: RunnerKind | null;
   claudeMode: ClaudePermissionMode | undefined;
@@ -289,18 +354,20 @@ function MetaRow({
   projectLabel: string | null;
   branch: { name: string; dirty: boolean } | null;
   streaming: boolean;
+  sessionPill: { total: number; streaming: number } | null;
 }) {
   if (!runner) return null;
   const showMode = runner === "claude" && claudeMode && claudeMode !== "default";
   const showCtx = contextPercent != null && contextPercent > 0;
   const showCycleHint = runner === "claude";
 
-  const segments: Array<"model" | "project" | "branch" | "mode" | "ctx"> = [];
+  const segments: Array<"model" | "project" | "branch" | "mode" | "ctx" | "sess"> = [];
   if (modelLabel) segments.push("model");
   if (projectLabel) segments.push("project");
   if (branch?.name) segments.push("branch");
   if (showMode) segments.push("mode");
   if (showCtx) segments.push("ctx");
+  if (sessionPill && sessionPill.total > 1) segments.push("sess");
 
   return (
     <box flexDirection="row" height={1} paddingLeft={1}>
@@ -320,6 +387,14 @@ function MetaRow({
           )}
           {seg === "ctx" && (
             <text fg={theme.textMuted}>{`${contextPercent}%`}</text>
+          )}
+          {seg === "sess" && (
+            <>
+              <text fg={theme.textMuted}>{`sess ${sessionPill!.total}`}</text>
+              {sessionPill!.streaming > 0 && (
+                <text fg={theme.toolError}>{`●${sessionPill!.streaming}`}</text>
+              )}
+            </>
           )}
         </box>
       ))}
