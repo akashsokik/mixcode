@@ -30,6 +30,8 @@ import { normalizeRule } from "./util/permission-rule";
 import { addSkill, listSkills, readSkillFrontmatter, removeSkill } from "./util/skills";
 import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
 import { theme } from "./theme";
+import { basename } from "./util/path";
+import { latestDelegationId } from "./util/blocks";
 import {
   contextLimit,
   latestContextTokens,
@@ -38,6 +40,7 @@ import {
 } from "./util/status";
 
 const SIDEBAR_WIDTH = 28;
+const EMPTY_SET: Set<string> = new Set();
 
 function dedupe<T>(xs: T[]): T[] {
   return Array.from(new Set(xs));
@@ -55,6 +58,11 @@ export function App() {
   const [paletteMode, setPaletteMode] = useState<
     "sessions" | "skills" | "mcp" | "global" | null
   >(null);
+  // Per-session expand set for delegation groups. Keyed by `${messageId}:${blockIndex}`,
+  // matching the ids minted by groupDelegations in util/blocks.
+  const [expandedDelegations, setExpandedDelegations] = useState<
+    Record<string, Set<string>>
+  >({});
   const lastDeleteRef = useRef(0);
 
   useEffect(() => {
@@ -75,12 +83,49 @@ export function App() {
       }
       return changed ? next : prev;
     });
+    setExpandedDelegations((prev) => {
+      const alive = new Set(api.sessions.map((s) => s.id));
+      let changed = false;
+      const next: Record<string, Set<string>> = {};
+      for (const [id, set] of Object.entries(prev)) {
+        if (alive.has(id)) next[id] = set;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
   }, [api.sessions]);
 
   const activeNotices = useMemo(
     () => (api.activeId ? notices[api.activeId] ?? [] : []),
     [notices, api.activeId],
   );
+
+  const activeExpanded = useMemo(
+    () =>
+      api.activeId
+        ? expandedDelegations[api.activeId] ?? EMPTY_SET
+        : EMPTY_SET,
+    [expandedDelegations, api.activeId],
+  );
+
+  const activeLatestDelegationId = useMemo(
+    () => latestDelegationId(api.active ?? null),
+    [api.active],
+  );
+
+  const toggleLatestDelegation = useCallback(() => {
+    const sid = api.activeId;
+    if (!sid) return;
+    const groupId = latestDelegationId(api.active ?? null);
+    if (!groupId) return;
+    setExpandedDelegations((prev) => {
+      const cur = prev[sid] ?? new Set<string>();
+      const next = new Set(cur);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return { ...prev, [sid]: next };
+    });
+  }, [api.activeId, api.active]);
 
   const promptMeta = useMemo(() => {
     const s = api.active;
@@ -101,6 +146,41 @@ export function App() {
     return { modelLabel, contextPercent, projectLabel, branch, delegations };
   }, [api.active]);
 
+  const sessionItems = useMemo<PaletteItem[]>(() => {
+    return api.sessions.map((s) => {
+      const runnerColor = s.activeRunner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+      const detail = `${basename(s.cwd) || "~"} · ${s.activeRunner} · ${s.messages.length} msg`;
+      return {
+        id: s.id,
+        label: s.title,
+        detail,
+        badge: { text: s.activeRunner, color: runnerColor },
+        streaming: s.streaming,
+        onActivate: () => {
+          api.setActive(s.id);
+          setPaletteMode(null);
+        },
+        actions: [
+          {
+            key: "d",
+            label: "delete (press d again to confirm)",
+            destructive: true,
+            run: () => api.deleteSession(s.id),
+          },
+        ],
+      };
+    });
+  }, [api.sessions, api.setActive, api.deleteSession]);
+
+  function itemsForMode(mode: "sessions" | "skills" | "mcp" | "global"): PaletteItem[] {
+    switch (mode) {
+      case "sessions": return sessionItems;
+      case "skills":   return [];
+      case "mcp":      return [];
+      case "global":   return sessionItems;
+    }
+  }
+
   const addNotice = useCallback(
     (sessionId: string, command: string, lines: string[]) => {
       const notice = makeNotice(command, lines);
@@ -115,6 +195,13 @@ export function App() {
   useKeyboard((key) => {
     if (key.ctrl && key.name === "k") {
       setPaletteMode((m) => (m === "global" ? null : "global"));
+      return;
+    }
+    // ctrl+e toggles the latest delegation group regardless of focus. Matches
+    // the global handling of ctrl+k above; the Prompt input doesn't bind
+    // ctrl+e, so this passes through cleanly while typing.
+    if (key.ctrl && key.name === "e") {
+      toggleLatestDelegation();
       return;
     }
     if (focus === "prompt") return;
@@ -520,7 +607,12 @@ export function App() {
           marginLeft={2}
           marginRight={2}
         >
-          <Transcript session={api.active} notices={activeNotices} />
+          <Transcript
+            session={api.active}
+            notices={activeNotices}
+            expandedDelegations={activeExpanded}
+            latestDelegationId={activeLatestDelegationId}
+          />
           <Spinner active={api.active} />
           {api.pendingPermissions.length > 0 && (
             <PermissionPanel
@@ -577,9 +669,15 @@ export function App() {
           {paletteMode && (
             <Palette
               title={titleForMode(paletteMode)}
-              placeholder="type to filter…"
-              items={[]}
+              placeholder={placeholderForMode(paletteMode)}
+              items={itemsForMode(paletteMode)}
               onClose={() => setPaletteMode(null)}
+              onCreate={paletteMode === "sessions" ? () => { api.createSession(); setPaletteMode(null); } : undefined}
+              footer={
+                paletteMode === "sessions"
+                  ? "↑↓ nav   enter switch   space actions   ctrl+n new   esc close"
+                  : undefined
+              }
             />
           )}
           <Prompt
@@ -610,5 +708,14 @@ function titleForMode(mode: "sessions" | "skills" | "mcp" | "global"): string {
     case "skills":   return "skills";
     case "mcp":      return "mcp servers";
     case "global":   return "jump to anything";
+  }
+}
+
+function placeholderForMode(mode: "sessions" | "skills" | "mcp" | "global"): string {
+  switch (mode) {
+    case "sessions": return "search sessions…";
+    case "skills":   return "search skills…";
+    case "mcp":      return "search mcp servers…";
+    case "global":   return "jump to anything…";
   }
 }
