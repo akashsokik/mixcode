@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { Transcript } from "./components/Transcript";
 import { Prompt } from "./components/Prompt";
@@ -47,7 +47,6 @@ function dedupe<T>(xs: T[]): T[] {
 export function App() {
   const { width, height } = useTerminalDimensions();
   const api = useSessions();
-  const [focus, setFocus] = useState<"prompt" | "browse">("prompt");
   const [notices, setNotices] = useState<Record<string, Notice[]>>({});
   // null when no picker is open. The picker captures keyboard input itself;
   // App only needs to track which runner it's for so it can keep the selected
@@ -61,7 +60,6 @@ export function App() {
   const [expandedDelegations, setExpandedDelegations] = useState<
     Record<string, Set<string>>
   >({});
-  const lastDeleteRef = useRef(0);
 
   useEffect(() => {
     if (api.status === "open" && api.sessions.length === 0) {
@@ -300,46 +298,11 @@ export function App() {
       setPaletteMode((m) => (m === "global" ? null : "global"));
       return;
     }
-    // ctrl+e toggles the latest delegation group regardless of focus. Matches
-    // the global handling of ctrl+k above; the Prompt input doesn't bind
-    // ctrl+e, so this passes through cleanly while typing.
+    // ctrl+e toggles the latest delegation group. Not part of browse mode —
+    // the Prompt input doesn't bind ctrl+e, so this passes through cleanly
+    // while typing.
     if (key.ctrl && key.name === "e") {
       toggleLatestDelegation();
-      return;
-    }
-    if (focus === "prompt") return;
-    // ctrl+b is the symmetric back-to-prompt key when already in browse mode.
-    if (key.ctrl && key.name === "b") {
-      setFocus("prompt");
-      return;
-    }
-    // Esc from browse mode interrupts a streaming turn rather than refocusing.
-    // It feels weird to silently swallow Esc otherwise, but jumping focus on
-    // Esc was the old "browse → prompt" path and is now owned by ctrl+b.
-    if (key.name === "escape") {
-      if (api.active?.streaming) api.interrupt();
-      return;
-    }
-    if (
-      key.name === "return" ||
-      key.name === "enter" ||
-      key.name === "linefeed" ||
-      key.name === "kpenter"
-    ) {
-      setFocus("prompt");
-      return;
-    }
-    if (key.name === "j" || key.name === "down") return api.nextSession();
-    if (key.name === "k" || key.name === "up") return api.prevSession();
-    if (key.name === "n") return api.createSession();
-    if (key.name === "d") {
-      const now = Date.now();
-      if (now - lastDeleteRef.current < 1500 && api.activeId) {
-        lastDeleteRef.current = 0;
-        api.deleteSession(api.activeId);
-      } else {
-        lastDeleteRef.current = now;
-      }
       return;
     }
   });
@@ -783,8 +746,7 @@ export function App() {
         />
       )}
       <Prompt
-        focused={focus === "prompt"}
-        onUnfocus={() => setFocus("browse")}
+        focused
         onSubmit={handleSubmit}
         locked={api.pendingPermissions.length > 0 || modelPicker !== null || paletteMode !== null}
         streaming={api.active?.streaming ?? false}

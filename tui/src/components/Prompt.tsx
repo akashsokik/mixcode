@@ -22,7 +22,6 @@ function isEnterKey(name: string | undefined): boolean {
 
 type PromptProps = {
   focused: boolean;
-  onUnfocus: () => void;
   onSubmit: (text: string) => void;
   hint?: string;
   locked?: boolean;
@@ -41,7 +40,6 @@ type PromptProps = {
 
 export function Prompt({
   focused,
-  onUnfocus,
   onSubmit,
   hint,
   locked,
@@ -90,16 +88,6 @@ export function Prompt({
     if (!focused || locked) return;
     const isEnter = isEnterKey(key.name);
 
-    // ctrl+b is the dedicated "browse" toggle — moves focus to the sidebar so
-    // j/k/n/dd work. Used to live on plain Esc, but Esc is now reserved for
-    // interrupting an in-flight turn or dismissing menus.
-    if (key.ctrl && key.name === "b") {
-      if (slash.active) slash.close();
-      if (completions.active) completions.close();
-      onUnfocus();
-      return;
-    }
-
     // shift+tab cycles Claude permission mode. Handle BEFORE the plain-tab
     // completion branch so completion doesn't steal it.
     if (key.name === "tab" && key.shift) {
@@ -113,7 +101,6 @@ export function Prompt({
       // Priority while the prompt is focused:
       //   1. close an open menu (slash → completions)
       //   2. interrupt the active turn if one is streaming
-      //   3. no-op (browse mode is on ctrl+b now)
       if (slash.active) slash.close();
       else if (completions.active) completions.close();
       else if (streaming && onInterrupt) onInterrupt();
