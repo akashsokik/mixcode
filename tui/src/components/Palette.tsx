@@ -38,12 +38,18 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate }
 
   const filtered = useMemo(() => {
     if (!query.trim()) return items;
+    // Two items can produce identical haystacks (same title + cwd); ranking by
+    // haystack-string lookup would let the later one clobber the earlier's
+    // rank. Key the rank table by item index instead.
     const haystacks = items.map((i) => `${i.badge?.text ?? ""} ${i.label} ${i.detail ?? ""}`);
-    const results = fuzzysort.go(query, haystacks, { threshold: -10000 });
-    const order = new Map<string, number>();
-    results.forEach((r, rank) => order.set(r.target, rank));
+    const results = fuzzysort.go(query, haystacks, { threshold: -10000, all: false });
+    const rankByIndex = new Map<number, number>();
+    results.forEach((r, rank) => {
+      const idx = haystacks.indexOf(r.target);
+      if (idx !== -1 && !rankByIndex.has(idx)) rankByIndex.set(idx, rank);
+    });
     return items
-      .map((item, i) => ({ item, rank: order.get(haystacks[i]!) }))
+      .map((item, i) => ({ item, rank: rankByIndex.get(i) }))
       .filter((x) => x.rank !== undefined)
       .sort((a, b) => (a.rank as number) - (b.rank as number))
       .map((x) => x.item);
