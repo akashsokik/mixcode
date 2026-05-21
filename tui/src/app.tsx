@@ -172,12 +172,54 @@ export function App() {
     });
   }, [api.sessions, api.setActive, api.deleteSession]);
 
+  const skillItems = useMemo<PaletteItem[]>(() => {
+    if (!api.active) return [];
+    const runner = api.active.activeRunner;
+    const entries = listSkills(runner);
+    const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+    return entries.map((e) => ({
+      id: `${runner}:${e.name}`,
+      label: e.name,
+      detail: e.description ? clipDetail(e.description, 60) : (e.isSymlink ? "(symlink)" : "(dir)"),
+      badge: { text: runner, color: runnerColor },
+      onActivate: () => {
+        const sid = api.activeId;
+        if (!sid) return;
+        const fm = readSkillFrontmatter(runner, e.name);
+        addNotice(sid, "/skills info", skillInfoLines(runner, e.name, fm));
+        setPaletteMode(null);
+      },
+      actions: [
+        {
+          key: "d",
+          label: "remove (press d again to confirm)",
+          destructive: true,
+          run: () => {
+            const sid = api.activeId;
+            const res = removeSkill(runner, e.name);
+            if (sid) {
+              addNotice(
+                sid,
+                "/skills remove",
+                skillsLines(runner, listSkills(runner), res.ok ? `removed: ${res.name}` : `failed: ${res.error}`),
+              );
+            }
+            setPaletteMode(null);
+          },
+        },
+      ],
+    }));
+  // Re-run when sessions change because activeRunner might switch; the skills
+  // list itself is read from disk so we just key on the runner identity.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api.active?.activeRunner, paletteMode]);
+
   function itemsForMode(mode: "sessions" | "skills" | "mcp" | "global"): PaletteItem[] {
     switch (mode) {
       case "sessions": return sessionItems;
-      case "skills":   return [];
+      case "skills":   return skillItems;
       case "mcp":      return [];
-      case "global":   return sessionItems;
+      case "global":   return [...sessionItems, ...skillItems];
     }
   }
 
@@ -700,6 +742,10 @@ export function App() {
       </box>
     </box>
   );
+}
+
+function clipDetail(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 function titleForMode(mode: "sessions" | "skills" | "mcp" | "global"): string {
