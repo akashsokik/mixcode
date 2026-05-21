@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { Prompt } from "./components/Prompt";
 import { Spinner } from "./components/Spinner";
@@ -39,7 +38,6 @@ import {
   projectName,
 } from "./util/status";
 
-const SIDEBAR_WIDTH = 28;
 const EMPTY_SET: Set<string> = new Set();
 
 function dedupe<T>(xs: T[]): T[] {
@@ -701,109 +699,106 @@ export function App() {
   }, [api.active, api.setClaudeMode]);
 
   return (
-    <box flexDirection="row" width={width} height={height} backgroundColor={theme.bg}>
-      <Sidebar sessions={api.sessions} activeId={api.activeId} width={SIDEBAR_WIDTH} />
-      <box flexDirection="column" flexGrow={1}>
-        <box
-          flexDirection="column"
-          flexGrow={1}
-          marginTop={1}
-          marginBottom={1}
-          marginLeft={2}
-          marginRight={2}
-        >
-          <Transcript
-            session={api.active}
-            notices={activeNotices}
-            expandedDelegations={activeExpanded}
-            latestDelegationId={activeLatestDelegationId}
-          />
-          <Spinner active={api.active} />
-          {api.pendingPermissions.length > 0 && (
-            <PermissionPanel
-              request={api.pendingPermissions[0]}
-              queueSize={api.pendingPermissions.length}
-              onDecision={api.respondPermission}
-            />
-          )}
-          {modelPicker && api.active && (
-            <ModelPicker
-              runner={modelPicker.runner}
-              currentId={api.active.models[modelPicker.runner]}
-              onSelect={(modelId) => {
-                if (!api.active) return;
-                api.setModel(modelPicker.runner, modelId);
-                if (api.activeId) {
-                  addNotice(
-                    api.activeId,
-                    "/model",
-                    modelLines(
-                      {
-                        ...api.active,
-                        models: {
-                          ...api.active.models,
-                          [modelPicker.runner]: modelId,
-                        },
-                      },
-                      `${modelPicker.runner} → ${modelId}`,
-                    ),
-                  );
-                }
-                setModelPicker(null);
-              }}
-              onReset={() => {
-                if (!api.active) return;
-                api.setModel(modelPicker.runner, null);
-                if (api.activeId) {
-                  const next = { ...api.active.models };
-                  delete next[modelPicker.runner];
-                  addNotice(
-                    api.activeId,
-                    "/model",
-                    modelLines(
-                      { ...api.active, models: next },
-                      `${modelPicker.runner} → (default)`,
-                    ),
-                  );
-                }
-                setModelPicker(null);
-              }}
-              onCancel={() => setModelPicker(null)}
-            />
-          )}
-          {paletteMode && (
-            <Palette
-              title={titleForMode(paletteMode)}
-              placeholder={placeholderForMode(paletteMode)}
-              items={itemsForMode(paletteMode)}
-              onClose={() => setPaletteMode(null)}
-              onCreate={paletteMode === "sessions" ? () => { api.createSession(); setPaletteMode(null); } : undefined}
-              footer={
-                paletteMode === "sessions"
-                  ? "↑↓ nav   enter switch   space actions   ctrl+n new   esc close"
-                  : undefined
-              }
-            />
-          )}
-          <Prompt
-            focused={focus === "prompt"}
-            onUnfocus={() => setFocus("browse")}
-            onSubmit={handleSubmit}
-            locked={api.pendingPermissions.length > 0 || modelPicker !== null || paletteMode !== null}
-            streaming={api.active?.streaming ?? false}
-            onInterrupt={api.interrupt}
-            runner={api.active?.activeRunner ?? null}
-            claudeMode={api.active?.claudeMode ?? "default"}
-            onCycleClaudeMode={cycleClaudeMode}
-            modelLabel={promptMeta?.modelLabel ?? null}
-            contextPercent={promptMeta?.contextPercent ?? null}
-            projectLabel={promptMeta?.projectLabel ?? null}
-            branch={promptMeta?.branch ?? null}
-            delegations={promptMeta?.delegations ?? null}
-            sessionPill={sessionPill}
-          />
-        </box>
-      </box>
+    <box
+      flexDirection="column"
+      width={width}
+      height={height}
+      backgroundColor={theme.bg}
+      marginTop={1}
+      marginBottom={1}
+      marginLeft={2}
+      marginRight={2}
+    >
+      <Transcript
+        session={api.active}
+        notices={activeNotices}
+        expandedDelegations={activeExpanded}
+        latestDelegationId={activeLatestDelegationId}
+      />
+      <Spinner active={api.active} />
+      {api.pendingPermissions.length > 0 && (
+        <PermissionPanel
+          request={api.pendingPermissions[0]}
+          queueSize={api.pendingPermissions.length}
+          onDecision={api.respondPermission}
+        />
+      )}
+      {modelPicker && api.active && (
+        <ModelPicker
+          runner={modelPicker.runner}
+          currentId={api.active.models[modelPicker.runner]}
+          onSelect={(modelId) => {
+            if (!api.active) return;
+            api.setModel(modelPicker.runner, modelId);
+            if (api.activeId) {
+              addNotice(
+                api.activeId,
+                "/model",
+                modelLines(
+                  {
+                    ...api.active,
+                    models: {
+                      ...api.active.models,
+                      [modelPicker.runner]: modelId,
+                    },
+                  },
+                  `${modelPicker.runner} → ${modelId}`,
+                ),
+              );
+            }
+            setModelPicker(null);
+          }}
+          onReset={() => {
+            if (!api.active) return;
+            api.setModel(modelPicker.runner, null);
+            if (api.activeId) {
+              const next = { ...api.active.models };
+              delete next[modelPicker.runner];
+              addNotice(
+                api.activeId,
+                "/model",
+                modelLines(
+                  { ...api.active, models: next },
+                  `${modelPicker.runner} → (default)`,
+                ),
+              );
+            }
+            setModelPicker(null);
+          }}
+          onCancel={() => setModelPicker(null)}
+        />
+      )}
+      {paletteMode && (
+        <Palette
+          title={titleForMode(paletteMode)}
+          placeholder={placeholderForMode(paletteMode)}
+          items={itemsForMode(paletteMode)}
+          onClose={() => setPaletteMode(null)}
+          onCreate={paletteMode === "sessions" ? () => { api.createSession(); setPaletteMode(null); } : undefined}
+          footer={
+            paletteMode === "sessions"
+              ? "↑↓ nav   enter switch   space actions   ctrl+n new   esc close"
+              : undefined
+          }
+        />
+      )}
+      <Prompt
+        focused={focus === "prompt"}
+        onUnfocus={() => setFocus("browse")}
+        onSubmit={handleSubmit}
+        locked={api.pendingPermissions.length > 0 || modelPicker !== null || paletteMode !== null}
+        streaming={api.active?.streaming ?? false}
+        onInterrupt={api.interrupt}
+        runner={api.active?.activeRunner ?? null}
+        claudeMode={api.active?.claudeMode ?? "default"}
+        onCycleClaudeMode={cycleClaudeMode}
+        modelLabel={promptMeta?.modelLabel ?? null}
+        contextPercent={promptMeta?.contextPercent ?? null}
+        projectLabel={promptMeta?.projectLabel ?? null}
+        branch={promptMeta?.branch ?? null}
+        delegations={promptMeta?.delegations ?? null}
+        sessionPill={sessionPill}
+      />
     </box>
   );
 }
