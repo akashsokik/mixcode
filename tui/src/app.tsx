@@ -214,12 +214,49 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api.active?.activeRunner, paletteMode]);
 
+  const mcpItems = useMemo<PaletteItem[]>(() => {
+    if (!api.active) return [];
+    const runner = api.active.activeRunner;
+    const out = listMcp(runner);
+    if (!out.ok) return [];
+    const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+    return parseMcpNames(out.stdout).map((name) => ({
+      id: `${runner}:mcp:${name}`,
+      label: name,
+      detail: `mcp server (${runner})`,
+      badge: { text: "mcp", color: runnerColor },
+      onActivate: () => {
+        const sid = api.activeId;
+        if (!sid) return;
+        addNotice(sid, "/mcp test", [`testing ${runner}/${name} — spawning for 2s…`]);
+        testMcp(runner, name)
+          .then((res) => addNotice(sid, "/mcp test", mcpTestLines(runner, name, res)))
+          .catch((err) => addNotice(sid, "/mcp test", [`test crashed: ${(err as Error).message}`]));
+        setPaletteMode(null);
+      },
+      actions: [
+        {
+          key: "d",
+          label: "remove (press d again to confirm)",
+          destructive: true,
+          run: () => {
+            const sid = api.activeId;
+            const res = removeMcp(runner, name);
+            if (sid) addNotice(sid, "/mcp remove", mcpActionLines(runner, "remove", name, res));
+            setPaletteMode(null);
+          },
+        },
+      ],
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api.active?.activeRunner, paletteMode]);
+
   function itemsForMode(mode: "sessions" | "skills" | "mcp" | "global"): PaletteItem[] {
     switch (mode) {
       case "sessions": return sessionItems;
       case "skills":   return skillItems;
-      case "mcp":      return [];
-      case "global":   return [...sessionItems, ...skillItems];
+      case "mcp":      return mcpItems;
+      case "global":   return [...sessionItems, ...skillItems, ...mcpItems];
     }
   }
 
@@ -746,6 +783,18 @@ export function App() {
 
 function clipDetail(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+function parseMcpNames(stdout: string): string[] {
+  // Both runners emit name-colon-rest lines. Skip blank/heading lines.
+  const names: string[] = [];
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = line.match(/^([A-Za-z0-9_.-]+):\s/);
+    if (m) names.push(m[1]);
+  }
+  return names;
 }
 
 function titleForMode(mode: "sessions" | "skills" | "mcp" | "global"): string {
