@@ -177,7 +177,7 @@ export function App() {
           if (sid) addNotice(sid, "/context", contextLines(api.active));
           return;
         case "sessions":
-          if (sid) addNotice(sid, "/sessions", sessionsLines(api.sessions, api.activeId));
+          setPaletteMode("sessions");
           return;
         case "tree": {
           if (!sid || !api.active) return;
@@ -376,7 +376,7 @@ export function App() {
           const action = slash.action;
           switch (action.kind) {
             case "list":
-              addNotice(sid, "/skills", skillsLines(runner, listSkills(runner)));
+              setPaletteMode("skills");
               return;
             case "add": {
               if (!action.path) {
@@ -434,12 +434,7 @@ export function App() {
           const action = slash.action;
           switch (action.kind) {
             case "list": {
-              const out = listMcp(runner);
-              addNotice(
-                sid,
-                "/mcp",
-                mcpListLines(runner, out.stdout, out.stderr, out.ok, out.errorReason),
-              );
+              setPaletteMode("mcp");
               return;
             }
             case "add": {
