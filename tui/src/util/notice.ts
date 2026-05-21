@@ -1,6 +1,7 @@
-import type { ClaudePermissionMode, Session } from "../../../shared/events.ts";
+import type { ClaudePermissionMode, RunnerKind, Session } from "../../../shared/events.ts";
 import { SLASH_COMMANDS } from "./slash";
-import { shortPath } from "./path";
+import { basename, shortPath } from "./path";
+import type { SkillEntry, SkillFrontmatter } from "./skills";
 
 export type Notice = {
   id: string;
@@ -31,12 +32,12 @@ export function helpLines(): string[] {
     ...cmds,
     "",
     "keys",
-    "  enter        send / focus prompt",
+    "  enter        send",
     "  esc          stop streaming turn / close menu",
-    "  ctrl-b       toggle browse mode (sidebar)",
-    "  j / k        next / prev session (browse)",
-    "  n            new session (browse)",
-    "  dd           delete active session (browse)",
+    "  ctrl-k       open command palette (sessions, skills, mcp, commands)",
+    "  /sessions    open session switcher",
+    "  /skills      open skills picker for the active runner",
+    "  /mcp         open mcp picker for the active runner",
     "  up / down    prompt history",
     "  @            file completion",
     "  ctrl-c       quit",
@@ -49,6 +50,42 @@ export function helpLines(): string[] {
     "  shift+tab cycles: default → accept edits → plan → bypass → default",
     "  /plan toggles plan ↔ default",
   ];
+}
+
+export function sessionsLines(
+  sessions: Session[],
+  activeId: string | null,
+): string[] {
+  if (sessions.length === 0) return ["no sessions"];
+  const titleWidth = Math.min(
+    32,
+    Math.max(...sessions.map((s) => s.title.length)),
+  );
+  const cwdWidth = Math.min(
+    20,
+    Math.max(...sessions.map((s) => basename(s.cwd).length || 1)),
+  );
+  const rows = sessions.map((s) => {
+    const marker = s.id === activeId ? "▸" : " ";
+    const stream = s.streaming ? "●" : " ";
+    const runner = s.activeRunner.padEnd(6, " ");
+    const title = clip(s.title, titleWidth).padEnd(titleWidth, " ");
+    const cwd = clip(basename(s.cwd) || "~", cwdWidth).padEnd(cwdWidth, " ");
+    const msgs = `${s.messages.length} msg`;
+    return `${marker} ${stream} ${runner}  ${title}  ${cwd}  ${msgs}  ${s.id.slice(0, 8)}`;
+  });
+  return [
+    `sessions (${sessions.length}) — ▸ active, ● streaming`,
+    "",
+    ...rows,
+    "",
+    "browse mode: ctrl-b to enter, j/k to move, n new, dd delete",
+  ];
+}
+
+function clip(s: string, n: number): string {
+  if (n <= 1) return s.slice(0, n);
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 export function contextLines(session: Session | null): string[] {
@@ -162,6 +199,126 @@ export function modelLines(
     "common claude models   claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001",
     "common codex models    gpt-5-codex, gpt-5, gpt-5-mini",
   ];
+}
+
+export function skillsLines(
+  runner: RunnerKind,
+  entries: SkillEntry[],
+  headline?: string,
+): string[] {
+  const header = headline ? [headline, ""] : [];
+  const usage = [
+    "",
+    "usage",
+    "  /skills                    list skills for the active runner",
+    "  /skills add <path>         symlink a skill directory into the runner's skills dir",
+    "  /skills remove <name>      remove an installed skill (symlinks only — refuses real dirs)",
+    "  /skills info <name>        show the skill's frontmatter",
+    "",
+    `scope: ${runner} only. switch runners with /claude or /codex.`,
+    `only user-installed skills under ~/.${runner}/skills are shown. plugin-bundled skills`,
+    `(e.g. commit-commands:commit, superpowers:brainstorming) live under ~/.${runner}/plugins/`,
+    "and aren't managed here.",
+  ];
+  if (entries.length === 0) {
+    return [...header, `no skills installed for ${runner}.`, ...usage];
+  }
+  const nameWidth = Math.max(...entries.map((e) => e.name.length));
+  const rows = entries.map((e) => {
+    const flag = e.isSymlink ? (e.source ? "→" : "✗") : " ";
+    const detail = e.isSymlink
+      ? e.source
+        ? shortPath(e.source)
+        : "(broken link)"
+      : "(real dir)";
+    const desc = e.description ? `  ${clip(e.description, 60)}` : "";
+    return `  ${flag} ${e.name.padEnd(nameWidth, " ")}   ${detail}${desc}`;
+  });
+  return [
+    ...header,
+    `${runner} skills (${entries.length}) — → symlink, ✗ broken`,
+    ...rows,
+    ...usage,
+  ];
+}
+
+export function skillInfoLines(
+  runner: RunnerKind,
+  name: string,
+  fm: SkillFrontmatter | null,
+): string[] {
+  if (!fm) return [`no such skill or unreadable SKILL.md: ${runner}/${name}`];
+  const lines = [
+    `${runner} skill: ${name}`,
+    "",
+    `name         ${fm.name ?? name}`,
+    `description  ${fm.description ?? "(none)"}`,
+  ];
+  for (const [k, v] of Object.entries(fm.extra)) {
+    lines.push(`${k.padEnd(12, " ")} ${v}`);
+  }
+  return lines;
+}
+
+export function mcpListLines(
+  runner: RunnerKind,
+  cliStdout: string,
+  cliStderr: string,
+  ok: boolean,
+  errorReason?: string,
+): string[] {
+  const usage = [
+    "",
+    "usage",
+    "  /mcp                            list MCP servers for the active runner",
+    "  /mcp add <name> <cmd> [args]    register a stdio MCP server",
+    "  /mcp remove <name>              drop a server",
+    "  /mcp test <name>                spawn the configured server briefly to verify",
+    "",
+    `backed by '${runner} mcp ...' — full features (HTTP transport, headers, env, scopes) live in the CLI.`,
+  ];
+  const body = ok ? cliStdout.trimEnd().split(/\r?\n/) : [];
+  if (!ok) {
+    return [
+      `${runner} mcp list failed${errorReason ? `: ${errorReason}` : ""}`,
+      ...cliStderr.trimEnd().split(/\r?\n/).filter(Boolean),
+      ...usage,
+    ];
+  }
+  if (body.length === 0 || (body.length === 1 && body[0] === "")) {
+    return [`no MCP servers configured for ${runner}.`, ...usage];
+  }
+  return [`${runner} mcp servers`, "", ...body, ...usage];
+}
+
+export function mcpActionLines(
+  runner: RunnerKind,
+  verb: string,
+  name: string,
+  outcome: { ok: boolean; stdout: string; stderr: string; errorReason?: string },
+): string[] {
+  const headline = outcome.ok
+    ? `${runner} mcp ${verb}: ${name}`
+    : `${runner} mcp ${verb} failed: ${name}${outcome.errorReason ? ` (${outcome.errorReason})` : ""}`;
+  const merged = [outcome.stdout, outcome.stderr]
+    .map((s) => s.trimEnd())
+    .filter(Boolean)
+    .join("\n");
+  return [headline, ...(merged ? ["", ...merged.split(/\r?\n/)] : [])];
+}
+
+export function mcpTestLines(
+  runner: RunnerKind,
+  name: string,
+  result: { ok: boolean; summary: string; stderrTail: string; command?: string },
+): string[] {
+  const headline = result.ok
+    ? `${runner} mcp test: ${name} — ${result.summary}`
+    : `${runner} mcp test failed: ${name} — ${result.summary}`;
+  const body: string[] = [];
+  if (result.command) body.push("", `spawned: ${result.command}`);
+  if (result.stderrTail) body.push("", "stderr (tail):", ...result.stderrTail.split(/\r?\n/));
+  return [headline, ...body];
 }
 
 export function permissionsLines(rules: string[], action?: string): string[] {
