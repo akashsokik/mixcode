@@ -26,7 +26,7 @@ import {
 } from "./util/notice";
 import { treeLines } from "./util/tree";
 import { normalizeRule } from "./util/permission-rule";
-import { addSkill, listSkills, readSkillFrontmatter, removeSkill } from "./util/skills";
+import { addSkill, listSkills, readSkillFrontmatter, removeSkill, type SkillEntry } from "./util/skills";
 import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
 import { theme } from "./theme";
 import { basename } from "./util/path";
@@ -60,6 +60,9 @@ export function App() {
   const [expandedDelegations, setExpandedDelegations] = useState<
     Record<string, Set<string>>
   >({});
+  const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
+  const [mcpServerNames, setMcpServerNames] = useState<string[]>([]);
+  const [mcpLoading, setMcpLoading] = useState(false);
 
   useEffect(() => {
     if (api.status === "open" && api.sessions.length === 0) {
@@ -90,6 +93,38 @@ export function App() {
       return changed ? next : prev;
     });
   }, [api.sessions]);
+
+  // Skills are read from disk — cheap enough to do synchronously in an
+  // effect when entering skills or global mode, or when the active runner
+  // changes while a palette is open.
+  useEffect(() => {
+    if (!api.active) return;
+    if (paletteMode !== "skills" && paletteMode !== "global") return;
+    setSkillEntries(listSkills(api.active.activeRunner));
+  }, [paletteMode, api.active?.activeRunner]);
+
+  // MCP list shells out to `<runner> mcp list` which can take seconds.
+  // Defer past the render commit with setTimeout(0) so the palette opens
+  // before the spawn blocks. The blocking spawn still happens — it just
+  // doesn't block the open.
+  useEffect(() => {
+    if (!api.active) return;
+    if (paletteMode !== "mcp") return; // intentionally not "global"
+    let cancelled = false;
+    setMcpLoading(true);
+    const id = setTimeout(() => {
+      if (cancelled) return;
+      const runner = api.active!.activeRunner;
+      const out = listMcp(runner);
+      if (cancelled) return;
+      setMcpServerNames(out.ok ? parseMcpNames(out.stdout) : []);
+      setMcpLoading(false);
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [paletteMode, api.active?.activeRunner]);
 
   const activeNotices = useMemo(
     () => (api.activeId ? notices[api.activeId] ?? [] : []),
@@ -179,9 +214,8 @@ export function App() {
   const skillItems = useMemo<PaletteItem[]>(() => {
     if (!api.active) return [];
     const runner = api.active.activeRunner;
-    const entries = listSkills(runner);
     const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
-    return entries.map((e) => ({
+    return skillEntries.map((e) => ({
       id: `${runner}:${e.name}`,
       label: e.name,
       detail: e.description ? clipDetail(e.description, 60) : (e.isSymlink ? "(symlink)" : "(dir)"),
@@ -213,18 +247,13 @@ export function App() {
         },
       ],
     }));
-  // Re-run when sessions change because activeRunner might switch; the skills
-  // list itself is read from disk so we just key on the runner identity.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api.active?.activeRunner, paletteMode]);
+  }, [skillEntries, api.active?.activeRunner, api.activeId]);
 
   const mcpItems = useMemo<PaletteItem[]>(() => {
     if (!api.active) return [];
     const runner = api.active.activeRunner;
-    const out = listMcp(runner);
-    if (!out.ok) return [];
     const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
-    return parseMcpNames(out.stdout).map((name) => ({
+    return mcpServerNames.map((name) => ({
       id: `${runner}:mcp:${name}`,
       label: name,
       detail: `mcp server (${runner})`,
@@ -252,8 +281,7 @@ export function App() {
         },
       ],
     }));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api.active?.activeRunner, paletteMode]);
+  }, [mcpServerNames, api.active?.activeRunner, api.activeId]);
 
   const commandItems = useMemo<PaletteItem[]>(() => {
     return SLASH_COMMANDS.map((cmd) => ({
@@ -278,7 +306,7 @@ export function App() {
       case "sessions": return sessionItems;
       case "skills":   return skillItems;
       case "mcp":      return mcpItems;
-      case "global":   return [...sessionItems, ...commandItems, ...skillItems, ...mcpItems];
+      case "global":   return [...sessionItems, ...commandItems, ...skillItems];
     }
   }
 
