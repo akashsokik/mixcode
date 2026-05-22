@@ -34,6 +34,8 @@ export interface SubTask {
   error?: string;
   runId?: string;            // populated when execution starts
   lastDelta?: string;        // truncated, cleared on terminal status
+  currentTool?: string;      // name of the most recent tool the peer used,
+                             // stripped of MCP prefix; cleared on terminal status
   startedAt?: number;
   finishedAt?: number;
 }
@@ -100,6 +102,7 @@ export type SubTaskSnapshot = {
   result?: string;
   error?: string;
   lastDelta?: string;
+  currentTool?: string;
 };
 
 export type TaskSnapshot = {
@@ -171,6 +174,7 @@ function buildSnapshot(task: Task): TaskSnapshot {
       ...(s.result ? { result: s.result } : {}),
       ...(s.error ? { error: s.error } : {}),
       ...(s.lastDelta ? { lastDelta: s.lastDelta } : {}),
+      ...(s.currentTool ? { currentTool: s.currentTool } : {}),
     };
   });
   return {
@@ -251,6 +255,16 @@ function ensureInflight(taskId: string): Set<Promise<void>> {
   return set;
 }
 
+// Strip the MCP server prefix (`mcp__<server>__tool` -> `tool`) so the TUI
+// can render bare tool names like `Read` or `delegate_run` instead of the
+// SDK's wire format.
+function bareToolName(name: string): string {
+  if (!name.startsWith("mcp__")) return name;
+  const parts = name.split("__");
+  if (parts.length < 3) return name;
+  return parts.slice(2).join("__");
+}
+
 function buildSubtaskCallbacks(task: Task, sub: SubTask, _timeoutSec: number) {
   const onPeerEvent = (_record: DelegateRunRecord, ev: RunEvent): void => {
     if (ev.type === "text_delta") {
@@ -259,6 +273,9 @@ function buildSubtaskCallbacks(task: Task, sub: SubTask, _timeoutSec: number) {
         next.length > LAST_DELTA_MAX
           ? "..." + next.slice(next.length - LAST_DELTA_MAX + 3)
           : next;
+      scheduleSnapshot(task);
+    } else if (ev.type === "tool_log") {
+      sub.currentTool = bareToolName(ev.log.name);
       scheduleSnapshot(task);
     } else if (ev.type === "error") {
       if (!sub.error) sub.error = ev.message;
@@ -362,6 +379,7 @@ function startOne(task: Task, sub: SubTask, ctx: SpawnContext): void {
       sub.result = started.record.result;
       if (started.record.error) sub.error = started.record.error;
       sub.lastDelta = undefined;
+      sub.currentTool = undefined;
       sub.finishedAt = Date.now();
       pumpQueue(task, ctx);
       emitTaskSnapshot(task);

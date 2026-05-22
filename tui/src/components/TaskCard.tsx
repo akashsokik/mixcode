@@ -2,7 +2,7 @@ import { TextAttributes } from "@opentui/core";
 import type { ToolLog } from "../../../shared/events.ts";
 import { theme } from "../theme";
 import { shortId } from "../util/format";
-import { useBlinkFrame } from "../util/spinner";
+import { StatusDot } from "./StatusDot";
 
 type Snapshot = {
   taskId: string;
@@ -30,6 +30,7 @@ type SubtaskRow = {
   result?: string;
   error?: string;
   lastDelta?: string;
+  currentTool?: string;
 };
 
 const MAX_PROMPT_CHARS = 64;
@@ -114,24 +115,11 @@ function SubtaskRowView({ sub, last }: { sub: SubtaskRow; last: boolean }) {
   );
 }
 
+// Only show the tool the peer is currently using. Skip lastDelta / result /
+// error in the row — the status dot already conveys ok/error; full details
+// belong in the expanded view, not on this row.
 function pickTail(sub: SubtaskRow): string {
-  if (sub.error) return sub.error;
-  if (sub.result) return sub.result;
-  if (sub.lastDelta) return sub.lastDelta;
-  return "";
-}
-
-// Colored circle reflecting task/subtask status. Blinking ● while running
-// (same vocabulary as the live delegation pending header). Hollow ○ for
-// not-yet-started states (queued/pending) and cancelled.
-function StatusDot({ status }: { status: string }) {
-  const frame = useBlinkFrame(status === "running");
-  if (status === "running") return <text fg={theme.toolBash}>{frame}</text>;
-  if (status === "ok" || status === "done") return <text fg={theme.runnerClaude}>{"●"}</text>;
-  if (status === "error" || status === "timeout") return <text fg={theme.toolError}>{"●"}</text>;
-  if (status === "cancelled") return <text fg={theme.textSubtle}>{"○"}</text>;
-  if (status === "queued" || status === "pending") return <text fg={theme.textMuted}>{"○"}</text>;
-  return <text fg={theme.textMuted}>{"○"}</text>;
+  return sub.currentTool ?? "";
 }
 
 function colorForTaskStatus(s: string): string {
@@ -205,5 +193,6 @@ function normalizeSub(s: unknown): SubtaskRow | null {
     result: typeof o.result === "string" ? o.result : undefined,
     error: typeof o.error === "string" ? o.error : undefined,
     lastDelta: typeof o.lastDelta === "string" ? o.lastDelta : undefined,
+    currentTool: typeof o.currentTool === "string" ? o.currentTool : undefined,
   };
 }
