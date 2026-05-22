@@ -6,7 +6,7 @@
 // cleared on session clear / delete, gone on server restart.
 import { nanoid } from "nanoid";
 import type { RunEvent, RunnerKind, ToolLog } from "../../../shared/events.js";
-import { startSubtaskRun, type DelegateRunRecord } from "../runners/delegate.js";
+import { startSubtaskRun, executeCancelRun, type DelegateRunRecord } from "../runners/delegate.js";
 
 export type TaskStatus =
   | "pending"
@@ -474,4 +474,64 @@ function finalizeAwait(task: Task, timedOut: boolean): AwaitTaskResult {
         : {}),
     })),
   };
+}
+
+export type ObserveTaskResult =
+  | { ok: true; snapshot: TaskSnapshot }
+  | { ok: false; error: string };
+
+export function observeTask(taskId: string): ObserveTaskResult {
+  const task = lookupTask(taskId);
+  if (!task) return { ok: false, error: `unknown taskId: ${taskId}` };
+  return { ok: true, snapshot: buildSnapshot(task) };
+}
+
+export type DoneTaskResult =
+  | { ok: true; taskId: string; status: "done" }
+  | { ok: false; error: string };
+
+export function doneTask(
+  taskId: string,
+  summary?: string,
+): DoneTaskResult {
+  const task = lookupTask(taskId);
+  if (!task) return { ok: false, error: `unknown taskId: ${taskId}` };
+  const stillRunning = task.subtasks.some(
+    (s) => s.status === "running" || s.status === "queued",
+  );
+  if (stillRunning) {
+    return {
+      ok: false,
+      error: "subtasks still running; await or cancel first",
+    };
+  }
+  task.status = "done";
+  task.summary = summary;
+  task.finishedAt = Date.now();
+  emitTaskSnapshot(task);
+  return { ok: true, taskId: task.id, status: "done" };
+}
+
+export type CancelTaskResult =
+  | { ok: true; taskId: string; cancelled: number }
+  | { ok: false; error: string };
+
+export function cancelTask(taskId: string): CancelTaskResult {
+  const task = lookupTask(taskId);
+  if (!task) return { ok: false, error: `unknown taskId: ${taskId}` };
+  let cancelled = 0;
+  for (const s of task.subtasks) {
+    if (s.status === "queued") {
+      s.status = "cancelled";
+      cancelled += 1;
+    } else if (s.status === "running" && s.runId) {
+      executeCancelRun(s.runId);
+      s.status = "cancelled";
+      cancelled += 1;
+    }
+  }
+  task.status = "cancelled";
+  task.finishedAt = Date.now();
+  emitTaskSnapshot(task);
+  return { ok: true, taskId: task.id, cancelled };
 }
