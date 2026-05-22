@@ -252,17 +252,18 @@ function BlockRow({
       </box>
     );
   }
+  // Assistant prose — no leading bullet. The markdown element is block-level
+  // and doesn't compose cleanly as a flex-row sibling: the bullet's trailing
+  // space gets eaten and subsequent paragraph lines wrap flush-left over the
+  // bullet column. Drop the marker; let the markdown content stand on its own.
   return (
     <box
-      flexDirection="row"
+      flexDirection="column"
       paddingLeft={1}
       paddingRight={1}
       marginTop={firstInMessage ? 0 : 1}
     >
-      <text fg={theme.textMuted}>{"• "}</text>
-      <box flexGrow={1}>
-        <markdown content={cleanModelText(block.text)} syntaxStyle={markdownStyle} fg={theme.text} />
-      </box>
+      <markdown content={cleanModelText(block.text)} syntaxStyle={markdownStyle} fg={theme.text} />
     </box>
   );
 }
