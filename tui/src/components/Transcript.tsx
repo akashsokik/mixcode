@@ -93,7 +93,6 @@ export function Transcript({
       stickyScroll
       stickyStart="bottom"
       scrollbarOptions={{ showArrows: false }}
-      contentOptions={{ justifyContent: "flex-end" }}
     >
       {entries.map((e) =>
         e.kind === "message" ? (
