@@ -2,12 +2,18 @@ import { useEffect, useRef } from "react";
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import type { Session, SessionMessage } from "../../../shared/events.ts";
 import { ToolCard } from "./ToolCard";
+import { TaskCard } from "./TaskCard";
 import { NoticeCard } from "./NoticeCard";
 import { Welcome } from "./Welcome";
 import { theme } from "../theme";
 import { markdownStyle } from "../markdown-style";
 import type { Notice } from "../util/notice";
-import { cleanModelText, peerToolSummary } from "../util/format";
+import {
+  cleanModelText,
+  peerToolSummary,
+  stripMcpPrefix,
+  stripPeerPrefix,
+} from "../util/format";
 import {
   blocksFromEvents,
   groupDelegations,
@@ -55,8 +61,17 @@ export function Transcript({
     if (!lastMsg) return 0;
     let n = lastMsg.text.length + lastMsg.events.length;
     for (const ev of lastMsg.events) {
-      if (ev.type === "tool_log" && typeof ev.log.output === "string") {
-        n += ev.log.output.length;
+      if (ev.type !== "tool_log") continue;
+      const out = ev.log.output;
+      if (typeof out === "string") n += out.length;
+      else if (out && typeof out === "object") {
+        // Live snapshots (task) update in place with object payloads; fall
+        // back to stringified length so the scroll effect still re-fires.
+        try {
+          n += JSON.stringify(out).length;
+        } catch {
+          n += 1;
+        }
       }
     }
     return n;
@@ -192,7 +207,11 @@ function BlockRow({
   block: Block;
   firstInMessage: boolean;
 }) {
-  if (block.kind === "tool") return <ToolCard log={block.log} />;
+  if (block.kind === "tool") {
+    const bare = stripMcpPrefix(stripPeerPrefix(block.log.name).rest);
+    if (bare === "task") return <TaskCard log={block.log} />;
+    return <ToolCard log={block.log} />;
+  }
   if (block.kind === "error") {
     return (
       <box flexDirection="row" paddingLeft={1} paddingRight={1}>

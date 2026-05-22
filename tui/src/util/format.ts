@@ -65,6 +65,20 @@ export function formatToolLog(log: ToolLog): {
     const { header, body } = formatDelegateRun(log.input, log.output, isError);
     return { header, body, isError, category: "task", edit: null, peer };
   }
+  // The six task_* tools have specific input/output shapes; we render each
+  // as a compact two-line card so the transcript reads like a log, not a
+  // JSON dump. The live `task` snapshot is handled separately by TaskCard.
+  if (
+    displayName === "task_create" ||
+    displayName === "task_spawn" ||
+    displayName === "task_await" ||
+    displayName === "task_observe" ||
+    displayName === "task_done" ||
+    displayName === "task_cancel"
+  ) {
+    const { header, body } = formatTaskTool(displayName, log.input, log.output, isError);
+    return { header, body, isError, category: "task", edit: null, peer };
+  }
 
   const header = formatHeader(displayName, log.input, isError);
   const body = formatOutput(unwrapMcpContent(log.output));
@@ -166,6 +180,152 @@ function formatDelegateRun(
   const summary = truncateOneLine(error || resultText, 200);
   const body = summary ? `← ${tag} · "${summary}"` : `← ${tag}`;
   return { header, body };
+}
+
+export function shortId(id: string): string {
+  if (id.length <= 9) return id;
+  return id.slice(0, 8) + "…";
+}
+
+function parseMcpJsonPayload(output: unknown): Record<string, unknown> | null {
+  const inner = unwrapMcpContent(output);
+  if (inner == null) return null;
+  if (typeof inner === "string") {
+    try {
+      const parsed = JSON.parse(inner) as unknown;
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  if (typeof inner === "object") return inner as Record<string, unknown>;
+  return null;
+}
+
+function formatTaskTool(
+  name: string,
+  input: unknown,
+  output: unknown,
+  isError: boolean,
+): { header: string; body: string } {
+  const inObj =
+    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const outObj = parseMcpJsonPayload(output);
+  const errText =
+    outObj && typeof outObj.error === "string" ? (outObj.error as string) : "";
+
+  switch (name) {
+    case "task_create": {
+      const title = typeof inObj.title === "string" ? inObj.title : "";
+      const header = title ? `task_create "${truncateOneLine(title, 60)}"` : "task_create";
+      let body = "";
+      if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
+      else if (outObj && typeof outObj.taskId === "string") {
+        body = `→ id ${shortId(outObj.taskId as string)}`;
+      }
+      return { header, body };
+    }
+    case "task_spawn": {
+      const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
+      const subtasks = Array.isArray(inObj.subtasks) ? inObj.subtasks : [];
+      const runners = subtasks
+        .map((s) =>
+          s && typeof s === "object" && typeof (s as Record<string, unknown>).runner === "string"
+            ? ((s as Record<string, unknown>).runner as string)
+            : "?",
+        );
+      const count = subtasks.length;
+      const idPart = taskId ? `${shortId(taskId)} ` : "";
+      const header = `task_spawn ${idPart}${count} subtask${count === 1 ? "" : "s"}`;
+      let body = "";
+      if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
+      else if (runners.length > 0) {
+        const grouped: Record<string, number> = {};
+        for (const r of runners) grouped[r] = (grouped[r] ?? 0) + 1;
+        const summary = Object.entries(grouped)
+          .map(([r, n]) => (n === 1 ? r : `${n}× ${r}`))
+          .join(", ");
+        body = `→ ${summary}`;
+      }
+      return { header, body };
+    }
+    case "task_await": {
+      const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
+      const header = taskId ? `task_await ${shortId(taskId)}` : "task_await";
+      let body = "";
+      if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
+      else if (outObj) {
+        const status = typeof outObj.status === "string" ? (outObj.status as string) : "";
+        const subs = Array.isArray(outObj.subtasks) ? outObj.subtasks : [];
+        const settled = subs.filter((s) => {
+          if (!s || typeof s !== "object") return false;
+          const st = (s as Record<string, unknown>).status;
+          return st === "ok" || st === "error" || st === "cancelled" || st === "timeout";
+        }).length;
+        body = status
+          ? `← ${status} · ${settled}/${subs.length} settled`
+          : `← ${settled}/${subs.length} settled`;
+      }
+      return { header, body };
+    }
+    case "task_observe": {
+      const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
+      const header = taskId ? `task_observe ${shortId(taskId)}` : "task_observe";
+      let body = "";
+      if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
+      else if (outObj) {
+        const snap =
+          outObj.snapshot && typeof outObj.snapshot === "object"
+            ? (outObj.snapshot as Record<string, unknown>)
+            : null;
+        const status =
+          snap && typeof snap.status === "string" ? (snap.status as string) : "";
+        const counts =
+          snap && snap.counts && typeof snap.counts === "object"
+            ? (snap.counts as Record<string, number>)
+            : null;
+        if (counts) {
+          const ok = counts.ok ?? 0;
+          const total = counts.total ?? 0;
+          body = status ? `← ${status} · ${ok}/${total} ok` : `← ${ok}/${total} ok`;
+        } else if (status) {
+          body = `← ${status}`;
+        }
+      }
+      return { header, body };
+    }
+    case "task_done": {
+      const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
+      const summary = typeof inObj.summary === "string" ? inObj.summary : "";
+      const head = taskId ? `task_done ${shortId(taskId)}` : "task_done";
+      const header = summary ? `${head} "${truncateOneLine(summary, 60)}"` : head;
+      let body = "";
+      if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
+      else if (outObj && typeof outObj.status === "string") {
+        body = `← status: ${outObj.status as string}`;
+      }
+      return { header, body };
+    }
+    case "task_cancel": {
+      const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
+      const header = taskId ? `task_cancel ${shortId(taskId)}` : "task_cancel";
+      let body = "";
+      if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
+      else if (outObj) {
+        const cancelled =
+          typeof outObj.cancelled === "number" ? (outObj.cancelled as number) : null;
+        if (cancelled !== null) body = `← cancelled ${cancelled} subtask${cancelled === 1 ? "" : "s"}`;
+        else body = `← cancelled`;
+      }
+      return { header, body };
+    }
+    default: {
+      const header = name;
+      const body = isError && errText ? `← error · ${truncateOneLine(errText, 160)}` : "";
+      return { header, body };
+    }
+  }
 }
 
 function extractEdit(input: unknown): EditPreview | null {
