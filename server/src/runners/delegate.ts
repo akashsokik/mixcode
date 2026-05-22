@@ -330,6 +330,50 @@ export async function executeDelegate(
   return { ok: record.status === "ok", payload: summarize(record) };
 }
 
+// Subtask-aware run starter. Unlike executeDelegate, peer callbacks are
+// passed inline (not looked up via parentCallbacks), so the Task layer can
+// intercept events without disturbing the parent turn's transcript-folding
+// forwardPeerEvent registered in runTurn. Always non-blocking — returns the
+// record so the caller can wait on record.work itself.
+//
+// Skips the same-runner self-delegation check (Tasks intentionally allow
+// Claude->Claude and Codex->Codex fan-out). Depth guard still applies.
+export type StartSubtaskRunArgs = {
+  runner: RunnerKind;
+  prompt: string;
+  sessionId?: string;
+  parentRunner: RunnerKind;
+  parentSessionId: string;
+  parentCwd: string;
+  depth: number;
+  onPeerEvent?: (record: DelegateRunRecord, event: RunEvent) => void;
+  onStatsChange?: (stats: DelegationStats) => void;
+};
+
+export function startSubtaskRun(
+  args: StartSubtaskRunArgs,
+): { ok: true; record: DelegateRunRecord } | { ok: false; error: string } {
+  if (args.depth >= MAX_DEPTH) {
+    return { ok: false, error: `delegation depth exceeded (max ${MAX_DEPTH})` };
+  }
+  const record = startRun(
+    {
+      runner: args.runner,
+      prompt: args.prompt,
+      sessionId: args.sessionId,
+    },
+    {
+      parentRunner: args.parentRunner,
+      parentSessionId: args.parentSessionId,
+      parentCwd: args.parentCwd,
+      depth: args.depth,
+      onPeerEvent: args.onPeerEvent,
+      onStatsChange: args.onStatsChange,
+    },
+  );
+  return { ok: true, record };
+}
+
 export function executeGetRun(runId: string): DelegateExecResult {
   const r = runs.get(runId);
   if (!r) return { ok: false, payload: { error: "unknown runId" } };
