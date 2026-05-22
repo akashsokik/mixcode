@@ -2,6 +2,7 @@ import { TextAttributes } from "@opentui/core";
 import type { ToolLog } from "../../../shared/events.ts";
 import { theme } from "../theme";
 import { shortId } from "../util/format";
+import { useBlinkFrame } from "../util/spinner";
 
 type Snapshot = {
   taskId: string;
@@ -42,7 +43,7 @@ export function TaskCard({ log }: { log: ToolLog }) {
   if (!snap) {
     return (
       <box flexDirection="row" paddingLeft={1} paddingRight={1} marginTop={1}>
-        <text fg={theme.textMuted}>{"• "}</text>
+        <text fg={theme.textMuted}>{"○ "}</text>
         <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>task</text>
         <text fg={theme.textMuted}>{"  (no data)"}</text>
       </box>
@@ -71,7 +72,8 @@ export function TaskCard({ log }: { log: ToolLog }) {
   return (
     <box flexDirection="column" paddingLeft={1} paddingRight={1} marginTop={1}>
       <box flexDirection="row">
-        <text fg={theme.textMuted}>{"• "}</text>
+        <StatusDot status={snap.status} />
+        <text fg={theme.text}>{" "}</text>
         <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>task</text>
         <text fg={theme.text}>{` "${truncate(snap.title, 64)}"`}</text>
         <text fg={theme.textFaint}>{`  ${idShort}`}</text>
@@ -98,12 +100,11 @@ function SubtaskRowView({ sub, last }: { sub: SubtaskRow; last: boolean }) {
   const marker = last ? "  └ " : "  ├ ";
   const dur = formatDuration(sub.durationMs);
   const tail = pickTail(sub);
-  const statusColor = colorForSubStatus(sub.status);
   return (
     <box flexDirection="row">
       <text fg={theme.textFaint}>{marker}</text>
-      <text fg={runnerColor(sub.runner)} attributes={TextAttributes.BOLD}>{`[${sub.runner}]`}</text>
-      <text fg={statusColor}>{`  ${sub.status}`}</text>
+      <StatusDot status={sub.status} />
+      <text fg={runnerColor(sub.runner)} attributes={TextAttributes.BOLD}>{` [${sub.runner}]`}</text>
       {dur && <text fg={theme.textFaint}>{`  ${dur}`}</text>}
       {sub.prompt && (
         <text fg={theme.textMuted}>{`  "${truncate(sub.prompt, MAX_PROMPT_CHARS)}"`}</text>
@@ -120,20 +121,24 @@ function pickTail(sub: SubtaskRow): string {
   return "";
 }
 
+// Colored circle reflecting task/subtask status. Blinking ● while running
+// (same vocabulary as the live delegation pending header). Hollow ○ for
+// not-yet-started states (queued/pending) and cancelled.
+function StatusDot({ status }: { status: string }) {
+  const frame = useBlinkFrame(status === "running");
+  if (status === "running") return <text fg={theme.toolBash}>{frame}</text>;
+  if (status === "ok" || status === "done") return <text fg={theme.runnerClaude}>{"●"}</text>;
+  if (status === "error" || status === "timeout") return <text fg={theme.toolError}>{"●"}</text>;
+  if (status === "cancelled") return <text fg={theme.textSubtle}>{"○"}</text>;
+  if (status === "queued" || status === "pending") return <text fg={theme.textMuted}>{"○"}</text>;
+  return <text fg={theme.textMuted}>{"○"}</text>;
+}
+
 function colorForTaskStatus(s: string): string {
   if (s === "done") return theme.runnerClaude;
   if (s === "running") return theme.toolBash;
   if (s === "pending") return theme.textMuted;
   if (s === "error") return theme.toolError;
-  if (s === "cancelled") return theme.textSubtle;
-  return theme.text;
-}
-
-function colorForSubStatus(s: string): string {
-  if (s === "ok") return theme.runnerClaude;
-  if (s === "running") return theme.toolBash;
-  if (s === "queued") return theme.textMuted;
-  if (s === "error" || s === "timeout") return theme.toolError;
   if (s === "cancelled") return theme.textSubtle;
   return theme.text;
 }
