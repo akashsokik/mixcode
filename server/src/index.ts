@@ -25,6 +25,7 @@ import {
   registerParentCallbacks,
   unregisterParentCallbacks,
 } from "./runners/delegate.js";
+import { executeValidate } from "./runners/validate.js";
 import { PermissionStore } from "./permissions.js";
 import { gitInfoEquals, readGitInfo } from "./git.js";
 
@@ -35,7 +36,20 @@ const ORCHESTRATOR_TOKEN = nanoid();
 // Resolved relative to this file so it works whether tsx is run from the
 // repo root, the server workspace, or via the bin/start.mjs launcher.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ORCHESTRATOR_SCRIPT_PATH = path.join(__dirname, "mcp-codex-orchestrator.mjs");
+const ORCHESTRATOR_SCRIPT_PATH = path.join(
+  __dirname,
+  "modules",
+  "mcp-codex-orchestrator.mjs",
+);
+
+// Appended to the Claude SDK's system prompt for every turn. Nudges the
+// agent to use validate_run as its final step before declaring done. The
+// agent is free to skip it — verdict is informational, not enforced.
+const ADVERSARIA_SYSTEM_PROMPT_APPEND =
+  "Before you declare a task complete, call `validate_run` with a concise " +
+  "`claim` describing what you did. The peer agent will adversarially review " +
+  "your work and return a verdict (pass / needs_changes / fail). Treat " +
+  "needs_changes and fail as work to do; pass means you can stop.";
 
 const sessions = new SessionManager();
 const permissions = new PermissionStore();
@@ -136,6 +150,41 @@ app.post("/internal/delegate", async (c) => {
   }
   if (action === "cancel_run") {
     return c.json(executeCancelRun(String(args.runId ?? "")));
+  }
+  if (action === "validate_run") {
+    if (!body.parentRunner || !body.parentSessionId || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const filesIn = args.files;
+    const files = Array.isArray(filesIn)
+      ? filesIn.filter((f): f is string => typeof f === "string")
+      : undefined;
+    const result = await executeValidate(
+      {
+        peer:
+          args.peer === "claude" || args.peer === "codex"
+            ? (args.peer as RunnerKind)
+            : undefined,
+        claim: String(args.claim ?? ""),
+        context: typeof args.context === "string" ? args.context : undefined,
+        files,
+        focus: typeof args.focus === "string" ? args.focus : undefined,
+        timeoutSec:
+          typeof args.timeoutSec === "number" && Number.isFinite(args.timeoutSec)
+            ? args.timeoutSec
+            : 180,
+      },
+      {
+        parentRunner: body.parentRunner,
+        parentSessionId: body.parentSessionId,
+        parentCwd: body.parentCwd,
+        depth: typeof body.depth === "number" ? body.depth : 0,
+      },
+    );
+    return c.json(result);
   }
   return c.json({ ok: false, payload: { error: `unknown action: ${action}` } }, 400);
 });
@@ -407,6 +456,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         permissionMode: session.claudeMode,
         abortController: abort,
         mcpServers: { orchestrator },
+        systemPrompt: ADVERSARIA_SYSTEM_PROMPT_APPEND,
         canUseTool: async (toolName, input, ctx) => {
           const resolution = await permissions.request({
             sessionId,

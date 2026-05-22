@@ -271,6 +271,13 @@ function DelegationGroup({
   // Count tool uses only (peer reply/thinking are separate streams, not tools)
   // so the collapsed line matches what the expanded view shows as `• [peer] X`.
   const toolCount = stats.tools;
+  // For completed validate groups, pull the verdict out of the anchor's
+  // output JSON so the collapsed line shows pass / needs_changes / fail at
+  // a glance without expanding.
+  const verdict =
+    !isPending && group.tag === "validate"
+      ? extractVerdict(group.header)
+      : null;
   // Same "ctrl+x to <action>" hint style as the prompt footer chips.
   const hint = isLatest
     ? expanded
@@ -282,6 +289,7 @@ function DelegationGroup({
     <box flexDirection="column">
       {isPending ? (
         <PendingHeader
+          tag={group.tag}
           runner={group.pendingRunner}
           toolCount={stats.tools}
           lastSummary={stats.lastSummary}
@@ -292,7 +300,18 @@ function DelegationGroup({
       )}
       {hasChildren && !expanded && !isPending && (
         <box flexDirection="column" paddingLeft={3} paddingRight={1}>
-          {stats.previewSummaries.length > 0 && (
+          {verdict && (
+            <box flexDirection="row">
+              <text fg={theme.textFaint}>{"└ "}</text>
+              <text fg={verdictColor(verdict.verdict)} attributes={TextAttributes.BOLD}>
+                {`verdict: ${verdict.verdict}`}
+              </text>
+              {verdict.summary && (
+                <text fg={theme.textMuted}>{`  ${truncate(verdict.summary, 80)}`}</text>
+              )}
+            </box>
+          )}
+          {!verdict && stats.previewSummaries.length > 0 && (
             <box flexDirection="row">
               <text fg={theme.textFaint}>{"└ "}</text>
               <text fg={theme.textMuted}>{stats.previewSummaries.join("  ·  ")}</text>
@@ -330,11 +349,13 @@ function DelegationGroup({
 // completed-group rendering — only the trailing meta swaps in live counters
 // and an animated braille frame.
 function PendingHeader({
+  tag,
   runner,
   toolCount,
   lastSummary,
   replyChars,
 }: {
+  tag: "delegate" | "validate";
   runner: string | null;
   toolCount: number;
   lastSummary: string | null;
@@ -345,15 +366,19 @@ function PendingHeader({
   const meta: string[] = [];
   meta.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
   if (replyChars > 0) meta.push(`${formatChars(replyChars)} reply`);
+  const label = tag === "validate" ? "validate" : "delegate";
+  const verb = tag === "validate" ? "  validating…" : "  working…";
+  // Sage for validate so it reads as review/safety; mauve toolTask for delegate work.
+  const accent = tag === "validate" ? theme.toolEdit : theme.toolTask;
   return (
     <box flexDirection="column" paddingLeft={1} paddingRight={1} marginTop={1}>
       <box flexDirection="row">
         <text fg={theme.textMuted}>{"• "}</text>
         <text fg={peerColor(peer)} attributes={TextAttributes.BOLD}>{`[${peer}] `}</text>
-        <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>{"delegate"}</text>
+        <text fg={accent} attributes={TextAttributes.BOLD}>{label}</text>
         <text fg={theme.textFaint}>{"  "}</text>
         <text fg={peerColor(peer)}>{blink}</text>
-        <text fg={theme.textMuted}>{"  working…"}</text>
+        <text fg={theme.textMuted}>{verb}</text>
       </box>
       <box flexDirection="row">
         <text fg={theme.textFaint}>{"  └ "}</text>
@@ -362,6 +387,42 @@ function PendingHeader({
       </box>
     </box>
   );
+}
+
+// Extract a verdict from a validate_run anchor's output. The MCP body
+// returns a JSON payload; the SDK delivers it either as a string or
+// pre-parsed object.
+function extractVerdict(
+  header: import("../../../shared/events.ts").ToolLog | null,
+): { verdict: string; summary: string } | null {
+  if (!header) return null;
+  const out = header.output;
+  let parsed: unknown = out;
+  if (typeof out === "string") {
+    try {
+      parsed = JSON.parse(out);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const p = parsed as Record<string, unknown>;
+  const v = typeof p.verdict === "string" ? p.verdict : null;
+  if (!v) return null;
+  const summary = typeof p.summary === "string" ? p.summary : "";
+  return { verdict: v, summary };
+}
+
+function verdictColor(v: string): string {
+  if (v === "pass") return theme.runnerClaude; // sage
+  if (v === "needs_changes") return theme.toolBash; // amber
+  if (v === "fail") return theme.toolError; // brick
+  return theme.textMuted; // unknown
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "…";
 }
 
 function formatChars(n: number): string {

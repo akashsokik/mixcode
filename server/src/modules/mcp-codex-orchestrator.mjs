@@ -1,6 +1,6 @@
 // Stdio MCP server spawned as a child of the Codex CLI. Exposes
-// `delegate_run` / `get_run` / `cancel_run` so a Codex turn can hand work
-// off to a peer agent (e.g. ask Claude to do something).
+// `delegate_run` / `get_run` / `cancel_run` / `validate_run` so a Codex turn
+// can hand work off to a peer agent (e.g. ask Claude to do something).
 //
 // We can't share memory with the parent Hono server (separate process), so
 // every tool call proxies via HTTP to `POST <ORCHESTRATOR_URL>/internal/delegate`.
@@ -67,10 +67,21 @@ function jsonContent({ ok, payload }) {
   };
 }
 
-const server = new McpServer({
-  name: "orchestrator",
-  version: "0.1.0",
-});
+const server = new McpServer(
+  {
+    name: "orchestrator",
+    version: "0.1.0",
+  },
+  {
+    // MCP server instructions — surfaced to the model alongside the tool
+    // descriptions so the Codex agent knows when to call validate_run.
+    instructions:
+      "Delegate subtasks to a peer agent with `delegate_run`. Use `validate_run` " +
+      "as your FINAL step before declaring a task complete: a peer agent " +
+      "adversarially reviews your work and returns a structured verdict " +
+      "(pass / needs_changes / fail). Treat needs_changes and fail as work to do.",
+  },
+);
 
 server.registerTool(
   "delegate_run",
@@ -108,6 +119,27 @@ server.registerTool(
     inputSchema: { runId: z.string() },
   },
   async (input) => jsonContent(await callServer("cancel_run", input)),
+);
+
+server.registerTool(
+  "validate_run",
+  {
+    description:
+      "Adversarial peer review of your just-completed work. Call this as the FINAL step " +
+      "before declaring a task done. A peer agent (default: the other runner) reads the " +
+      "actual repo state, tries to find flaws in your claim, and returns a structured " +
+      "verdict (pass / fail / needs_changes) plus an issues list. Treat fail and " +
+      "needs_changes as work to do.",
+    inputSchema: {
+      peer: z.enum(["claude", "codex"]).optional(),
+      claim: z.string().min(1),
+      context: z.string().optional(),
+      files: z.array(z.string()).max(20).optional(),
+      focus: z.string().optional(),
+      timeoutSec: z.number().int().min(1).max(600).default(180),
+    },
+  },
+  async (input) => jsonContent(await callServer("validate_run", input)),
 );
 
 const transport = new StdioServerTransport();

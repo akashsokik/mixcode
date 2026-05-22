@@ -14,7 +14,7 @@
 //      in-process MCP server (the cheap path — same Node process).
 //
 //   2. Codex CLI is a separate process and only accepts stdio MCP servers.
-//      We spawn `mcp-codex-orchestrator.mjs` as that stdio child; it proxies
+//      We spawn `modules/mcp-codex-orchestrator.mjs` as that stdio child; it proxies
 //      tool calls back to us via `POST /internal/delegate` on the Hono
 //      server, which calls into `executeDelegate` / `executeGetRun` /
 //      `executeCancelRun` below.
@@ -32,6 +32,7 @@ import type {
 } from "../../../shared/events.js";
 import { runClaude } from "./claude.js";
 import { runCodex } from "./codex.js";
+import { executeValidate } from "./validate.js";
 
 const MAX_DEPTH = (() => {
   const v = process.env.AGENT_ORC_MAX_DELEGATION_DEPTH;
@@ -394,8 +395,10 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
       "Delegate subtasks to a peer agent. Use `delegate_run` to spawn the peer (claude or codex) " +
       "with a natural-language prompt. By default it waits for completion and returns the peer's " +
       "final text. Use `get_run` to poll a previously-spawned run, and `cancel_run` to stop one. " +
-      "When referring to these tools in your responses, use the bare names (e.g. `delegate_run`, " +
-      "`get_run`, `cancel_run`) — not the SDK's namespaced wire form.",
+      "Use `validate_run` as your FINAL step before declaring a task complete — it asks a peer " +
+      "agent to adversarially review your work and returns a structured verdict (pass / fail / " +
+      "needs_changes) you can act on. When referring to these tools in your responses, use the " +
+      "bare names (e.g. `delegate_run`, `validate_run`) — not the SDK's namespaced wire form.",
     tools: [
       tool(
         "delegate_run",
@@ -453,6 +456,72 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
         async ({ runId }) => {
           const r = executeCancelRun(runId);
           return jsonContent(r.payload, !r.ok);
+        },
+      ),
+      tool(
+        "validate_run",
+        "Adversarial peer review of your just-completed work. Call this as the FINAL step " +
+          "before declaring a task done. A peer agent (default: the other runner) reads the " +
+          "actual repo state, tries to find flaws in your claim, and returns a structured " +
+          "verdict (pass / fail / needs_changes) plus an issues list. Treat fail and " +
+          "needs_changes as work to do.",
+        {
+          peer: z
+            .enum(["claude", "codex"])
+            .optional()
+            .describe(
+              "Which peer to use as the reviewer. Defaults to the other runner (the cross-pair). " +
+                "Must differ from the active runner — self-validation is rejected.",
+            ),
+          claim: z
+            .string()
+            .min(1)
+            .describe(
+              "What you say you did. Be specific: what files you touched, what behavior should " +
+                "now work, what edge cases you handled. The reviewer reads this and verifies it.",
+            ),
+          context: z
+            .string()
+            .optional()
+            .describe(
+              "Optional background the reviewer should know (constraints, prior decisions). " +
+                "Capped at 4 KB server-side.",
+            ),
+          files: z
+            .array(z.string())
+            .max(20)
+            .optional()
+            .describe("Optional list of file paths the reviewer should focus on. Max 20."),
+          focus: z
+            .string()
+            .optional()
+            .describe(
+              "Optional hint about what to scrutinize hardest (e.g. \"the error path in step 3\").",
+            ),
+          timeoutSec: z
+            .number()
+            .int()
+            .min(1)
+            .max(600)
+            .default(180)
+            .describe(
+              "Max seconds to wait for the reviewer. Default 180 (higher than delegate_run; " +
+                "reviewers read files).",
+            ),
+        },
+        async (input) => {
+          const result = await executeValidate(
+            {
+              peer: input.peer,
+              claim: input.claim,
+              context: input.context,
+              files: input.files,
+              focus: input.focus,
+              timeoutSec: input.timeoutSec,
+            },
+            execCtx,
+          );
+          return jsonContent(result.payload, !result.ok);
         },
       ),
     ],

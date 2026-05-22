@@ -68,13 +68,21 @@ export function blocksFromEvents(events: SessionMessage["events"]): Block[] {
   return out;
 }
 
-// A delegate_run anchor is the parent's `delegate_run` tool_log itself —
+// A delegate_run / validate_run anchor is the parent's tool_log itself —
 // not a sub-delegation made by a peer (which still has a `[peer] ` prefix).
-export function isDelegateRunBlock(b: Block): boolean {
-  if (b.kind !== "tool") return false;
+// Returns the group kind for use as a visual tag; null if not an anchor.
+export function peerAnchorKind(b: Block): "delegate" | "validate" | null {
+  if (b.kind !== "tool") return null;
   const { peer, rest } = stripPeerPrefix(b.log.name);
-  if (peer !== null) return false;
-  return stripMcpPrefix(rest) === "delegate_run";
+  if (peer !== null) return null;
+  const bare = stripMcpPrefix(rest);
+  if (bare === "delegate_run") return "delegate";
+  if (bare === "validate_run") return "validate";
+  return null;
+}
+
+export function isDelegateRunBlock(b: Block): boolean {
+  return peerAnchorKind(b) !== null;
 }
 
 // Any block that originated from a peer agent (its tool_log carries a
@@ -95,6 +103,10 @@ export type GroupedBlock =
   | {
       kind: "delegation_group";
       id: string;
+      // Tag derived from the anchor tool name. Drives header verb ("working"
+      // vs "validating") and accent color. Pending groups (anchor not yet
+      // landed) default to "delegate" — they reclassify when the anchor lands.
+      tag: "delegate" | "validate";
       anchorIndex: number;
       header: ToolLog | null;
       pendingRunner: string | null;
@@ -135,10 +147,12 @@ export function groupDelegations(
   };
 
   blocks.forEach((b, i) => {
-    if (isDelegateRunBlock(b) && b.kind === "tool") {
+    const tag = peerAnchorKind(b);
+    if (tag !== null && b.kind === "tool") {
       items.push({
         kind: "delegation_group",
         id: `${messageId}:${i}`,
+        tag,
         anchorIndex: i,
         header: b.log,
         pendingRunner: null,
@@ -154,6 +168,10 @@ export function groupDelegations(
     items.push({
       kind: "delegation_group",
       id: `${messageId}:pending`,
+      // Without the anchor yet we can't know — default to "delegate"; the
+      // group reclassifies the moment the anchor (delegate_run/validate_run)
+      // lands at the end of the message events.
+      tag: "delegate",
       anchorIndex: -1,
       header: null,
       pendingRunner: inferRunner(trailing),
