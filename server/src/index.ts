@@ -26,6 +26,7 @@ import {
   unregisterParentCallbacks,
 } from "./runners/delegate.js";
 import { executeValidate } from "./runners/validate.js";
+import { cancelTasksForSession, clearTasksForSession } from "./orchestrator/tasks.js";
 import { PermissionStore } from "./permissions.js";
 import { gitInfoEquals, readGitInfo } from "./git.js";
 
@@ -254,6 +255,8 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
     case "delete_session": {
       turnAborts.get(msg.sessionId)?.abort();
       turnAborts.delete(msg.sessionId);
+      cancelTasksForSession(msg.sessionId);
+      clearTasksForSession(msg.sessionId);
       sessions.delete(msg.sessionId);
       return;
     }
@@ -271,6 +274,8 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
       // try to bump finish stats, but bumpOnFinish skips when the session's
       // stats entry is gone — which we wipe next.
       cancelRunsForSession(msg.sessionId);
+      cancelTasksForSession(msg.sessionId);
+      clearTasksForSession(msg.sessionId);
       clearDelegationStats(msg.sessionId);
       sessions.setDelegations(msg.sessionId, null);
       sessions.clearSession(msg.sessionId);

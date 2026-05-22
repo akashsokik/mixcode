@@ -535,3 +535,25 @@ export function cancelTask(taskId: string): CancelTaskResult {
   emitTaskSnapshot(task);
   return { ok: true, taskId: task.id, cancelled };
 }
+
+export function cancelTasksForSession(sessionId: string): number {
+  const bySession = tasksBySession.get(sessionId);
+  if (!bySession) return 0;
+  let n = 0;
+  for (const task of bySession.values()) {
+    if (task.status === "done" || task.status === "cancelled") continue;
+    for (const s of task.subtasks) {
+      if (s.status === "queued") {
+        s.status = "cancelled";
+        n += 1;
+      } else if (s.status === "running" && s.runId) {
+        executeCancelRun(s.runId);
+        s.status = "cancelled";
+        n += 1;
+      }
+    }
+    task.status = "cancelled";
+    task.finishedAt = Date.now();
+  }
+  return n;
+}
