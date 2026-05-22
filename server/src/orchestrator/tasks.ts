@@ -400,3 +400,78 @@ export function scheduleSnapshot(task: Task): void {
   handle.unref();
   snapshotPending.set(task.id, handle);
 }
+
+export type AwaitTaskResult =
+  | {
+      ok: true;
+      taskId: string;
+      status: TaskStatus;
+      subtasks: Array<{
+        id: string;
+        runner: RunnerKind;
+        status: SubTaskStatus;
+        result?: string;
+        error?: string;
+        durationMs?: number;
+      }>;
+      timedOut?: boolean;
+    }
+  | { ok: false; error: string };
+
+export async function awaitTask(
+  taskId: string,
+  opts?: { timeoutSec?: number },
+): Promise<AwaitTaskResult> {
+  const task = lookupTask(taskId);
+  if (!task) return { ok: false, error: `unknown taskId: ${taskId}` };
+
+  const timeoutMs = (opts?.timeoutSec ?? 1200) * 1000;
+  const TIMEOUT = Symbol("timeout");
+  const deadline = new Promise<typeof TIMEOUT>((res) => {
+    const h = setTimeout(() => res(TIMEOUT), timeoutMs);
+    h.unref();
+  });
+
+  while (true) {
+    const pending = ensureInflight(task.id);
+    if (pending.size === 0) break;
+    const snapshot = Array.from(pending);
+    const next = await Promise.race([Promise.race(snapshot), deadline]);
+    if (next === TIMEOUT) {
+      return finalizeAwait(task, true);
+    }
+  }
+  return finalizeAwait(task, false);
+}
+
+function finalizeAwait(task: Task, timedOut: boolean): AwaitTaskResult {
+  let anyError = false;
+  let anyRunning = false;
+  let allCancelled = task.subtasks.length > 0;
+  for (const s of task.subtasks) {
+    if (s.status === "error" || s.status === "timeout") anyError = true;
+    if (s.status === "running" || s.status === "queued") anyRunning = true;
+    if (s.status !== "cancelled") allCancelled = false;
+  }
+  if (anyError) task.status = "error";
+  else if (allCancelled) task.status = "cancelled";
+  else if (!anyRunning) task.status = "running";
+  emitTaskSnapshot(task);
+
+  return {
+    ok: true,
+    taskId: task.id,
+    status: task.status,
+    timedOut: timedOut || undefined,
+    subtasks: task.subtasks.map((s) => ({
+      id: s.id,
+      runner: s.runner,
+      status: s.status,
+      ...(s.result ? { result: s.result } : {}),
+      ...(s.error ? { error: s.error } : {}),
+      ...(s.startedAt != null
+        ? { durationMs: (s.finishedAt ?? Date.now()) - s.startedAt }
+        : {}),
+    })),
+  };
+}
