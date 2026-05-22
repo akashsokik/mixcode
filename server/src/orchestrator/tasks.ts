@@ -6,6 +6,7 @@
 // cleared on session clear / delete, gone on server restart.
 import { nanoid } from "nanoid";
 import type { RunEvent, RunnerKind, ToolLog } from "../../../shared/events.js";
+import { startSubtaskRun, type DelegateRunRecord } from "../runners/delegate.js";
 
 export type TaskStatus =
   | "pending"
@@ -220,4 +221,182 @@ export function createTask(args: CreateTaskArgs): Task {
   registerTask(task);
   emitTaskSnapshot(task);
   return task;
+}
+
+export type SpawnSubtaskInput = {
+  runner: RunnerKind;
+  prompt: string;
+  sessionId?: string;
+};
+
+export type SpawnContext = {
+  parentRunner: RunnerKind;
+  parentCwd: string;
+  depth: number;
+  timeoutSec: number;
+};
+
+export type SpawnResult =
+  | { ok: true; subtaskIds: string[] }
+  | { ok: false; error: string };
+
+const inflight = new Map<string, Set<Promise<void>>>();
+
+function ensureInflight(taskId: string): Set<Promise<void>> {
+  let set = inflight.get(taskId);
+  if (!set) {
+    set = new Set();
+    inflight.set(taskId, set);
+  }
+  return set;
+}
+
+function buildSubtaskCallbacks(task: Task, sub: SubTask, _timeoutSec: number) {
+  const onPeerEvent = (_record: DelegateRunRecord, ev: RunEvent): void => {
+    if (ev.type === "text_delta") {
+      const next = (sub.lastDelta ?? "") + ev.delta;
+      sub.lastDelta =
+        next.length > LAST_DELTA_MAX
+          ? "..." + next.slice(next.length - LAST_DELTA_MAX + 3)
+          : next;
+      scheduleSnapshot(task);
+    } else if (ev.type === "error") {
+      if (!sub.error) sub.error = ev.message;
+      scheduleSnapshot(task);
+    }
+  };
+  return { onPeerEvent };
+}
+
+export function spawnSubtasks(
+  taskId: string,
+  inputs: SpawnSubtaskInput[],
+  ctx: SpawnContext,
+  opts?: { maxConcurrent?: number },
+): SpawnResult {
+  const task = lookupTask(taskId);
+  if (!task) return { ok: false, error: `unknown taskId: ${taskId}` };
+  if (task.status === "done" || task.status === "cancelled") {
+    return { ok: false, error: `task is ${task.status}` };
+  }
+  if (inputs.length === 0) {
+    return { ok: false, error: "subtasks array is empty" };
+  }
+  if (opts?.maxConcurrent != null) task.maxConcurrent = opts.maxConcurrent;
+
+  const fresh: SubTask[] = inputs.map((i) => ({
+    id: newSubtaskId(),
+    taskId,
+    runner: i.runner,
+    prompt: i.prompt,
+    sessionId: i.sessionId,
+    status: "queued",
+  }));
+  task.subtasks.push(...fresh);
+  task.status = "running";
+
+  pumpQueue(task, ctx);
+  emitTaskSnapshot(task);
+
+  return { ok: true, subtaskIds: fresh.map((s) => s.id) };
+}
+
+function lookupTask(taskId: string): Task | undefined {
+  for (const m of tasksBySession.values()) {
+    const t = m.get(taskId);
+    if (t) return t;
+  }
+  return undefined;
+}
+
+function runningCount(task: Task): number {
+  let n = 0;
+  for (const s of task.subtasks) if (s.status === "running") n += 1;
+  return n;
+}
+
+function pumpQueue(task: Task, ctx: SpawnContext): void {
+  while (runningCount(task) < task.maxConcurrent) {
+    const next = task.subtasks.find((s) => s.status === "queued");
+    if (!next) break;
+    startOne(task, next, ctx);
+  }
+}
+
+function startOne(task: Task, sub: SubTask, ctx: SpawnContext): void {
+  const cb = buildSubtaskCallbacks(task, sub, ctx.timeoutSec);
+  const started = startSubtaskRun({
+    runner: sub.runner,
+    prompt: sub.prompt,
+    sessionId: sub.sessionId,
+    parentRunner: ctx.parentRunner,
+    parentSessionId: task.sessionId,
+    parentCwd: ctx.parentCwd,
+    depth: ctx.depth,
+    onPeerEvent: cb.onPeerEvent,
+  });
+  if (!started.ok) {
+    sub.status = "error";
+    sub.error = started.error;
+    sub.finishedAt = Date.now();
+    emitTaskSnapshot(task);
+    return;
+  }
+  sub.runId = started.record.runId;
+  sub.startedAt = Date.now();
+  sub.status = "running";
+  emitTaskSnapshot(task);
+
+  const timeoutHandle = setTimeout(() => {
+    if (started.record.status === "running") {
+      started.record.abort.abort();
+      started.record.status = "timeout";
+    }
+  }, ctx.timeoutSec * 1000);
+  timeoutHandle.unref();
+
+  const settled = started.record.work
+    .then(() => {
+      clearTimeout(timeoutHandle);
+      sub.status = mapDelegateStatus(started.record.status);
+      sub.result = started.record.result;
+      if (started.record.error) sub.error = started.record.error;
+      sub.lastDelta = undefined;
+      sub.finishedAt = Date.now();
+      pumpQueue(task, ctx);
+      emitTaskSnapshot(task);
+    })
+    .catch((err) => {
+      clearTimeout(timeoutHandle);
+      sub.status = "error";
+      sub.error = err instanceof Error ? err.message : String(err);
+      sub.finishedAt = Date.now();
+      pumpQueue(task, ctx);
+      emitTaskSnapshot(task);
+    });
+
+  ensureInflight(task.id).add(settled);
+  settled.finally(() => ensureInflight(task.id).delete(settled));
+}
+
+function mapDelegateStatus(
+  s: DelegateRunRecord["status"],
+): SubTaskStatus {
+  if (s === "ok") return "ok";
+  if (s === "cancelled") return "cancelled";
+  if (s === "timeout") return "timeout";
+  return "error";
+}
+
+const PENDING_SNAPSHOT_MS = 100;
+const snapshotPending = new Map<string, NodeJS.Timeout>();
+
+export function scheduleSnapshot(task: Task): void {
+  if (snapshotPending.has(task.id)) return;
+  const handle = setTimeout(() => {
+    snapshotPending.delete(task.id);
+    emitTaskSnapshot(task);
+  }, PENDING_SNAPSHOT_MS);
+  handle.unref();
+  snapshotPending.set(task.id, handle);
 }
