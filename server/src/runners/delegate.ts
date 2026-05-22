@@ -33,6 +33,14 @@ import type {
 import { runClaude } from "./claude.js";
 import { runCodex } from "./codex.js";
 import { executeValidate } from "./validate.js";
+import {
+  awaitTask,
+  cancelTask,
+  createTask,
+  doneTask,
+  observeTask,
+  spawnSubtasks,
+} from "../orchestrator/tasks.js";
 
 const MAX_DEPTH = (() => {
   const v = process.env.AGENT_ORC_MAX_DELEGATION_DEPTH;
@@ -441,8 +449,13 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
       "final text. Use `get_run` to poll a previously-spawned run, and `cancel_run` to stop one. " +
       "Use `validate_run` as your FINAL step before declaring a task complete — it asks a peer " +
       "agent to adversarially review your work and returns a structured verdict (pass / fail / " +
-      "needs_changes) you can act on. When referring to these tools in your responses, use the " +
-      "bare names (e.g. `delegate_run`, `validate_run`) — not the SDK's namespaced wire form.",
+      "needs_changes) you can act on. " +
+      "For structured fan-out: `task_create` opens a Task, `task_spawn` starts parallel SubTasks " +
+      "(each a peer run via the same machinery as delegate_run), `task_await` blocks until they " +
+      "settle, `task_observe` peeks without blocking, `task_done` marks the Task complete, and " +
+      "`task_cancel` aborts running SubTasks. Use the Task path when you want fan-out under a " +
+      "single live tool card. When referring to these tools in your responses, use the " +
+      "bare names (e.g. `delegate_run`, `validate_run`, `task_spawn`) — not the SDK's namespaced wire form.",
     tools: [
       tool(
         "delegate_run",
@@ -566,6 +579,140 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
             execCtx,
           );
           return jsonContent(result.payload, !result.ok);
+        },
+      ),
+      tool(
+        "task_create",
+        "Open a new Task. Returns a taskId you pass to task_spawn / task_await / task_done. " +
+          "A Task is a named goal that groups parallel SubTasks under a single live tool card.",
+        {
+          title: z.string().min(1).describe("Short human-readable goal, shown on the card"),
+          description: z
+            .string()
+            .optional()
+            .describe("Optional free-form notes about the Task"),
+        },
+        async ({ title, description }) => {
+          const task = createTask({
+            sessionId: ctx.parentSessionId,
+            title,
+            description,
+          });
+          return jsonContent({ taskId: task.id });
+        },
+      ),
+      tool(
+        "task_spawn",
+        "Append SubTasks to a Task and start them in parallel under maxConcurrent. " +
+          "Non-blocking. Each SubTask is a peer agent run, same machinery as delegate_run. " +
+          "Use task_await to block until they finish.",
+        {
+          taskId: z.string().describe("Task id returned by task_create"),
+          subtasks: z
+            .array(
+              z.object({
+                runner: z
+                  .enum(["claude", "codex"])
+                  .describe("Which peer agent runs this SubTask"),
+                prompt: z.string().min(1).describe("Natural-language task for the peer"),
+                sessionId: z
+                  .string()
+                  .optional()
+                  .describe("Resume an existing peer session/thread id; omit for fresh"),
+              }),
+            )
+            .min(1)
+            .describe("One or more SubTasks to fan out under this Task"),
+          maxConcurrent: z
+            .number()
+            .int()
+            .min(1)
+            .max(16)
+            .default(4)
+            .describe("Max SubTasks of this Task running at once; the rest queue"),
+          timeoutSec: z
+            .number()
+            .int()
+            .min(1)
+            .max(3600)
+            .default(600)
+            .describe("Per-SubTask timeout before its peer is aborted"),
+        },
+        async (input) => {
+          const r = spawnSubtasks(
+            input.taskId,
+            input.subtasks as {
+              runner: RunnerKind;
+              prompt: string;
+              sessionId?: string;
+            }[],
+            {
+              parentRunner: ctx.parentRunner,
+              parentCwd: ctx.parentCwd,
+              depth: ctx.depth + 1,
+              timeoutSec: input.timeoutSec,
+            },
+            { maxConcurrent: input.maxConcurrent },
+          );
+          if (!r.ok) return jsonContent({ error: r.error }, true);
+          return jsonContent({ subtaskIds: r.subtaskIds });
+        },
+      ),
+      tool(
+        "task_await",
+        "Block until every non-terminal SubTask of the Task settles. Returns aggregated " +
+          "results (each SubTask's final text + status).",
+        {
+          taskId: z.string(),
+          timeoutSec: z
+            .number()
+            .int()
+            .min(1)
+            .max(3600)
+            .default(1200)
+            .describe("Max seconds to block before returning whatever has settled"),
+        },
+        async ({ taskId, timeoutSec }) => {
+          const r = await awaitTask(taskId, { timeoutSec });
+          if (!r.ok) return jsonContent({ error: r.error }, true);
+          return jsonContent(r);
+        },
+      ),
+      tool(
+        "task_observe",
+        "Non-blocking peek at a Task's current state and partial SubTask results.",
+        { taskId: z.string() },
+        async ({ taskId }) => {
+          const r = observeTask(taskId);
+          if (!r.ok) return jsonContent({ error: r.error }, true);
+          return jsonContent({ snapshot: r.snapshot });
+        },
+      ),
+      tool(
+        "task_done",
+        "Mark a Task complete with an optional summary. Errors if any SubTask is still " +
+          "running — call task_await or task_cancel first.",
+        {
+          taskId: z.string(),
+          summary: z
+            .string()
+            .optional()
+            .describe("Optional summary shown on the final card"),
+        },
+        async ({ taskId, summary }) => {
+          const r = doneTask(taskId, summary);
+          if (!r.ok) return jsonContent({ error: r.error }, true);
+          return jsonContent({ taskId: r.taskId, status: r.status });
+        },
+      ),
+      tool(
+        "task_cancel",
+        "Cancel a Task and abort every running SubTask under it.",
+        { taskId: z.string() },
+        async ({ taskId }) => {
+          const r = cancelTask(taskId);
+          if (!r.ok) return jsonContent({ error: r.error }, true);
+          return jsonContent({ taskId: r.taskId, cancelled: r.cancelled });
         },
       ),
     ],

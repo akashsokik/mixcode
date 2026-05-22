@@ -26,7 +26,18 @@ import {
   unregisterParentCallbacks,
 } from "./runners/delegate.js";
 import { executeValidate } from "./runners/validate.js";
-import { cancelTasksForSession, clearTasksForSession } from "./orchestrator/tasks.js";
+import {
+  awaitTask,
+  cancelTask,
+  cancelTasksForSession,
+  clearTasksForSession,
+  createTask,
+  doneTask,
+  observeTask,
+  registerTaskEmitter,
+  spawnSubtasks,
+  unregisterTaskEmitter,
+} from "./orchestrator/tasks.js";
 import { PermissionStore } from "./permissions.js";
 import { gitInfoEquals, readGitInfo } from "./git.js";
 
@@ -186,6 +197,84 @@ app.post("/internal/delegate", async (c) => {
       },
     );
     return c.json(result);
+  }
+  if (action === "task_create") {
+    if (!body.parentSessionId) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const task = createTask({
+      sessionId: body.parentSessionId,
+      title: String(args.title ?? ""),
+      description:
+        typeof args.description === "string" ? args.description : undefined,
+    });
+    return c.json({ ok: true, payload: { taskId: task.id } });
+  }
+  if (action === "task_spawn") {
+    if (!body.parentRunner || !body.parentSessionId || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const subtasksIn = Array.isArray(args.subtasks) ? args.subtasks : [];
+    const subtasks = subtasksIn.map((s: Record<string, unknown>) => ({
+      runner: s.runner as RunnerKind,
+      prompt: String(s.prompt ?? ""),
+      sessionId: typeof s.sessionId === "string" ? s.sessionId : undefined,
+    }));
+    const r = spawnSubtasks(
+      String(args.taskId ?? ""),
+      subtasks,
+      {
+        parentRunner: body.parentRunner,
+        parentCwd: body.parentCwd,
+        depth: (typeof body.depth === "number" ? body.depth : 0) + 1,
+        timeoutSec:
+          typeof args.timeoutSec === "number" ? args.timeoutSec : 600,
+      },
+      {
+        maxConcurrent:
+          typeof args.maxConcurrent === "number" ? args.maxConcurrent : 4,
+      },
+    );
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({ ok: true, payload: { subtaskIds: r.subtaskIds } });
+  }
+  if (action === "task_await") {
+    const r = await awaitTask(String(args.taskId ?? ""), {
+      timeoutSec:
+        typeof args.timeoutSec === "number" ? args.timeoutSec : 1200,
+    });
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({ ok: true, payload: r });
+  }
+  if (action === "task_observe") {
+    const r = observeTask(String(args.taskId ?? ""));
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({ ok: true, payload: { snapshot: r.snapshot } });
+  }
+  if (action === "task_done") {
+    const r = doneTask(
+      String(args.taskId ?? ""),
+      typeof args.summary === "string" ? args.summary : undefined,
+    );
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({
+      ok: true,
+      payload: { taskId: r.taskId, status: r.status },
+    });
+  }
+  if (action === "task_cancel") {
+    const r = cancelTask(String(args.taskId ?? ""));
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({
+      ok: true,
+      payload: { taskId: r.taskId, cancelled: r.cancelled },
+    });
   }
   return c.json({ ok: false, payload: { error: `unknown action: ${action}` } }, 400);
 });
@@ -440,6 +529,10 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
     onPeerEvent: forwardPeerEvent,
     onStatsChange,
   });
+  // task_* tools emit a tool_log per Task snapshot. Same parentSessionId
+  // lookup as parentCallbacks — works for both in-process Claude and the
+  // HTTP-proxy Codex path.
+  registerTaskEmitter(sessionId, onEvent);
 
   try {
     if (session.activeRunner === "claude") {
@@ -548,6 +641,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   } finally {
     if (turnAborts.get(sessionId) === abort) turnAborts.delete(sessionId);
     unregisterParentCallbacks(sessionId);
+    unregisterTaskEmitter(sessionId);
     sessions.finishMessage(sessionId, asst.id);
   }
 }

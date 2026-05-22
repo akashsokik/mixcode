@@ -142,5 +142,87 @@ server.registerTool(
   async (input) => jsonContent(await callServer("validate_run", input)),
 );
 
+server.registerTool(
+  "task_create",
+  {
+    description:
+      "Open a new Task. Returns a taskId for task_spawn / task_await / task_done. A Task is a " +
+      "named goal that groups parallel SubTasks under a single live tool card.",
+    inputSchema: {
+      title: z.string().min(1),
+      description: z.string().optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("task_create", input)),
+);
+
+server.registerTool(
+  "task_spawn",
+  {
+    description:
+      "Append SubTasks to a Task and start them in parallel under maxConcurrent. Non-blocking. " +
+      "Each SubTask is a peer run via the same machinery as delegate_run.",
+    inputSchema: {
+      taskId: z.string(),
+      subtasks: z
+        .array(
+          z.object({
+            runner: z.enum(["claude", "codex"]),
+            prompt: z.string().min(1),
+            sessionId: z.string().optional(),
+          }),
+        )
+        .min(1),
+      maxConcurrent: z.number().int().min(1).max(16).default(4),
+      timeoutSec: z.number().int().min(1).max(3600).default(600),
+    },
+  },
+  async (input) => jsonContent(await callServer("task_spawn", input)),
+);
+
+server.registerTool(
+  "task_await",
+  {
+    description:
+      "Block until every non-terminal SubTask of the Task settles. Returns aggregated results.",
+    inputSchema: {
+      taskId: z.string(),
+      timeoutSec: z.number().int().min(1).max(3600).default(1200),
+    },
+  },
+  async (input) => jsonContent(await callServer("task_await", input)),
+);
+
+server.registerTool(
+  "task_observe",
+  {
+    description: "Non-blocking peek at a Task's current state and partial SubTask results.",
+    inputSchema: { taskId: z.string() },
+  },
+  async (input) => jsonContent(await callServer("task_observe", input)),
+);
+
+server.registerTool(
+  "task_done",
+  {
+    description:
+      "Mark a Task complete with an optional summary. Errors if any SubTask is still running.",
+    inputSchema: {
+      taskId: z.string(),
+      summary: z.string().optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("task_done", input)),
+);
+
+server.registerTool(
+  "task_cancel",
+  {
+    description: "Cancel a Task and abort every running SubTask under it.",
+    inputSchema: { taskId: z.string() },
+  },
+  async (input) => jsonContent(await callServer("task_cancel", input)),
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
