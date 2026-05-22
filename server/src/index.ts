@@ -1,16 +1,41 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import { serve, upgradeWebSocket } from "@hono/node-server";
+import { nanoid } from "nanoid";
 import { WebSocketServer } from "ws";
 import type {
   ClientMsg,
+  DelegationStats,
   RunEvent,
+  RunnerKind,
   ServerMsg,
 } from "../../shared/events.js";
+import type { DelegateRunRecord } from "./runners/delegate.js";
 import { SessionManager } from "./sessions.js";
 import { runClaude } from "./runners/claude.js";
 import { runCodex } from "./runners/codex.js";
+import {
+  buildDelegateMcpServer,
+  cancelRunsForSession,
+  clearDelegationStats,
+  executeCancelRun,
+  executeDelegate,
+  executeGetRun,
+  registerParentCallbacks,
+  unregisterParentCallbacks,
+} from "./runners/delegate.js";
 import { PermissionStore } from "./permissions.js";
 import { gitInfoEquals, readGitInfo } from "./git.js";
+
+// Shared secret used to authenticate the Codex-side MCP child's HTTP
+// callbacks. Generated once per server start; rotates on restart.
+const ORCHESTRATOR_TOKEN = nanoid();
+// Absolute path to the stdio MCP server spawned as a child of Codex CLI.
+// Resolved relative to this file so it works whether tsx is run from the
+// repo root, the server workspace, or via the bin/start.mjs launcher.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ORCHESTRATOR_SCRIPT_PATH = path.join(__dirname, "mcp-codex-orchestrator.mjs");
 
 const sessions = new SessionManager();
 const permissions = new PermissionStore();
@@ -53,6 +78,67 @@ refreshGit().catch(() => {});
 const app = new Hono();
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// Internal callback endpoint hit by the stdio MCP child spawned for Codex
+// turns. The child runs in a separate process so it can't reach our delegate
+// state directly — it proxies tool calls through this endpoint, which
+// dispatches to the same execute* functions the in-process Claude SDK MCP
+// server uses. Auth via shared-secret header (ORCHESTRATOR_TOKEN).
+app.post("/internal/delegate", async (c) => {
+  if (c.req.header("x-delegate-token") !== ORCHESTRATOR_TOKEN) {
+    return c.json({ ok: false, payload: { error: "unauthorized" } }, 401);
+  }
+  let body: {
+    action?: string;
+    parentRunner?: RunnerKind;
+    parentSessionId?: string;
+    parentCwd?: string;
+    depth?: number;
+    args?: Record<string, unknown>;
+  };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return c.json({ ok: false, payload: { error: "invalid json" } }, 400);
+  }
+  const action = body.action;
+  const args = body.args ?? {};
+
+  if (action === "delegate_run") {
+    if (!body.parentRunner || !body.parentSessionId || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const result = await executeDelegate(
+      {
+        profileName: args.profileName as RunnerKind,
+        prompt: String(args.prompt ?? ""),
+        sessionId: typeof args.sessionId === "string" ? args.sessionId : undefined,
+        wait: args.wait !== false,
+        timeoutSec:
+          typeof args.timeoutSec === "number" && Number.isFinite(args.timeoutSec)
+            ? args.timeoutSec
+            : 120,
+      },
+      {
+        parentRunner: body.parentRunner,
+        parentSessionId: body.parentSessionId,
+        parentCwd: body.parentCwd,
+        depth: typeof body.depth === "number" ? body.depth : 0,
+      },
+    );
+    return c.json(result);
+  }
+  if (action === "get_run") {
+    return c.json(executeGetRun(String(args.runId ?? "")));
+  }
+  if (action === "cancel_run") {
+    return c.json(executeCancelRun(String(args.runId ?? "")));
+  }
+  return c.json({ ok: false, payload: { error: `unknown action: ${action}` } }, 400);
+});
 
 app.get(
   "/ws",
@@ -132,6 +218,12 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
       // freshly-cleared state.
       turnAborts.get(msg.sessionId)?.abort();
       turnAborts.delete(msg.sessionId);
+      // Bulk-cancel any peers this session spawned. Their work() finally will
+      // try to bump finish stats, but bumpOnFinish skips when the session's
+      // stats entry is gone — which we wipe next.
+      cancelRunsForSession(msg.sessionId);
+      clearDelegationStats(msg.sessionId);
+      sessions.setDelegations(msg.sessionId, null);
       sessions.clearSession(msg.sessionId);
       return;
     }
@@ -206,8 +298,106 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   turnAborts.set(sessionId, abort);
 
   const runtime = sessions.runtime(sessionId)!;
+
+  // Peer events emitted by a delegated run are folded into the parent's
+  // assistant message with a `[runner]` chip in the name so the TUI can
+  // render them inline alongside the parent's own events. Same forwarder for
+  // both branches — a function over the parent's onEvent closure.
+  //
+  // text_delta and atomic-mode thinking are wrapped in synthetic tool_log
+  // events that carry a stable `id` (e.g. `peer:<runId>:text:<chunk>`). The
+  // append-event path replaces matching ids in place, so a streaming peer
+  // reply renders as a single block whose body grows — without that wrapping,
+  // peer deltas would silently merge into the parent's text run via the
+  // transcript's text_delta concatenation, which is confusing.
+  //
+  // We bump the chunk counter whenever the peer transitions OUT of a text
+  // run (emits a tool_log, atomic thinking, or error). That way, "text →
+  // tool → more text" renders as two separate reply blocks bracketing the
+  // peer's tool call, matching the natural interleaving.
+  type PeerState = { textBuf: string; chunk: number };
+  const peerStates = new Map<string, PeerState>();
+  const stateFor = (runId: string): PeerState => {
+    let s = peerStates.get(runId);
+    if (!s) {
+      s = { textBuf: "", chunk: 0 };
+      peerStates.set(runId, s);
+    }
+    return s;
+  };
+  const flushText = (s: PeerState): void => {
+    if (s.textBuf) {
+      s.textBuf = "";
+      s.chunk += 1;
+    }
+  };
+  const forwardPeerEvent = (record: DelegateRunRecord, event: RunEvent) => {
+    const s = stateFor(record.runId);
+    if (event.type === "text_delta") {
+      s.textBuf += event.delta;
+      onEvent({
+        type: "tool_log",
+        log: {
+          id: `peer:${record.runId}:text:${s.chunk}`,
+          name: `[${record.runner}] reply`,
+          output: s.textBuf,
+        },
+      });
+    } else if (event.type === "tool_log") {
+      flushText(s);
+      onEvent({
+        type: "tool_log",
+        log: {
+          ...event.log,
+          name: `[${record.runner}] ${event.log.name}`,
+        },
+      });
+    } else if (event.type === "thinking" && typeof event.text === "string") {
+      // Atomic-mode thinking carries its full text on the event; render it as
+      // its own block. Marker-mode (text undefined) is skipped here because
+      // we've already wrapped the preceding deltas as a reply block, not as
+      // an untyped text run we could reclassify.
+      flushText(s);
+      onEvent({
+        type: "tool_log",
+        log: {
+          id: `peer:${record.runId}:think:${s.chunk}`,
+          name: `[${record.runner}] thinking`,
+          output: `(${event.seconds}s) ${event.text}`,
+        },
+      });
+      s.chunk += 1;
+    } else if (event.type === "error") {
+      flushText(s);
+      onEvent({
+        type: "error",
+        message: `[${record.runner}] ${event.message}`,
+      });
+    }
+  };
+  const onStatsChange = (stats: DelegationStats): void => {
+    sessions.setDelegations(sessionId, stats);
+  };
+
+  // The HTTP-callback path (Codex's stdio MCP child) finds these via the
+  // parentSessionId. The in-process Claude path also reads them when
+  // executeDelegate is invoked, so register unconditionally.
+  registerParentCallbacks(sessionId, {
+    onPeerEvent: forwardPeerEvent,
+    onStatsChange,
+  });
+
   try {
     if (session.activeRunner === "claude") {
+      // In-process MCP server — same process, no HTTP hop.
+      const orchestrator = buildDelegateMcpServer({
+        parentRunner: "claude",
+        parentSessionId: sessionId,
+        parentCwd: session.cwd,
+        depth: 0,
+        onPeerEvent: forwardPeerEvent,
+        onStatsChange,
+      });
       await runClaude({
         prompt: text,
         cwd: session.cwd,
@@ -216,6 +406,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         allowRules: permissions.list(),
         permissionMode: session.claudeMode,
         abortController: abort,
+        mcpServers: { orchestrator },
         canUseTool: async (toolName, input, ctx) => {
           const resolution = await permissions.request({
             sessionId,
@@ -256,12 +447,19 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           };
         },
         onEvent,
+        onRaw: (raw) => sessions.logRaw(sessionId, asst.id, "claude", raw),
         onResumeId: (id) => {
           if (id) runtime.claudeSessionId = id;
           else delete runtime.claudeSessionId;
+          sessions.logRuntime(sessionId, "claudeSessionId", id);
+          sessions.markDirty();
         },
       });
     } else {
+      // Codex CLI only accepts stdio MCP servers, so wire it to spawn our
+      // own child (mcp-codex-orchestrator.mjs) that proxies tool calls back
+      // to /internal/delegate. parentSessionId + token + depth are passed via
+      // env on the spawn so the child's HTTP callbacks land on this session.
       await runCodex({
         prompt: text,
         cwd: session.cwd,
@@ -269,9 +467,21 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         model: session.models.codex,
         signal: abort.signal,
         onEvent,
+        onRaw: (raw) => sessions.logRaw(sessionId, asst.id, "codex", raw),
         onThreadId: (id) => {
           if (id) runtime.codexThreadId = id;
           else delete runtime.codexThreadId;
+          sessions.logRuntime(sessionId, "codexThreadId", id);
+          sessions.markDirty();
+        },
+        orchestrator: {
+          url: `http://127.0.0.1:${port}`,
+          token: ORCHESTRATOR_TOKEN,
+          scriptPath: ORCHESTRATOR_SCRIPT_PATH,
+          parentSessionId: sessionId,
+          parentRunner: "codex",
+          parentCwd: session.cwd,
+          depth: 0,
         },
       });
     }
@@ -282,6 +492,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
     });
   } finally {
     if (turnAborts.get(sessionId) === abort) turnAborts.delete(sessionId);
+    unregisterParentCallbacks(sessionId);
     sessions.finishMessage(sessionId, asst.id);
   }
 }
@@ -323,3 +534,12 @@ serve(
     console.log(`adverserial backend listening on http://127.0.0.1:${info.port}`);
   },
 );
+
+// Flush pending session writes when bin/start.mjs sends SIGTERM on TUI exit.
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.once(sig, () => {
+    sessions.flush();
+    sessions.transcript.closeAll();
+    process.exit(0);
+  });
+}

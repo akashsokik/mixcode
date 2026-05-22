@@ -7,6 +7,7 @@ import type {
   PermissionRequest,
   RunnerKind,
   Session,
+  SessionMessage,
   ServerMsg,
 } from "../../../shared/events.ts";
 import { WSClient, type WSStatus } from "../api/ws";
@@ -80,7 +81,24 @@ function reduce(state: State, msg: ServerMsg): State {
         if (s.id !== msg.sessionId) return s;
         const messages = s.messages.map((m) => {
           if (m.id !== msg.messageId) return m;
-          const events = [...m.events, msg.event];
+          // Mirror the server's dedupe: tool_log events with an `id` replace
+          // any earlier event sharing that id. Keeps the local events array
+          // consistent with what a fresh client receives via `hello`.
+          let events: SessionMessage["events"];
+          if (msg.event.type === "tool_log" && msg.event.log.id) {
+            const id = msg.event.log.id;
+            const idx = m.events.findIndex(
+              (e) => e.type === "tool_log" && e.log.id === id,
+            );
+            if (idx >= 0) {
+              events = m.events.slice();
+              events[idx] = msg.event;
+            } else {
+              events = [...m.events, msg.event];
+            }
+          } else {
+            events = [...m.events, msg.event];
+          }
           const text =
             msg.event.type === "text_delta" ? m.text + msg.event.delta : m.text;
           return { ...m, text, events };

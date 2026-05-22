@@ -4,6 +4,12 @@
 export type RunnerKind = "claude" | "codex";
 
 export type ToolLog = {
+  // Stable identifier used to update a tool_log in place. When the server
+  // re-emits a tool_log event whose `id` matches one already in the message's
+  // events array, the new event REPLACES the old one rather than appending.
+  // Used to stream growing output (e.g. a peer agent's reply text) without
+  // accumulating one block per delta. Omit for one-shot tool calls.
+  id?: string;
   name: string;
   input?: unknown;
   output?: unknown;
@@ -11,9 +17,19 @@ export type ToolLog = {
 };
 
 // Streaming events emitted by an SDK runner while a turn is in flight.
+//
+// `thinking` collapses thought content into a "> Thought (Ns)" block. Two
+// shapes:
+//   - marker mode (text omitted) — the client reclassifies the immediately
+//     preceding run of text_delta events as the thought. Used when the
+//     runner streamed the thinking text as deltas.
+//   - atomic mode (text present) — the thought is delivered in one event;
+//     no prior text_delta belongs to it. Used in non-streaming fallback
+//     paths where event ordering can't carry a preceding-text contract.
 export type RunEvent =
   | { type: "text_delta"; delta: string }
   | { type: "tool_log"; log: ToolLog }
+  | { type: "thinking"; seconds: number; text?: string }
   | {
       type: "usage";
       input: number;
@@ -58,6 +74,20 @@ export type GitInfo = {
   dirty: boolean;
 };
 
+// Per-session counters for peer-agent delegations spawned via the
+// orchestrator's `delegate_run` MCP tool. Updated by the server whenever a
+// peer run starts or terminates. `total` is lifetime within the session
+// process; `running` is the current in-flight count. `activePeer` names the
+// peer for the most recent run-start (cleared once nothing is running).
+export type DelegationStats = {
+  total: number;
+  running: number;
+  ok: number;
+  error: number;
+  cancelled: number;
+  activePeer?: RunnerKind;
+};
+
 export type Session = {
   id: string;
   title: string;
@@ -70,6 +100,7 @@ export type Session = {
   models: ModelOverrides;
   claudeMode: ClaudePermissionMode;
   git: GitInfo | null;
+  delegations?: DelegationStats;
 };
 
 export type PermissionDecision = "allow_once" | "allow_always" | "deny";

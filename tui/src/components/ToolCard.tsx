@@ -8,7 +8,7 @@ import {
 import { theme } from "../theme";
 
 export function ToolCard({ log }: { log: ToolLog }) {
-  const { header, body, isError, category, edit } = formatToolLog(log);
+  const { header, body, isError, category, edit, peer } = formatToolLog(log);
   const { verb, summary } = splitHeader(header);
   const accent = isError ? theme.toolError : accentFor(category);
 
@@ -16,6 +16,9 @@ export function ToolCard({ log }: { log: ToolLog }) {
     <box flexDirection="column" paddingLeft={1} paddingRight={1} marginTop={1}>
       <box flexDirection="row">
         <text fg={theme.textMuted}>{"• "}</text>
+        {peer && (
+          <text fg={peerColor(peer)} attributes={TextAttributes.BOLD}>{`[${peer}] `}</text>
+        )}
         <text fg={accent} attributes={TextAttributes.BOLD}>{verb}</text>
         {summary && <text fg={theme.text}>{" " + summary}</text>}
       </box>
@@ -52,6 +55,12 @@ function DiffPreview({ edit }: { edit: EditPreview }) {
   );
 }
 
+function peerColor(peer: string): string {
+  if (peer === "claude") return theme.runnerClaude;
+  if (peer === "codex") return theme.runnerCodex;
+  return theme.textMuted;
+}
+
 function accentFor(category: ToolCategory): string {
   switch (category) {
     case "edit":
@@ -70,11 +79,10 @@ function accentFor(category: ToolCategory): string {
   }
 }
 
-// "> Read /some/path" -> { verb: "Read", summary: "/some/path" }
-// "! Bash $ npm run build" -> { verb: "Bash", summary: "$ npm run build" }
+// "Read /some/path" -> { verb: "Read", summary: "/some/path" }
+// "Bash $ npm run build" -> { verb: "Bash", summary: "$ npm run build" }
 function splitHeader(header: string): { verb: string; summary: string } {
-  const stripped = header.replace(/^[>!]\s+/, "");
-  const space = stripped.indexOf(" ");
-  if (space === -1) return { verb: stripped, summary: "" };
-  return { verb: stripped.slice(0, space), summary: stripped.slice(space + 1) };
+  const space = header.indexOf(" ");
+  if (space === -1) return { verb: header, summary: "" };
+  return { verb: header.slice(0, space), summary: header.slice(space + 1) };
 }

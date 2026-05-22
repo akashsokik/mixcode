@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { Prompt } from "./components/Prompt";
 import { Spinner } from "./components/Spinner";
@@ -9,7 +8,7 @@ import { ModelPicker } from "./components/ModelPicker";
 import { Palette, type PaletteItem } from "./components/Palette";
 import type { ClaudePermissionMode } from "../../shared/events.ts";
 import { useSessions } from "./state/sessions";
-import { parseSlash, toggleRunner } from "./util/slash";
+import { parseSlash, SLASH_COMMANDS, toggleRunner } from "./util/slash";
 import {
   contextLines,
   helpLines,
@@ -27,9 +26,11 @@ import {
 } from "./util/notice";
 import { treeLines } from "./util/tree";
 import { normalizeRule } from "./util/permission-rule";
-import { addSkill, listSkills, readSkillFrontmatter, removeSkill } from "./util/skills";
+import { addSkill, listSkills, readSkillFrontmatter, removeSkill, type SkillEntry } from "./util/skills";
 import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
 import { theme } from "./theme";
+import { basename } from "./util/path";
+import { latestDelegationId } from "./util/blocks";
 import {
   contextLimit,
   latestContextTokens,
@@ -37,7 +38,7 @@ import {
   projectName,
 } from "./util/status";
 
-const SIDEBAR_WIDTH = 28;
+const EMPTY_SET: Set<string> = new Set();
 
 function dedupe<T>(xs: T[]): T[] {
   return Array.from(new Set(xs));
@@ -46,7 +47,6 @@ function dedupe<T>(xs: T[]): T[] {
 export function App() {
   const { width, height } = useTerminalDimensions();
   const api = useSessions();
-  const [focus, setFocus] = useState<"prompt" | "browse">("prompt");
   const [notices, setNotices] = useState<Record<string, Notice[]>>({});
   // null when no picker is open. The picker captures keyboard input itself;
   // App only needs to track which runner it's for so it can keep the selected
@@ -55,7 +55,14 @@ export function App() {
   const [paletteMode, setPaletteMode] = useState<
     "sessions" | "skills" | "mcp" | "global" | null
   >(null);
-  const lastDeleteRef = useRef(0);
+  // Per-session expand set for delegation groups. Keyed by `${messageId}:${blockIndex}`,
+  // matching the ids minted by groupDelegations in util/blocks.
+  const [expandedDelegations, setExpandedDelegations] = useState<
+    Record<string, Set<string>>
+  >({});
+  const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
+  const [mcpServerNames, setMcpServerNames] = useState<string[]>([]);
+  const [mcpLoading, setMcpLoading] = useState(false);
 
   useEffect(() => {
     if (api.status === "open" && api.sessions.length === 0) {
@@ -75,12 +82,81 @@ export function App() {
       }
       return changed ? next : prev;
     });
+    setExpandedDelegations((prev) => {
+      const alive = new Set(api.sessions.map((s) => s.id));
+      let changed = false;
+      const next: Record<string, Set<string>> = {};
+      for (const [id, set] of Object.entries(prev)) {
+        if (alive.has(id)) next[id] = set;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
   }, [api.sessions]);
+
+  // Skills are read from disk — cheap enough to do synchronously in an
+  // effect when entering skills or global mode, or when the active runner
+  // changes while a palette is open.
+  useEffect(() => {
+    if (!api.active) return;
+    if (paletteMode !== "skills" && paletteMode !== "global") return;
+    setSkillEntries(listSkills(api.active.activeRunner));
+  }, [paletteMode, api.active?.activeRunner]);
+
+  // MCP list shells out to `<runner> mcp list` which can take seconds.
+  // Defer past the render commit with setTimeout(0) so the palette opens
+  // before the spawn blocks. The blocking spawn still happens — it just
+  // doesn't block the open.
+  useEffect(() => {
+    if (!api.active) return;
+    if (paletteMode !== "mcp") return; // intentionally not "global"
+    let cancelled = false;
+    setMcpLoading(true);
+    const id = setTimeout(() => {
+      if (cancelled) return;
+      const runner = api.active!.activeRunner;
+      const out = listMcp(runner);
+      if (cancelled) return;
+      setMcpServerNames(out.ok ? parseMcpNames(out.stdout) : []);
+      setMcpLoading(false);
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [paletteMode, api.active?.activeRunner]);
 
   const activeNotices = useMemo(
     () => (api.activeId ? notices[api.activeId] ?? [] : []),
     [notices, api.activeId],
   );
+
+  const activeExpanded = useMemo(
+    () =>
+      api.activeId
+        ? expandedDelegations[api.activeId] ?? EMPTY_SET
+        : EMPTY_SET,
+    [expandedDelegations, api.activeId],
+  );
+
+  const activeLatestDelegationId = useMemo(
+    () => latestDelegationId(api.active ?? null),
+    [api.active],
+  );
+
+  const toggleLatestDelegation = useCallback(() => {
+    const sid = api.activeId;
+    if (!sid) return;
+    const groupId = latestDelegationId(api.active ?? null);
+    if (!groupId) return;
+    setExpandedDelegations((prev) => {
+      const cur = prev[sid] ?? new Set<string>();
+      const next = new Set(cur);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return { ...prev, [sid]: next };
+    });
+  }, [api.activeId, api.active]);
 
   const promptMeta = useMemo(() => {
     const s = api.active;
@@ -101,6 +177,139 @@ export function App() {
     return { modelLabel, contextPercent, projectLabel, branch, delegations };
   }, [api.active]);
 
+  const sessionPill = useMemo(
+    () => ({
+      total: api.sessions.length,
+      streaming: api.sessions.filter((s) => s.streaming).length,
+    }),
+    [api.sessions],
+  );
+
+  const sessionItems = useMemo<PaletteItem[]>(() => {
+    return api.sessions.map((s) => {
+      const runnerColor = s.activeRunner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+      const detail = `${basename(s.cwd) || "~"} · ${s.activeRunner} · ${s.messages.length} msg`;
+      return {
+        id: s.id,
+        label: s.title,
+        detail,
+        badge: { text: s.activeRunner, color: runnerColor },
+        streaming: s.streaming,
+        onActivate: () => {
+          api.setActive(s.id);
+          setPaletteMode(null);
+        },
+        actions: [
+          {
+            key: "d",
+            label: "delete (press d again to confirm)",
+            destructive: true,
+            run: () => api.deleteSession(s.id),
+          },
+        ],
+      };
+    });
+  }, [api.sessions, api.setActive, api.deleteSession]);
+
+  const skillItems = useMemo<PaletteItem[]>(() => {
+    if (!api.active) return [];
+    const runner = api.active.activeRunner;
+    const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+    return skillEntries.map((e) => ({
+      id: `${runner}:${e.name}`,
+      label: e.name,
+      detail: e.description ? clipDetail(e.description, 60) : (e.isSymlink ? "(symlink)" : "(dir)"),
+      badge: { text: runner, color: runnerColor },
+      onActivate: () => {
+        const sid = api.activeId;
+        if (!sid) return;
+        const fm = readSkillFrontmatter(runner, e.name);
+        addNotice(sid, "/skills info", skillInfoLines(runner, e.name, fm));
+        setPaletteMode(null);
+      },
+      actions: [
+        {
+          key: "d",
+          label: "remove (press d again to confirm)",
+          destructive: true,
+          run: () => {
+            const sid = api.activeId;
+            const res = removeSkill(runner, e.name);
+            if (sid) {
+              addNotice(
+                sid,
+                "/skills remove",
+                skillsLines(runner, listSkills(runner), res.ok ? `removed: ${res.name}` : `failed: ${res.error}`),
+              );
+            }
+            setPaletteMode(null);
+          },
+        },
+      ],
+    }));
+  }, [skillEntries, api.active?.activeRunner, api.activeId]);
+
+  const mcpItems = useMemo<PaletteItem[]>(() => {
+    if (!api.active) return [];
+    const runner = api.active.activeRunner;
+    const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+    return mcpServerNames.map((name) => ({
+      id: `${runner}:mcp:${name}`,
+      label: name,
+      detail: `mcp server (${runner})`,
+      badge: { text: "mcp", color: runnerColor },
+      onActivate: () => {
+        const sid = api.activeId;
+        if (!sid) return;
+        addNotice(sid, "/mcp test", [`testing ${runner}/${name} — spawning for 2s…`]);
+        testMcp(runner, name)
+          .then((res) => addNotice(sid, "/mcp test", mcpTestLines(runner, name, res)))
+          .catch((err) => addNotice(sid, "/mcp test", [`test crashed: ${(err as Error).message}`]));
+        setPaletteMode(null);
+      },
+      actions: [
+        {
+          key: "d",
+          label: "remove (press d again to confirm)",
+          destructive: true,
+          run: () => {
+            const sid = api.activeId;
+            const res = removeMcp(runner, name);
+            if (sid) addNotice(sid, "/mcp remove", mcpActionLines(runner, "remove", name, res));
+            setPaletteMode(null);
+          },
+        },
+      ],
+    }));
+  }, [mcpServerNames, api.active?.activeRunner, api.activeId]);
+
+  const commandItems = useMemo<PaletteItem[]>(() => {
+    return SLASH_COMMANDS.map((cmd) => ({
+      id: `cmd:${cmd.name}`,
+      label: cmd.name,
+      detail: cmd.help,
+      badge: { text: "cmd", color: theme.textMuted },
+      onActivate: () => {
+        // For commands with arguments, drop the name into the prompt and let
+        // the user finish typing. For zero-arg commands, run immediately.
+        const bare = cmd.name.split(" ")[0];
+        const hasArgs = cmd.name.includes("[") || cmd.name.includes("<");
+        setPaletteMode(null);
+        if (!hasArgs) handleSubmit(bare);
+        else handleSubmit(bare); // bare form is fine for our commands — args are optional
+      },
+    }));
+  }, []);
+
+  function itemsForMode(mode: "sessions" | "skills" | "mcp" | "global"): PaletteItem[] {
+    switch (mode) {
+      case "sessions": return sessionItems;
+      case "skills":   return skillItems;
+      case "mcp":      return mcpItems;
+      case "global":   return [...sessionItems, ...commandItems, ...skillItems];
+    }
+  }
+
   const addNotice = useCallback(
     (sessionId: string, command: string, lines: string[]) => {
       const notice = makeNotice(command, lines);
@@ -117,39 +326,11 @@ export function App() {
       setPaletteMode((m) => (m === "global" ? null : "global"));
       return;
     }
-    if (focus === "prompt") return;
-    // ctrl+b is the symmetric back-to-prompt key when already in browse mode.
-    if (key.ctrl && key.name === "b") {
-      setFocus("prompt");
-      return;
-    }
-    // Esc from browse mode interrupts a streaming turn rather than refocusing.
-    // It feels weird to silently swallow Esc otherwise, but jumping focus on
-    // Esc was the old "browse → prompt" path and is now owned by ctrl+b.
-    if (key.name === "escape") {
-      if (api.active?.streaming) api.interrupt();
-      return;
-    }
-    if (
-      key.name === "return" ||
-      key.name === "enter" ||
-      key.name === "linefeed" ||
-      key.name === "kpenter"
-    ) {
-      setFocus("prompt");
-      return;
-    }
-    if (key.name === "j" || key.name === "down") return api.nextSession();
-    if (key.name === "k" || key.name === "up") return api.prevSession();
-    if (key.name === "n") return api.createSession();
-    if (key.name === "d") {
-      const now = Date.now();
-      if (now - lastDeleteRef.current < 1500 && api.activeId) {
-        lastDeleteRef.current = 0;
-        api.deleteSession(api.activeId);
-      } else {
-        lastDeleteRef.current = now;
-      }
+    // ctrl+e toggles the latest delegation group. Not part of browse mode —
+    // the Prompt input doesn't bind ctrl+e, so this passes through cleanly
+    // while typing.
+    if (key.ctrl && key.name === "e") {
+      toggleLatestDelegation();
       return;
     }
   });
@@ -509,99 +690,123 @@ export function App() {
   }, [api.active, api.setClaudeMode]);
 
   return (
-    <box flexDirection="row" width={width} height={height} backgroundColor={theme.bg}>
-      <Sidebar sessions={api.sessions} activeId={api.activeId} width={SIDEBAR_WIDTH} />
-      <box flexDirection="column" flexGrow={1}>
-        <box
-          flexDirection="column"
-          flexGrow={1}
-          marginTop={1}
-          marginBottom={1}
-          marginLeft={2}
-          marginRight={2}
-        >
-          <Transcript session={api.active} notices={activeNotices} />
-          <Spinner active={api.active} />
-          {api.pendingPermissions.length > 0 && (
-            <PermissionPanel
-              request={api.pendingPermissions[0]}
-              queueSize={api.pendingPermissions.length}
-              onDecision={api.respondPermission}
-            />
-          )}
-          {modelPicker && api.active && (
-            <ModelPicker
-              runner={modelPicker.runner}
-              currentId={api.active.models[modelPicker.runner]}
-              onSelect={(modelId) => {
-                if (!api.active) return;
-                api.setModel(modelPicker.runner, modelId);
-                if (api.activeId) {
-                  addNotice(
-                    api.activeId,
-                    "/model",
-                    modelLines(
-                      {
-                        ...api.active,
-                        models: {
-                          ...api.active.models,
-                          [modelPicker.runner]: modelId,
-                        },
-                      },
-                      `${modelPicker.runner} → ${modelId}`,
-                    ),
-                  );
-                }
-                setModelPicker(null);
-              }}
-              onReset={() => {
-                if (!api.active) return;
-                api.setModel(modelPicker.runner, null);
-                if (api.activeId) {
-                  const next = { ...api.active.models };
-                  delete next[modelPicker.runner];
-                  addNotice(
-                    api.activeId,
-                    "/model",
-                    modelLines(
-                      { ...api.active, models: next },
-                      `${modelPicker.runner} → (default)`,
-                    ),
-                  );
-                }
-                setModelPicker(null);
-              }}
-              onCancel={() => setModelPicker(null)}
-            />
-          )}
-          {paletteMode && (
-            <Palette
-              title={titleForMode(paletteMode)}
-              placeholder="type to filter…"
-              items={[]}
-              onClose={() => setPaletteMode(null)}
-            />
-          )}
-          <Prompt
-            focused={focus === "prompt"}
-            onUnfocus={() => setFocus("browse")}
-            onSubmit={handleSubmit}
-            locked={api.pendingPermissions.length > 0 || modelPicker !== null || paletteMode !== null}
-            streaming={api.active?.streaming ?? false}
-            onInterrupt={api.interrupt}
-            runner={api.active?.activeRunner ?? null}
-            claudeMode={api.active?.claudeMode ?? "default"}
-            onCycleClaudeMode={cycleClaudeMode}
-            modelLabel={promptMeta?.modelLabel ?? null}
-            contextPercent={promptMeta?.contextPercent ?? null}
-            projectLabel={promptMeta?.projectLabel ?? null}
-            branch={promptMeta?.branch ?? null}
-            delegations={promptMeta?.delegations ?? null}
-          />
-        </box>
-      </box>
+    <box
+      flexDirection="column"
+      width={width}
+      height={height}
+      backgroundColor={theme.bg}
+      marginTop={1}
+      marginBottom={1}
+      marginLeft={2}
+      marginRight={2}
+    >
+      <Transcript
+        session={api.active}
+        notices={activeNotices}
+        expandedDelegations={activeExpanded}
+        latestDelegationId={activeLatestDelegationId}
+      />
+      <Spinner active={api.active} />
+      {api.pendingPermissions.length > 0 && (
+        <PermissionPanel
+          request={api.pendingPermissions[0]}
+          queueSize={api.pendingPermissions.length}
+          onDecision={api.respondPermission}
+        />
+      )}
+      {modelPicker && api.active && (
+        <ModelPicker
+          runner={modelPicker.runner}
+          currentId={api.active.models[modelPicker.runner]}
+          onSelect={(modelId) => {
+            if (!api.active) return;
+            api.setModel(modelPicker.runner, modelId);
+            if (api.activeId) {
+              addNotice(
+                api.activeId,
+                "/model",
+                modelLines(
+                  {
+                    ...api.active,
+                    models: {
+                      ...api.active.models,
+                      [modelPicker.runner]: modelId,
+                    },
+                  },
+                  `${modelPicker.runner} → ${modelId}`,
+                ),
+              );
+            }
+            setModelPicker(null);
+          }}
+          onReset={() => {
+            if (!api.active) return;
+            api.setModel(modelPicker.runner, null);
+            if (api.activeId) {
+              const next = { ...api.active.models };
+              delete next[modelPicker.runner];
+              addNotice(
+                api.activeId,
+                "/model",
+                modelLines(
+                  { ...api.active, models: next },
+                  `${modelPicker.runner} → (default)`,
+                ),
+              );
+            }
+            setModelPicker(null);
+          }}
+          onCancel={() => setModelPicker(null)}
+        />
+      )}
+      {paletteMode && (
+        <Palette
+          title={titleForMode(paletteMode)}
+          placeholder={placeholderForMode(paletteMode)}
+          items={itemsForMode(paletteMode)}
+          onClose={() => setPaletteMode(null)}
+          onCreate={paletteMode === "sessions" ? () => { api.createSession(); setPaletteMode(null); } : undefined}
+          footer={
+            paletteMode === "sessions"
+              ? "↑↓ nav   enter switch   tab actions   ctrl+n new   esc close"
+              : undefined
+          }
+        />
+      )}
+      <Prompt
+        focused
+        onSubmit={handleSubmit}
+        locked={api.pendingPermissions.length > 0 || modelPicker !== null || paletteMode !== null}
+        streaming={api.active?.streaming ?? false}
+        onInterrupt={api.interrupt}
+        runner={api.active?.activeRunner ?? null}
+        claudeMode={api.active?.claudeMode ?? "default"}
+        onCycleClaudeMode={cycleClaudeMode}
+        modelLabel={promptMeta?.modelLabel ?? null}
+        contextPercent={promptMeta?.contextPercent ?? null}
+        projectLabel={promptMeta?.projectLabel ?? null}
+        branch={promptMeta?.branch ?? null}
+        delegations={promptMeta?.delegations ?? null}
+        sessionPill={sessionPill}
+      />
     </box>
   );
+}
+
+function clipDetail(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+function parseMcpNames(stdout: string): string[] {
+  // Both runners emit name-colon-rest lines. Skip blank/heading lines.
+  const names: string[] = [];
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = line.match(/^([A-Za-z0-9_.-]+):\s/);
+    if (m) names.push(m[1]);
+  }
+  return names;
 }
 
 function titleForMode(mode: "sessions" | "skills" | "mcp" | "global"): string {
@@ -610,5 +815,14 @@ function titleForMode(mode: "sessions" | "skills" | "mcp" | "global"): string {
     case "skills":   return "skills";
     case "mcp":      return "mcp servers";
     case "global":   return "jump to anything";
+  }
+}
+
+function placeholderForMode(mode: "sessions" | "skills" | "mcp" | "global"): string {
+  switch (mode) {
+    case "sessions": return "search sessions…";
+    case "skills":   return "search skills…";
+    case "mcp":      return "search mcp servers…";
+    case "global":   return "jump to anything…";
   }
 }

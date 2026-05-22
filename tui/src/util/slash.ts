@@ -29,6 +29,30 @@ export type PlanAction =
   | { kind: "off" }
   | { kind: "status" };
 
+// /skills grammar:
+//   (no args) | list           — list installed skills for the active runner
+//   add <path>                  — symlink a skill directory into the runner's
+//                                 skills dir
+//   remove <name>               — unlink an installed skill (symlinks only)
+//   info <name>                 — print the skill's SKILL.md frontmatter
+export type SkillsAction =
+  | { kind: "list" }
+  | { kind: "add"; path: string }
+  | { kind: "remove"; name: string }
+  | { kind: "info"; name: string };
+
+// /mcp grammar:
+//   (no args) | list           — show MCP servers for the active runner
+//   add <name> <cmd> [args...]  — register a stdio MCP server
+//   remove <name>               — drop a server
+//   test <name>                 — spawn the configured server briefly to
+//                                 verify it starts cleanly
+export type McpAction =
+  | { kind: "list" }
+  | { kind: "add"; name: string; command: string; args: string[] }
+  | { kind: "remove"; name: string }
+  | { kind: "test"; name: string };
+
 export type SlashCommand =
   | { type: "claude"; rest: string }
   | { type: "codex"; rest: string }
@@ -36,10 +60,13 @@ export type SlashCommand =
   | { type: "clear"; rest: string }
   | { type: "help"; rest: string }
   | { type: "context"; rest: string }
+  | { type: "sessions"; rest: string }
   | { type: "tree"; rest: string }
   | { type: "permissions"; action: PermissionsAction }
   | { type: "model"; action: ModelAction }
   | { type: "plan"; action: PlanAction }
+  | { type: "skills"; action: SkillsAction }
+  | { type: "mcp"; action: McpAction }
   | { type: "unknown"; name: string; rest: string };
 
 export function parseSlash(text: string): SlashCommand | null {
@@ -62,6 +89,9 @@ export function parseSlash(text: string): SlashCommand | null {
     case "context":
     case "info":
       return { type: "context", rest };
+    case "sessions":
+    case "list":
+      return { type: "sessions", rest };
     case "tree":
     case "ls":
       return { type: "tree", rest };
@@ -72,8 +102,68 @@ export function parseSlash(text: string): SlashCommand | null {
       return { type: "model", action: parseModelAction(rest) };
     case "plan":
       return { type: "plan", action: parsePlanAction(rest) };
+    case "skills":
+    case "skill":
+      return { type: "skills", action: parseSkillsAction(rest) };
+    case "mcp":
+      return { type: "mcp", action: parseMcpAction(rest) };
     default:
       return { type: "unknown", name: cmd, rest };
+  }
+}
+
+function parseSkillsAction(rest: string): SkillsAction {
+  if (!rest) return { kind: "list" };
+  const [verb, ...tail] = rest.split(/\s+/);
+  const value = tail.join(" ").trim();
+  switch (verb.toLowerCase()) {
+    case "list":
+    case "ls":
+      return { kind: "list" };
+    case "add":
+    case "install":
+    case "link":
+      return { kind: "add", path: value };
+    case "remove":
+    case "rm":
+    case "delete":
+    case "uninstall":
+      return { kind: "remove", name: value };
+    case "info":
+    case "show":
+    case "describe":
+      return { kind: "info", name: value };
+    default:
+      return { kind: "list" };
+  }
+}
+
+// /mcp uses a shell-style split so command args survive intact. We don't
+// support quoted strings yet — if a user needs spaces in an arg, they can
+// invoke the underlying CLI directly.
+function parseMcpAction(rest: string): McpAction {
+  if (!rest) return { kind: "list" };
+  const tokens = rest.split(/\s+/).filter(Boolean);
+  const verb = tokens[0]?.toLowerCase() ?? "";
+  switch (verb) {
+    case "list":
+    case "ls":
+      return { kind: "list" };
+    case "remove":
+    case "rm":
+    case "delete":
+      return { kind: "remove", name: tokens[1] ?? "" };
+    case "test":
+    case "ping":
+      return { kind: "test", name: tokens[1] ?? "" };
+    case "add": {
+      const name = tokens[1] ?? "";
+      const command = tokens[2] ?? "";
+      const args = tokens.slice(3);
+      return { kind: "add", name, command, args };
+    }
+    default:
+      return { kind: "list" };
   }
 }
 
@@ -137,8 +227,11 @@ export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/clear", help: "start a fresh session and drop the current one" },
   { name: "/help", help: "show this help" },
   { name: "/context", help: "show session info: runner, cwd, tokens, messages" },
+  { name: "/sessions", help: "list all sessions with runner, cwd, message count" },
   { name: "/tree [depth]", help: "show project tree of the session's cwd (default depth 3)" },
   { name: "/permissions [add|remove|clear]", help: "manage Claude tool-permission rules (Claude only)" },
   { name: "/model [show | <name> | <runner> <name> | reset]", help: "open model picker for active runner; show prints status; <name> sets directly" },
   { name: "/plan [on|off]", help: "plan-only mode — model proposes a plan, no tools run (Claude only)" },
+  { name: "/skills [add|remove|info]", help: "manage skills for the active runner (~/.claude/skills or ~/.codex/skills)" },
+  { name: "/mcp [add|remove|test]", help: "manage MCP servers for the active runner via its CLI" },
 ];

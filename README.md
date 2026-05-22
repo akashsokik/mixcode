@@ -54,6 +54,28 @@ To run the backend standalone:
 npm run server
 ```
 
+### `mixcode` — per-PWD launcher
+
+After `npm link` (run once in this repo), a `mixcode` command is available
+on `PATH`. Running it boots a backend + TUI scoped to the directory it was
+invoked from:
+
+```
+cd ~/code/some-project
+mixcode
+```
+
+Each PWD gets its own sessions store, transcripts, log file and port
+under `~/.mixcode/projects/<encoded-pwd>/`, so sessions in one project
+never leak into another. Re-running `mixcode` in the same directory
+re-attaches to the already-running backend instead of spawning a second.
+
+Env file lookup (most specific first):
+
+1. `<pwd>/.env`
+2. `~/.mixcode/.env`
+3. the install-dir `.env` files (fallback)
+
 ## Inside the TUI
 
 - Prompt — type a message, Enter to send.
