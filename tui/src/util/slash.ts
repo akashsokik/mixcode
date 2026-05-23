@@ -69,10 +69,17 @@ export type SlashCommand =
   | { type: "mcp"; action: McpAction }
   | { type: "unknown"; name: string; rest: string };
 
+// Allow letters, digits, hyphens, dots, underscores, and colons so
+// plugin-qualified skill names (`/superpowers:brainstorming`) and hyphenated
+// names (`/use-railway`) parse as a single command instead of falling out of
+// the regex entirely.
+const SLASH_COMMAND_NAME = /^\/([A-Za-z0-9][A-Za-z0-9:_.-]*)(?:\s+(.*))?$/s;
+
 export function parseSlash(text: string): SlashCommand | null {
-  const m = text.match(/^\/(\w+)(?:\s+(.*))?$/s);
+  const m = text.match(SLASH_COMMAND_NAME);
   if (!m) return null;
-  const cmd = m[1].toLowerCase();
+  const rawName = m[1];
+  const cmd = rawName.toLowerCase();
   const rest = (m[2] ?? "").trim();
   switch (cmd) {
     case "claude":
@@ -108,7 +115,9 @@ export function parseSlash(text: string): SlashCommand | null {
     case "mcp":
       return { type: "mcp", action: parseMcpAction(rest) };
     default:
-      return { type: "unknown", name: cmd, rest };
+      // `name` preserves the user-typed case so callers can match it against
+      // case-sensitive lists (e.g. plugin-qualified skill names).
+      return { type: "unknown", name: rawName, rest };
   }
 }
 

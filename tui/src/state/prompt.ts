@@ -70,18 +70,30 @@ const SLASH_ITEMS: SlashSuggestion[] = SLASH_COMMANDS.map((c) => ({
   help: c.help,
 }));
 
-export function useSlashCompletions(): SlashCompletions {
+// `extras` is the dynamic tail (typically skills surfaced from the active
+// session) appended to the static SLASH_ITEMS. Duplicates by name are dropped
+// in favor of the static entry so first-class commands always win.
+export function useSlashCompletions(extras: SlashSuggestion[] = []): SlashCompletions {
   const [active, setActive] = useState(false);
   const [query, setQueryRaw] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
 
+  const allItems = useMemo<SlashSuggestion[]>(() => {
+    if (extras.length === 0) return SLASH_ITEMS;
+    const taken = new Set(SLASH_ITEMS.map((c) => c.name));
+    const tail = extras.filter((e) => !taken.has(e.name));
+    return [...SLASH_ITEMS, ...tail];
+  }, [extras]);
+
   const matches = useMemo(() => {
     const q = query.toLowerCase();
-    if (!q) return SLASH_ITEMS;
-    const prefixed = SLASH_ITEMS.filter((c) => c.name.slice(1).startsWith(q));
+    if (!q) return allItems;
+    const prefixed = allItems.filter((c) =>
+      c.name.slice(1).toLowerCase().startsWith(q),
+    );
     if (prefixed.length > 0) return prefixed;
-    return SLASH_ITEMS.filter((c) => c.name.slice(1).includes(q));
-  }, [query]);
+    return allItems.filter((c) => c.name.slice(1).toLowerCase().includes(q));
+  }, [allItems, query]);
 
   const safeIndex = Math.min(selectedIndex, Math.max(matches.length - 1, 0));
 
