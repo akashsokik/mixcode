@@ -24,22 +24,80 @@ function skillsDir(runner: RunnerKind): string {
   return path.join(homedir(), runner === "claude" ? ".claude" : ".codex", "skills");
 }
 
+function pluginsCacheDir(runner: RunnerKind): string {
+  return path.join(
+    homedir(),
+    runner === "claude" ? ".claude" : ".codex",
+    "plugins",
+    "cache",
+  );
+}
+
+// Walk `~/.<runner>/plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>`
+// for SKILL.md and return one entry per skill, named `<plugin>:<skill>`.
+// Plugin skills are real directories (not symlinks) and can't be removed via
+// /skills remove — `isSymlink: false` correctly hides the d action.
+function listPluginSkills(runner: RunnerKind): SkillEntry[] {
+  const root = pluginsCacheDir(runner);
+  const out: SkillEntry[] = [];
+  const marketplaces = safeReaddir(root);
+  for (const market of marketplaces) {
+    if (!market.isDirectory()) continue;
+    const marketDir = path.join(root, market.name);
+    for (const plugin of safeReaddir(marketDir)) {
+      if (!plugin.isDirectory()) continue;
+      const pluginDir = path.join(marketDir, plugin.name);
+      // Only the most recent installed version is loaded by the runner, but
+      // we don't know which without parsing installed_plugins.json — surface
+      // every version we find, deduped by `<plugin>:<skill>` later. Cheaper
+      // than re-implementing the SDK's resolver here.
+      for (const ver of safeReaddir(pluginDir)) {
+        if (!ver.isDirectory()) continue;
+        const skillsRoot = path.join(pluginDir, ver.name, "skills");
+        for (const skill of safeReaddir(skillsRoot)) {
+          if (!skill.isDirectory()) continue;
+          const skillDir = path.join(skillsRoot, skill.name);
+          if (!existsSync(path.join(skillDir, "SKILL.md"))) continue;
+          out.push({
+            name: `${plugin.name}:${skill.name}`,
+            source: skillDir,
+            isSymlink: false,
+            description: readSkillDescription(skillDir),
+          });
+        }
+      }
+    }
+  }
+  // Dedupe by qualified name — when multiple cached versions exist we keep
+  // the lexically-last one, which is good enough for a description preview.
+  const byName = new Map<string, SkillEntry>();
+  for (const e of out) byName.set(e.name, e);
+  return Array.from(byName.values());
+}
+
+function safeReaddir(dir: string): import("node:fs").Dirent[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
 function expandHome(p: string): string {
   if (p === "~") return homedir();
   if (p.startsWith("~/")) return path.join(homedir(), p.slice(2));
   return p;
 }
 
+// Returns the union of `~/.<runner>/skills/*` (user-installed, removable) and
+// `~/.<runner>/plugins/cache/*/<plugin>/<ver>/skills/*` (plugin-bundled). The
+// SDK-sourced palette path supersedes this for Claude once a turn has run,
+// but it's the only source we have for Codex and for the pre-first-turn
+// bootstrap. Built-in CLI skills don't live on disk and aren't included here.
 export function listSkills(runner: RunnerKind): SkillEntry[] {
   const dir = skillsDir(runner);
-  let entries: import("node:fs").Dirent[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
   const out: SkillEntry[] = [];
-  for (const e of entries) {
+  for (const e of safeReaddir(dir)) {
     if (e.name.startsWith(".")) continue;
     const full = path.join(dir, e.name);
     const isSymlink = e.isSymbolicLink();
@@ -61,6 +119,13 @@ export function listSkills(runner: RunnerKind): SkillEntry[] {
       isSymlink,
       description: source ? readSkillDescription(source) : "",
     });
+  }
+  // Merge in plugin-cache skills. User-dir entries win on name collision
+  // because they're the ones the user can /skills remove.
+  const taken = new Set(out.map((e) => e.name));
+  for (const e of listPluginSkills(runner)) {
+    if (taken.has(e.name)) continue;
+    out.push(e);
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
