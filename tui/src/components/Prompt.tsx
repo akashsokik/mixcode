@@ -174,7 +174,7 @@ export function Prompt({
   }
 
   const completionRows = Math.min(completions.matches.length, 6);
-  const slashRows = Math.min(slash.matches.length, 8);
+  const slashView = sliceSlashViewport(slash.matches, slash.selectedIndex);
 
   return (
     <box flexDirection="column" flexShrink={0}>
@@ -186,10 +186,11 @@ export function Prompt({
           backgroundColor={theme.bgPanel}
           paddingLeft={1}
           paddingRight={1}
-          height={slashRows + 2}
+          height={slashView.rows.length + (slashView.tail > 0 ? 1 : 0) + 2}
         >
-          {slash.matches.slice(0, slashRows).map((m, i) => {
-            const isSel = i === slash.selectedIndex;
+          {slashView.rows.map((m, i) => {
+            const absolute = slashView.start + i;
+            const isSel = absolute === slash.selectedIndex;
             return (
               <box key={m.name} flexDirection="row">
                 <text fg={isSel ? theme.text : theme.textMuted}>
@@ -200,6 +201,9 @@ export function Prompt({
               </box>
             );
           })}
+          {slashView.tail > 0 && (
+            <text fg={theme.textFaint}>{`  … ${slashView.tail} more`}</text>
+          )}
         </box>
       )}
       {!slash.active && completions.active && completions.matches.length > 0 && (
@@ -421,6 +425,27 @@ function truncate(s: string, n: number): string {
   if (s.length <= n) return s;
   if (n <= 1) return s.slice(0, n);
   return `${s.slice(0, n - 1)}…`;
+}
+
+// Sliding window over the slash-suggestion list. Mirrors the Palette viewport
+// fix: the old static `slice(0, 8)` stranded the cursor when it moved past row
+// 7, so arrow-down past the 8th entry had no visible effect. Anchors the
+// selected row ~3 rows below the top so it stays in view while scrolling.
+const SLASH_VIEWPORT_ROWS = 8;
+const SLASH_VIEWPORT_ANCHOR = 3;
+function sliceSlashViewport(
+  items: SlashSuggestion[],
+  selected: number,
+): { rows: SlashSuggestion[]; start: number; tail: number } {
+  const start = Math.max(
+    0,
+    Math.min(
+      selected - SLASH_VIEWPORT_ANCHOR,
+      Math.max(0, items.length - SLASH_VIEWPORT_ROWS),
+    ),
+  );
+  const end = Math.min(items.length, start + SLASH_VIEWPORT_ROWS);
+  return { rows: items.slice(start, end), start, tail: items.length - end };
 }
 
 function placeholderForMode(
