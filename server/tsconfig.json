@@ -4,6 +4,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2023"],
+    "types": ["bun"],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,5 +15,6 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": false
   },
-  "include": ["src/**/*", "../shared/**/*"]
+  "include": ["src/**/*", "../shared/**/*"],
+  "exclude": ["src/smoke-*.ts"]
 }

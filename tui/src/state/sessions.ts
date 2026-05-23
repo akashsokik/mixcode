@@ -23,7 +23,13 @@ export type PermissionResponsePayload = {
   annotations?: Record<string, AskUserAnnotation>;
 };
 
-const DEFAULT_URL = "ws://127.0.0.1:4567/ws";
+// The embedded server in tui/src/index.tsx writes ADVERSERIAL_SERVER_URL
+// to process.env before the React tree mounts, so it's always set by the
+// time WSClient is constructed. Falls back to 4567 for legacy callers.
+const DEFAULT_URL = (() => {
+  const base = process.env.ADVERSERIAL_SERVER_URL ?? "http://127.0.0.1:4567";
+  return base.replace(/^http/, "ws") + "/ws";
+})();
 
 type State = {
   sessions: Session[];

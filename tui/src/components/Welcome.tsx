@@ -1,5 +1,5 @@
 import { theme } from "../theme";
-import pkg from "../../package.json" with { type: "json" };
+import pkg from "../../../package.json" with { type: "json" };
 
 const SHORTCUTS: ReadonlyArray<readonly [string, string]> = [
   ["enter", "send prompt"],
