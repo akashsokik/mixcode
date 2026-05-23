@@ -98,14 +98,14 @@ export function App() {
     });
   }, [api.sessions]);
 
-  // Skills are read from disk — cheap enough to do synchronously in an
-  // effect when entering skills or global mode, or when the active runner
-  // changes while a palette is open.
+  // Skills are read from disk — cheap enough to do synchronously when the
+  // active runner changes. The list also feeds the prompt's slash
+  // autocomplete, so we can't gate on paletteMode anymore (the autocomplete
+  // needs the names before the user opens the palette).
   useEffect(() => {
     if (!api.active) return;
-    if (paletteMode !== "skills" && paletteMode !== "global") return;
     setSkillEntries(listSkills(api.active.activeRunner));
-  }, [paletteMode, api.active?.activeRunner]);
+  }, [api.active?.activeRunner]);
 
   // MCP list shells out to `<runner> mcp list` which can take seconds.
   // Defer past the render commit with setTimeout(0) so the palette opens
@@ -292,6 +292,38 @@ export function App() {
       } satisfies PaletteItem;
     });
   }, [skillEntries, api.active?.activeRunner, api.activeId, api.sessionSkills]);
+
+  // Skill suggestions surfaced in the prompt's slash autocomplete. Names use
+  // the same source as the palette: SDK-reported when the active session has
+  // one for the current runner, FS walk otherwise. Plugin-qualified names
+  // (`/superpowers:brainstorming`) appear verbatim — the loosened slash regex
+  // accepts the colon.
+  const skillSlashSuggestions = useMemo(() => {
+    if (!api.active) return [];
+    const runner = api.active.activeRunner;
+    const sid = api.activeId;
+    const snap = sid ? api.sessionSkills[sid] : null;
+    const useSdk = !!(snap && snap.runner === runner);
+    const names: { name: string; help: string }[] = useSdk
+      ? snap!.entries.map((e) => ({
+          name: `/${e.name}`,
+          help: e.pluginName ? `skill (plugin: ${e.pluginName})` : "skill",
+        }))
+      : skillEntries.map((e) => ({
+          name: `/${e.name}`,
+          help: e.description ? clipDetail(e.description, 60) : "skill",
+        }));
+    return names;
+  }, [api.active?.activeRunner, api.activeId, api.sessionSkills, skillEntries]);
+
+  // Set of slash-name strings (case-insensitive) the active session
+  // recognises as skills, used by handleSubmit to decide whether to forward
+  // an "unknown" slash to the runner instead of showing the error notice.
+  const knownSkillSlashNames = useMemo(() => {
+    const out = new Set<string>();
+    for (const s of skillSlashSuggestions) out.add(s.name.slice(1).toLowerCase());
+    return out;
+  }, [skillSlashSuggestions]);
 
   const mcpItems = useMemo<PaletteItem[]>(() => {
     if (!api.active) return [];
@@ -703,13 +735,22 @@ export function App() {
           }
           return;
         }
-        case "unknown":
+        case "unknown": {
+          // Known skill names pass through to the runner verbatim. The
+          // Claude/Codex CLIs route /<skill-name> through their Skill tool;
+          // for names we don't recognise, fall back to the help notice so a
+          // typo doesn't silently become a model prompt.
+          if (knownSkillSlashNames.has(slash.name.toLowerCase())) {
+            api.send(text);
+            return;
+          }
           if (sid) {
             addNotice(sid, `/${slash.name}`, [
               `unknown command. type /help for the list.`,
             ]);
           }
           return;
+        }
       }
     }
     api.send(text);
@@ -837,6 +878,7 @@ export function App() {
         branch={promptMeta?.branch ?? null}
         delegations={promptMeta?.delegations ?? null}
         sessionPill={sessionPill}
+        slashExtras={skillSlashSuggestions}
       />
     </box>
   );

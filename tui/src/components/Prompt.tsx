@@ -10,6 +10,7 @@ import {
   useCompletions,
   useHistory,
   useSlashCompletions,
+  type SlashSuggestion,
 } from "../state/prompt";
 import { theme } from "../theme";
 import { claudeModeLabel } from "../util/notice";
@@ -36,6 +37,9 @@ type PromptProps = {
   branch?: { name: string; dirty: boolean } | null;
   delegations?: DelegationStats | null;
   sessionPill?: { name: string; streaming: number } | null;
+  // Dynamic slash suggestions appended below the static SLASH_COMMANDS list —
+  // typically the active session's skills surfaced as `/skill-name` entries.
+  slashExtras?: SlashSuggestion[];
 };
 
 export function Prompt({
@@ -54,18 +58,22 @@ export function Prompt({
   branch,
   delegations,
   sessionPill,
+  slashExtras,
 }: PromptProps) {
   const [text, setText] = useState("");
   const history = useHistory();
   const completions = useCompletions();
-  const slash = useSlashCompletions();
+  const slash = useSlashCompletions(slashExtras);
 
   useEffect(() => {
-    const slashMatch = text.match(/^\/(\w*)$/);
+    // Accept skill-style names (`/use-railway`, `/superpowers:brainstorming`)
+    // while typing, not just `\w+`. The same character class as parseSlash.
+    const slashMatch = text.match(/^\/([A-Za-z0-9][A-Za-z0-9:_.-]*)?$/);
     if (slashMatch) {
       if (completions.active) completions.close();
-      if (!slash.active) slash.open(slashMatch[1]);
-      else slash.setQuery(slashMatch[1]);
+      const q = slashMatch[1] ?? "";
+      if (!slash.active) slash.open(q);
+      else slash.setQuery(q);
       return;
     }
     if (slash.active) slash.close();
