@@ -1,0 +1,581 @@
+---
+title: Troubleshooting
+description: Solutions to common MixCode issues
+---
+
+# Troubleshooting
+
+Solutions for common issues and how to debug MixCode.
+
+## Getting Help
+
+### Diagnostic Information
+
+Collect diagnostic info to share with support:
+
+```bash
+mixcode --diagnose
+```
+
+This generates:
+- System info (OS, Node version, Bun version)
+- Configuration (what's loaded)
+- Active backends
+- Recent errors
+- Memory usage
+
+### Debug Mode
+
+Enable verbose logging:
+
+```bash
+export DEBUG=mixcode:*
+mixcode
+```
+
+Logs appear in:
+```
+~/.mixcode/projects/<project>/server.log
+```
+
+### View Logs
+
+```bash
+# Live logs
+tail -f ~/.mixcode/projects/<project>/server.log
+
+# All logs
+cat ~/.mixcode/projects/<project>/server.log | less
+
+# Filter errors
+grep ERROR ~/.mixcode/projects/<project>/server.log
+```
+
+## Common Issues
+
+### Startup Issues
+
+#### "Node version too old"
+
+**Error:** `Node.js >= 20 required, found v18.x`
+
+**Solution:**
+
+```bash
+# Check current version
+node --version
+
+# Install Node 20+
+# Using nvm:
+nvm install 20
+nvm use 20
+
+# Using homebrew (macOS):
+brew install node@20
+```
+
+#### "Bun not found"
+
+**Error:** `bun: command not found`
+
+**Solution:**
+
+```bash
+# Install Bun
+curl -fsSL https://bun.sh/install | bash
+
+# Add to PATH if needed
+export PATH=$HOME/.bun/bin:$PATH
+
+# Verify
+bun --version
+```
+
+#### "Dependencies not installed"
+
+**Error:** `Cannot find module '@anthropic-ai/sdk'`
+
+**Solution:**
+
+```bash
+# Install dependencies
+npm install
+
+# Reinstall with clean slate
+rm -rf node_modules package-lock.json
+npm install
+
+# Verify
+npm run typecheck
+```
+
+### Connection Issues
+
+#### "Cannot connect to server"
+
+**Error:** `WebSocket connection failed: Connection refused`
+
+**Solution:**
+
+1. Check if backend is running:
+   ```bash
+   ps aux | grep mixcode
+   ```
+
+2. Start backend manually:
+   ```bash
+   npm run server
+   ```
+
+3. Check port:
+   ```bash
+   lsof -i :4567
+   ```
+
+4. Try different port:
+   ```bash
+   PORT=4568 npm start
+   ```
+
+#### "Port already in use"
+
+**Error:** `EADDRINUSE: address already in use :::4567`
+
+**Solution:**
+
+```bash
+# Find what's using the port
+lsof -i :4567
+
+# Kill it
+kill -9 <PID>
+
+# Or use different port
+PORT=4568 npm start
+```
+
+#### "TUI can't find backend"
+
+**Error:** `Cannot reach ws://127.0.0.1:4567`
+
+**Solution:**
+
+```bash
+# Ensure backend is running
+npm run server
+
+# Check backend is listening
+netstat -an | grep 4567
+
+# Verify URL
+echo $ADVERSERIAL_SERVER_URL
+
+# Set explicitly if needed
+export ADVERSERIAL_SERVER_URL=http://127.0.0.1:4567
+npm start
+```
+
+### API Key Issues
+
+#### "API key not found"
+
+**Error:** `ANTHROPIC_API_KEY not configured`
+
+**Solution:**
+
+1. Check `.env` file:
+   ```bash
+   cat .env | grep ANTHROPIC
+   ```
+
+2. Verify environment variable:
+   ```bash
+   echo $ANTHROPIC_API_KEY
+   ```
+
+3. Set if missing:
+   ```bash
+   export ANTHROPIC_API_KEY=sk-ant-xxxxx
+   npm start
+   ```
+
+4. Check file permissions:
+   ```bash
+   ls -la .env
+   ```
+
+#### "Invalid API key"
+
+**Error:** `Authentication failed: Invalid API key`
+
+**Solution:**
+
+```bash
+# Verify key format
+# Claude: should start with "sk-ant-"
+# OpenAI: should start with "sk-"
+
+# Test key validity
+curl -X POST https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-3-sonnet-20240229","max_tokens":100,"messages":[{"role":"user","content":"test"}]}'
+
+# If 401, key is invalid
+# Regenerate from console
+```
+
+#### "Rate limited"
+
+**Error:** `Rate limit exceeded. Please try again later.`
+
+**Solution:**
+
+```bash
+# Wait the specified time (usually 60 seconds)
+sleep 60
+
+# If persistent, check:
+# 1. Key's rate limit tier
+# 2. Recent usage
+# 3. Pricing plan limits
+```
+
+### Session Issues
+
+#### "Cannot create session"
+
+**Error:** `Failed to create session`
+
+**Solution:**
+
+```bash
+# Check memory
+free -h
+
+# Check disk space
+df -h ~/.mixcode
+
+# Check permissions
+ls -la ~/.mixcode/projects/
+
+# Try again
+/new-session
+```
+
+#### "Session not found"
+
+**Error:** `Session sess_abc not found`
+
+**Solution:**
+
+```bash
+# List sessions
+/sessions
+
+# Check transcript files
+ls ~/.mixcode/projects/<project>/transcripts/
+
+# Recover from transcript
+mixcode restore <transcript-file>
+```
+
+#### "Cannot switch runners"
+
+**Error:** `Failed to switch to Claude`
+
+**Solution:**
+
+```bash
+# Check runner availability
+/config
+
+# Verify API keys are set
+echo $ANTHROPIC_API_KEY
+echo $OPENAI_API_KEY
+
+# Restart backend
+pkill -f "mixcode.*server"
+npm start
+```
+
+### Display Issues
+
+#### "Terminal rendering broken"
+
+**Error:** Garbled text or broken layout
+
+**Solution:**
+
+```bash
+# Clear terminal
+clear
+
+# Resize terminal to standard size
+# (usually helps with rendering)
+
+# Restart MixCode
+npm start
+
+# Try different terminal
+# (some terminals have better compatibility)
+```
+
+#### "Colors not working"
+
+**Error:** No color output in terminal
+
+**Solution:**
+
+```bash
+# Force color output
+export FORCE_COLOR=1
+npm start
+
+# Or disable if causing issues
+export NO_COLOR=1
+npm start
+```
+
+#### "Text overflow or wrapping"
+
+**Error:** Long lines don't wrap properly
+
+**Solution:**
+
+```bash
+# Increase terminal width
+# (usually to 120+ columns)
+
+# Or disable wrapping
+export WRAP=false
+npm start
+```
+
+### Performance Issues
+
+#### "Slow response times"
+
+**Symptoms:** Commands take >5 seconds
+
+**Solution:**
+
+1. Check system resources:
+   ```bash
+   top -p $(pgrep -f "mixcode")
+   ```
+
+2. Check network:
+   ```bash
+   ping api.anthropic.com
+   ```
+
+3. Check API status:
+   ```bash
+   # Visit https://status.anthropic.com
+   # Visit https://status.openai.com
+   ```
+
+4. Reduce context:
+   ```bash
+   /context-size 50000
+   ```
+
+#### "High memory usage"
+
+**Symptoms:** >500MB RAM
+
+**Solution:**
+
+```bash
+# Check backend memory
+ps aux | grep mixcode | grep server
+
+# Clear old sessions
+/delete-session
+
+# Archive transcripts
+cd ~/.mixcode/projects/<project>/transcripts
+tar czf archive.tar.gz sess_*.json
+rm sess_*.json
+
+# Restart backend
+pkill -f "mixcode.*server"
+npm start
+```
+
+#### "Large transcript files"
+
+**Symptoms:** Transcript loading slowly
+
+**Solution:**
+
+```bash
+# Check file size
+ls -lh ~/.mixcode/projects/<project>/transcripts/
+
+# Archive large transcripts
+tar czf archive-$(date +%Y%m).tar.gz sess_*.json
+rm sess_*.json
+
+# Clear session history
+/clear-history
+```
+
+## Tool Execution Issues
+
+#### "Tool execution permission denied"
+
+**Error:** `Permission denied when executing command`
+
+**Solution:**
+
+```bash
+# Check tool permissions
+/config | grep -i permission
+
+# Grant permission
+# (MixCode may prompt)
+
+# Or enable in .env
+echo "ALLOW_EXECUTE_COMMAND=true" >> .env
+```
+
+#### "File not found error"
+
+**Error:** `Cannot read file /path/to/file`
+
+**Solution:**
+
+```bash
+# Use absolute paths
+> @/Users/user/project/file.js
+
+# Or relative from project root
+> @src/file.js
+
+# Check file exists
+ls -la src/file.js
+```
+
+#### "Tool output too large"
+
+**Error:** `Output exceeds maximum size`
+
+**Solution:**
+
+```bash
+# Reduce context
+/context-size 25000
+
+# Or limit output tokens
+/token-limit 2048
+
+# Tool will truncate output automatically
+```
+
+## Database/Storage Issues
+
+#### "Cannot read transcripts"
+
+**Error:** `Failed to load transcript file`
+
+**Solution:**
+
+```bash
+# Check file integrity
+file ~/.mixcode/projects/<project>/transcripts/sess_*.json
+
+# Repair corrupt JSON
+# Use jq to validate
+jq . ~/.mixcode/projects/<project>/transcripts/sess_*.json
+
+# Restore from backup
+tar -xzf ~/backup-mixcode.tar.gz -C ~/
+```
+
+#### "Disk space full"
+
+**Error:** `No space left on device`
+
+**Solution:**
+
+```bash
+# Check disk usage
+df -h
+
+# Remove old transcripts
+cd ~/.mixcode/projects/
+du -sh */transcripts/
+
+# Archive old projects
+tar czf backup-$(date +%Y%m%d).tar.gz <project>/
+rm -rf <project>/
+```
+
+## Advanced Debugging
+
+### Enable Full Debug Logging
+
+```bash
+export DEBUG=mixcode:*
+export LOG_LEVEL=debug
+npm run server
+```
+
+Check logs:
+```bash
+tail -f ~/.mixcode/projects/<project>/server.log
+```
+
+### Database Inspection
+
+```bash
+# View sessions database
+cat ~/.mixcode/projects/<project>/sessions.json | jq
+
+# View specific transcript
+cat ~/.mixcode/projects/<project>/transcripts/sess_xyz.json | jq
+```
+
+### Network Debugging
+
+```bash
+# Monitor network traffic
+# (requires tcpdump or Wireshark)
+tcpdump -i lo -n 'port 4567'
+
+# Or check WebSocket
+# (open browser dev tools and monitor WS connections)
+```
+
+### Memory Profiling
+
+```bash
+# Enable V8 profiling
+node --prof ./bin/start.mjs
+
+# Process profile
+node --prof-process isolate-*.log > profile.txt
+```
+
+## Getting Help
+
+### Before Contacting Support
+
+Gather:
+1. Diagnostic output: `mixcode --diagnose`
+2. Recent logs: `cat ~/.mixcode/projects/<project>/server.log`
+3. Steps to reproduce
+4. Expected vs actual behavior
+
+### Contact Support
+
+- **GitHub Issues:** https://github.com/yourusername/mixcode/issues
+- **Email:** support@example.com
+- **Discord:** https://discord.gg/example
+- **Documentation:** https://docs.example.com
+
+---
+
+Next: [FAQ](/faq) | [Installation](/installation)

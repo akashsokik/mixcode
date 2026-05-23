@@ -1,0 +1,390 @@
+---
+title: Installation
+description: Detailed installation instructions for MixCode
+---
+
+# Installation
+
+Complete installation guide for MixCode.
+
+## System Requirements
+
+| Component | Requirement |
+|-----------|-------------|
+| **Node.js** | >= 20.0.0 |
+| **Bun** | Latest |
+| **OS** | macOS, Linux, or WSL2 on Windows |
+| **Memory** | Minimum 2GB free RAM |
+| **Disk Space** | ~500MB for dependencies |
+
+### Verify Your System
+
+Check Node.js version:
+
+```bash
+node --version
+```
+
+Should output `v20.x.x` or higher.
+
+## Step-by-Step Installation
+
+### 1. Install Bun
+
+If you don't have Bun installed:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+Verify installation:
+
+```bash
+bun --version
+```
+
+### 2. Clone the Repository
+
+```bash
+git clone https://github.com/yourusername/mixcode.git
+cd mixcode
+```
+
+### 3. Install Dependencies
+
+```bash
+npm install
+```
+
+This will:
+- Install root-level dependencies
+- Install server workspace dependencies
+- Install TUI workspace dependencies (via Bun)
+- Generate `node_modules` and `bun.lock`
+
+### 4. Create Environment Configuration
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your API keys:
+
+```env
+# Anthropic API Key (for Claude)
+ANTHROPIC_API_KEY=sk-ant-v0-xxxxxxxxxxxxx
+
+# OpenAI API Key (for Codex)
+OPENAI_API_KEY=sk-xxxxxxxxxxxxx
+
+# Optional: Custom server port
+PORT=4567
+
+# Optional: Custom server URL for TUI
+ADVERSERIAL_SERVER_URL=http://127.0.0.1:4567
+```
+
+<Warning>
+  **Important**: Add `.env` to `.gitignore` (already done in the repo). Never commit API keys!
+</Warning>
+
+### 5. Verify Installation
+
+Run type checking:
+
+```bash
+npm run typecheck
+```
+
+If successful, you should see:
+
+```
+✓ server typecheck passed
+✓ tui typecheck passed
+```
+
+## Getting API Keys
+
+### Anthropic API Key (Claude)
+
+1. Go to [Anthropic Console](https://console.anthropic.com/)
+2. Sign in or create an account
+3. Navigate to **API Keys**
+4. Click **Create Key**
+5. Copy the key and add to `.env`:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-v0-xxxxx
+```
+
+### OpenAI API Key (Codex)
+
+1. Go to [OpenAI Platform](https://platform.openai.com/)
+2. Sign in or create an account
+3. Navigate to **API Keys**
+4. Click **Create new secret key**
+5. Copy the key and add to `.env`:
+
+```env
+OPENAI_API_KEY=sk-xxxxx
+```
+
+## Installation Methods
+
+### Method A: Global Installation (npm link)
+
+Make `mixcode` available globally:
+
+```bash
+npm link
+```
+
+Now you can run from any directory:
+
+```bash
+cd ~/your-project
+mixcode
+```
+
+To uninstall:
+
+```bash
+npm unlink -g mixcode
+```
+
+### Method B: Docker Installation (Optional)
+
+If you prefer containerization:
+
+```dockerfile
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY . .
+
+RUN npm install
+RUN npm run typecheck
+
+EXPOSE 4567
+
+CMD ["npm", "start"]
+```
+
+Build and run:
+
+```bash
+docker build -t mixcode .
+docker run -it --env-file .env -p 4567:4567 mixcode
+```
+
+### Method C: Development Installation
+
+For contributing to MixCode:
+
+```bash
+git clone https://github.com/yourusername/mixcode.git
+cd mixcode
+
+# Install dependencies
+npm install
+
+# Install as editable
+npm link
+
+# Start in development mode
+npm run server    # Terminal 1
+bun --cwd tui run dev  # Terminal 2
+```
+
+## Verifying Installation
+
+### Test 1: Start the Server
+
+```bash
+npm run server
+```
+
+Expected output:
+
+```
+🚀 Hono server running on http://127.0.0.1:4567
+Connected to WebSocket on ws://127.0.0.1:4567
+```
+
+### Test 2: Launch the TUI
+
+In another terminal:
+
+```bash
+npm start
+```
+
+You should see the MixCode TUI appear in your terminal.
+
+### Test 3: Run a Simple Prompt
+
+1. Type: `Hello, what is 2+2?`
+2. Press `/claude`
+3. Press `Enter`
+
+You should see Claude's response stream in real-time.
+
+## Configuration Files
+
+### `.env` File
+
+Primary configuration for API keys and server settings:
+
+```env
+# Required: API Keys
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+
+# Optional: Server Configuration
+PORT=4567
+ADVERSERIAL_SERVER_URL=http://127.0.0.1:4567
+
+# Optional: Node Environment
+NODE_ENV=development
+```
+
+### Environment Precedence
+
+When running with `mixcode` command (global):
+
+1. `<current-directory>/.env` (project-specific)
+2. `~/.mixcode/.env` (user global)
+3. Installation directory `.env` (fallback)
+
+### `package.json` Workspaces
+
+The project uses npm workspaces:
+
+```json
+"workspaces": ["server"]
+```
+
+The TUI is managed by Bun. This allows:
+- Separate dependency trees
+- Independent build processes
+- Isolated version management
+
+## Troubleshooting Installation
+
+### "npm ERR! code EACCES"
+
+Permission issue. Try:
+
+```bash
+# Use sudo (not recommended)
+sudo npm install
+
+# Or fix npm permissions
+mkdir ~/.npm-global
+npm config set prefix '~/.npm-global'
+export PATH=~/.npm-global/bin:$PATH
+npm install
+```
+
+### "Bun not found"
+
+Install Bun:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+# Add to PATH if needed
+export PATH="/home/username/.bun/bin:$PATH"
+```
+
+### "Node version mismatch"
+
+Use a Node version manager:
+
+```bash
+# Using nvm
+nvm install 20
+nvm use 20
+
+# Using fnm
+fnm install 20
+fnm use 20
+```
+
+### "Port already in use"
+
+Change the port:
+
+```bash
+PORT=4568 npm start
+```
+
+Or kill existing process:
+
+```bash
+lsof -i :4567
+kill -9 <PID>
+```
+
+### "API key not found"
+
+Verify `.env` file exists and has correct keys:
+
+```bash
+cat .env
+```
+
+Should show:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+```
+
+If using env vars instead:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-xxxxx
+export OPENAI_API_KEY=sk-xxxxx
+npm start
+```
+
+### "TypeScript errors"
+
+Ensure proper Node version and dependencies:
+
+```bash
+node --version  # Should be >= 20
+npm install     # Reinstall dependencies
+npm run typecheck
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick Start"
+    icon="play"
+    href="/quickstart"
+  >
+    Get running in 5 minutes
+  </Card>
+  <Card
+    title="User Guide"
+    icon="book"
+    href="/guides/usage"
+  >
+    Learn how to use MixCode
+  </Card>
+  <Card
+    title="Environment Setup"
+    icon="gear"
+    href="/guides/environment-setup"
+  >
+    Advanced configuration options
+  </Card>
+</CardGroup>
+
+---
+
+**Installation stuck?** Check [Troubleshooting](/troubleshooting) or [FAQ](/faq).

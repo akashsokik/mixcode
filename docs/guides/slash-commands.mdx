@@ -1,0 +1,587 @@
+---
+title: Slash Commands
+description: Complete reference for MixCode slash commands
+---
+
+# Slash Commands
+
+Slash commands give you powerful control over MixCode. Type `/` in the prompt and explore available commands.
+
+## Runner Commands
+
+### `/claude`
+
+Activate Claude for this session.
+
+```
+/claude
+> Switched to Claude
+
+Now all messages use Claude until you switch again.
+```
+
+**Use when:** You want Claude's perspective  
+**Session:** Current only  
+**Continuity:** Preserved
+
+### `/codex`
+
+Activate Codex for this session.
+
+```
+/codex
+> Switched to Codex
+
+Claude's messages are preserved. Switch back anytime.
+```
+
+**Use when:** You want Codex's approach  
+**Session:** Current only  
+**Continuity:** Preserved
+
+### `/switch`
+
+Toggle between Claude and Codex.
+
+```
+Current: Claude
+/switch
+> Switched to Codex
+
+/switch
+> Switched back to Claude
+```
+
+**Use when:** Quick comparison testing  
+**Shortcut:** `Ctrl+T` (if enabled)
+
+## Session Commands
+
+### `/new-session` or `/n`
+
+Create a new session.
+
+```
+/new-session
+> Enter session name: Build REST API
+
+Session created with Claude as default runner.
+```
+
+### `/rename` or `/r`
+
+Rename the current session.
+
+```
+/rename "Better API Design"
+> Session renamed from "Build REST API" to "Better API Design"
+```
+
+### `/sessions` or `/s`
+
+List all sessions in current project.
+
+```
+/sessions
+Sessions (3):
+1. ▶ Build API (Claude) [5 messages]
+2.   Debug Component (Codex) [2 messages]
+3.   Test Suite (Claude) [1 message]
+
+Switch: Type session number
+```
+
+### `/current`
+
+Show information about the current session.
+
+```
+/current
+Session: Build API
+ID: sess_abc123
+Runner: Claude
+Messages: 5
+Created: 2024-01-15 10:30 AM
+Size: 15.3 KB
+```
+
+### `/delete-session` or `/d`
+
+Delete the current session.
+
+```
+/delete-session
+> Delete "Build API"? [y/n]
+y
+Session deleted. Transcript archived.
+```
+
+## History Commands
+
+### `/history` or `/h`
+
+Show message history for this session.
+
+```
+/history
+1. [10:30] You: Build me a function
+2. [10:31] Claude: Here's a function...
+3. [10:35] You: Optimize it
+4. [10:36] Claude: Here's optimized...
+```
+
+### `/clear-history`
+
+Clear all messages in current session.
+
+```
+/clear-history
+> Clear history for "Build API"? [y/n]
+y
+History cleared. Transcript archived for recovery.
+```
+
+### `/search <text>`
+
+Search message history.
+
+```
+/search fibonacci
+Found 3 matches:
+1. [10:35] You: Can you write a fibonacci function?
+2. [10:36] Claude: Here's the fibonacci implementation...
+3. [10:42] You: How would you optimize fibonacci?
+```
+
+## Tool Commands
+
+### `/tools`
+
+List available tools for current runner.
+
+```
+/tools
+
+Claude Tools:
+✓ create_file
+✓ read_file
+✓ list_files
+✓ execute_command
+✓ search_files
+... (12 total)
+```
+
+### `/cancel`
+
+Cancel the current running operation.
+
+```
+/cancel
+> Cancelled Claude's response.
+```
+
+**Hotkey:** `Ctrl+C` (immediate)
+
+## Configuration Commands
+
+### `/model`
+
+Show or change the model.
+
+```
+/model
+Current: claude-3-5-sonnet-20241022
+
+/model gpt-4
+> Changed to gpt-4 (Codex)
+```
+
+**Available Models:**
+- Claude: `claude-opus`, `claude-sonnet`, `claude-haiku`
+- Codex: `gpt-4`, `gpt-4-turbo`, `gpt-3.5-turbo`
+
+### `/config`
+
+View configuration.
+
+```
+/config
+Session: Build API
+Runner: Claude
+Model: claude-3-5-sonnet-20241022
+Context Window: 100K tokens
+Max Output: 4K tokens
+Temperature: 1.0
+```
+
+### `/debug`
+
+Show debug information.
+
+```
+/debug
+Session ID: sess_abc123
+Client ID: client_xyz
+Backend: ws://127.0.0.1:4567
+Memory Used: 45.2 MB
+Uptime: 1h 23m
+Errors: 0
+```
+
+## File Commands
+
+### `@<file>`
+
+Include a file in your prompt.
+
+```
+> @src/App.tsx
+  Optimize this component
+
+// src/App.tsx is automatically included
+```
+
+**Syntax:**
+- `@file.js` - Exact file
+- `@*.jsx` - Pattern matching
+- `@src/**/*.ts` - Recursive patterns
+
+### `/files`
+
+Show files in current directory.
+
+```
+/files
+Current directory: /home/user/project
+
+src/
+├── App.tsx (1.2 KB)
+├── index.ts (0.5 KB)
+└── styles.css (3.4 KB)
+
+package.json (1.5 KB)
+tsconfig.json (0.8 KB)
+```
+
+### `/open <file>`
+
+Open a file in your default editor.
+
+```
+/open src/App.tsx
+> Opened in VS Code
+```
+
+### `/diff`
+
+Show changes in current session.
+
+```
+/diff
+File: src/utils.js
+
++ export function optimized() {
++   // New implementation
++ }
+
+- export function old() {
+-   // Old code
+- }
+```
+
+## Display Commands
+
+### `/transcript`
+
+Show full transcript for this session.
+
+```
+/transcript
+Session Transcript: Build API
+Created: 2024-01-15 10:30 AM
+Messages: 5
+Tokens: 1,234 input / 567 output
+
+[Full conversation history]
+```
+
+### `/export <format>`
+
+Export session to different formats.
+
+```
+/export markdown
+> Saved to: Build API.md
+
+/export json
+> Saved to: Build API.json
+
+/export pdf
+> Saved to: Build API.pdf
+```
+
+**Formats:**
+- `markdown` - Readable format
+- `json` - Full data
+- `pdf` - Printable
+- `html` - Browser viewable
+
+### `/stats`
+
+Show session statistics.
+
+```
+/stats
+Session: Build API
+─────────────────────
+Messages: 5
+Average response: 2.3s
+Total tokens: 1,801
+Input: 1,234 | Output: 567
+
+Claude Usage:
+$0.012 (5 messages)
+
+Top Tools:
+create_file: 2 uses
+read_file: 3 uses
+execute_command: 1 use
+```
+
+## Help Commands
+
+### `/help` or `/?`
+
+Show available commands.
+
+```
+/help
+MixCode Commands:
+
+Runners:
+  /claude - Use Claude
+  /codex  - Use Codex
+  /switch - Toggle runner
+
+Sessions:
+  /new-session  - Create session
+  /sessions     - List sessions
+  /delete       - Delete session
+  ...
+```
+
+### `/help <command>`
+
+Get help for specific command.
+
+```
+/help /rename
+RENAME - Rename current session
+
+Syntax: /rename "New Name"
+
+Example:
+  /rename "Build Payment System"
+
+Related: /sessions, /current
+```
+
+### `/license`
+
+Show license information.
+
+```
+/license
+MixCode v0.2.0
+
+Licensed under MIT License
+© 2024 Your Organization
+
+See: https://github.com/...
+```
+
+## Advanced Commands
+
+### `/prompt-system`
+
+View or modify the system prompt.
+
+```
+/prompt-system
+Current system prompt:
+"You are Claude, an AI assistant..."
+
+/prompt-system "Custom prompt here"
+> System prompt updated
+```
+
+### `/temperature <value>`
+
+Adjust model creativity (0.0-2.0).
+
+```
+/temperature
+Current: 1.0
+
+/temperature 0.2
+> Set to 0.2 (more deterministic)
+
+/temperature 1.8
+> Set to 1.8 (more creative)
+```
+
+### `/context-size <tokens>`
+
+Set context window size.
+
+```
+/context-size
+Current: 100000 (Claude)
+
+/context-size 50000
+> Limited to 50K tokens
+```
+
+### `/token-limit <count>`
+
+Set max output tokens.
+
+```
+/token-limit
+Current: 4096
+
+/token-limit 2048
+> Limited outputs to 2K tokens
+```
+
+## Power User Commands
+
+### `/batch`
+
+Process multiple prompts in sequence.
+
+```
+/batch
+> Enter prompts (one per line, Ctrl+D to finish):
+Build a button component
+Add tests for the button
+Document the button API
+
+Processing...
+[Batches all three through the runner]
+```
+
+### `/repeat <count>`
+
+Repeat the last prompt.
+
+```
+You: Explain recursion
+
+Claude: [Explanation]
+
+/repeat 2
+> Running prompt again with Claude
+> Running prompt again with Claude
+
+[Get multiple perspectives]
+```
+
+### `/pipe`
+
+Pipe previous output to new prompt.
+
+```
+/pipe | summarize this
+```
+
+Takes the last assistant response and includes it in a new prompt.
+
+### `/compare`
+
+Compare runner outputs side-by-side.
+
+```
+/compare
+> Enter prompt: Build me a REST API
+
+Claude: [Response]     Codex: [Response]
+```
+
+## Experimental Commands
+
+Commands marked with 🧪 are experimental.
+
+### 🧪 `/collaborate`
+
+Invite another user to the session.
+
+```
+/collaborate
+> Generating share link...
+> https://mixcode.dev/share/xyz789
+
+Send this link to collaborate in real-time.
+```
+
+### 🧪 `/record`
+
+Record session for playback.
+
+```
+/record on
+> Recording session...
+
+/record off
+> Saved to: Build API.recording
+
+/playback Build API.recording
+```
+
+## Command Tips
+
+### Abbreviations
+
+Most commands have short forms:
+
+| Full | Short |
+|------|-------|
+| `/claude` | `/c` |
+| `/codex` | `/cx` |
+| `/switch` | `/s` |
+| `/new-session` | `/n` |
+| `/rename` | `/r` |
+| `/history` | `/h` |
+| `/files` | `/f` |
+
+### Command Chaining
+
+Some commands can be chained:
+
+```
+/rename "New Name" && /codex
+> Renamed session and switched to Codex
+```
+
+### Tab Completion
+
+Start typing a command and press Tab:
+
+```
+/ne[TAB]
+> /new-session
+```
+
+### Recent Commands
+
+Arrow up to repeat last command:
+
+```
+/history
+↑ (press)
+/history
+```
+
+---
+
+Next: [User Guide](/guides/usage) | [Keybindings](/guides/keybindings)

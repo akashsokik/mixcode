@@ -1,0 +1,165 @@
+---
+title: TUI Development
+description: Develop the MixCode terminal UI
+---
+
+# TUI Development
+
+Guide to developing the MixCode terminal user interface.
+
+## Project Structure
+
+```
+tui/
+├── src/
+│   ├── index.tsx            # React entry point
+│   ├── app.tsx              # Main App component
+│   ├── api/
+│   │   └── ws.ts            # WebSocket client
+│   ├── state/               # React hooks & state
+│   │   ├── useSession.ts
+│   │   ├── useHistory.ts
+│   │   └── useCompletion.ts
+│   ├── components/
+│   │   ├── Header.tsx
+│   │   ├── Sidebar.tsx
+│   │   ├── Transcript.tsx
+│   │   ├── ToolCard.tsx
+│   │   ├── Prompt.tsx
+│   │   └── StatusBar.tsx
+│   └── util/                # Utilities
+│       ├── format.ts        # Text formatting
+│       ├── fuzzy.ts         # Fuzzy search
+│       ├── files.ts         # File utilities
+│       └── slash.ts         # Slash command parsing
+├── package.json
+└── bunfig.toml
+```
+
+## Development
+
+### Start TUI Only
+
+```bash
+npm run tui
+```
+
+Auto-rebuilds on changes (Bun's hot reload).
+
+### Testing UI Changes
+
+Run backend separately:
+
+```bash
+# Terminal 1: Backend
+npm run server
+
+# Terminal 2: TUI
+npm run tui
+```
+
+Edit components, refresh UI.
+
+## Architecture
+
+### State Management
+
+MixCode uses React hooks for state:
+
+```typescript
+// useSession.ts - Session management
+const [session, setSession] = useState<Session | null>(null)
+const [runner, setRunner] = useState<RunnerKind>("claude")
+
+// useHistory.ts - Message history
+const [messages, setMessages] = useState<Message[]>([])
+
+// useCompletion.ts - Streaming completion
+const [delta, setDelta] = useState("")
+```
+
+### WebSocket Connection
+
+```typescript
+// api/ws.ts
+class WebSocketClient {
+  connect(url: string): Promise<void>
+  send(msg: ClientMsg): void
+  on(type: string, handler: (msg: any) => void): void
+  close(): void
+}
+```
+
+### Component Hierarchy
+
+```
+<App>
+  <Header />
+  <Sidebar />
+  <TranscriptView />
+    <MessageItem />
+    <ToolCard />
+  <PromptInput />
+  <StatusBar />
+```
+
+## Common Tasks
+
+### Add Component
+
+1. Create `/tui/src/components/MyComponent.tsx`
+2. Use React functional component
+3. Import in `app.tsx`
+4. Add to layout
+
+### Add Hook
+
+1. Create `/tui/src/state/useMyHook.ts`
+2. Export hook function
+3. Use in components: `const [state, setState] = useMyHook()`
+
+### Add Utility
+
+1. Create `/tui/src/util/myutil.ts`
+2. Export functions
+3. Import where needed: `import { myFunc } from "../util/myutil"`
+
+## Styling
+
+MixCode uses terminal-native styling via `@opentui/react`:
+
+```typescript
+<Text color="cyan">Styled text</Text>
+<Box padding={1} borderStyle="round">
+  Content
+</Box>
+```
+
+No CSS needed - all terminal-native.
+
+## Testing
+
+### Unit Tests
+
+```typescript
+// __tests__/myfile.test.ts
+import { describe, it, expect } from "vitest"
+import { myFunction } from "../myfile"
+
+describe("myFunction", () => {
+  it("works correctly", () => {
+    expect(myFunction("test")).toBe("expected")
+  })
+})
+```
+
+### Run Tests
+
+```bash
+npm run test
+npm run test:watch
+```
+
+---
+
+See [Development Setup](/development/setup) for full setup guide.

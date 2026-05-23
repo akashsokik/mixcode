@@ -1,0 +1,490 @@
+---
+title: FAQ
+description: Frequently asked questions about MixCode
+---
+
+# FAQ
+
+Answers to common questions about MixCode.
+
+## Getting Started
+
+### What is MixCode?
+
+MixCode is a terminal user interface that lets you run Claude and Codex AI agents side-by-side. It's perfect for comparing approaches, rapid prototyping, and learning from different AI models.
+
+### Do I need both API keys?
+
+No, you only need one:
+- **Claude only:** Just set `ANTHROPIC_API_KEY`
+- **Codex only:** Just set `OPENAI_API_KEY`
+- **Both:** Set both for full power
+
+### Where do I get API keys?
+
+- **Anthropic (Claude):** [console.anthropic.com](https://console.anthropic.com)
+- **OpenAI (Codex):** [platform.openai.com](https://platform.openai.com)
+
+Both require account creation and billing setup.
+
+### How much does MixCode cost?
+
+MixCode itself is free. You pay only for API calls:
+
+| Model | Price |
+|-------|-------|
+| Claude 3.5 Sonnet | ~$3 per 1M input tokens |
+| GPT-4 Turbo | ~$10 per 1M input tokens |
+
+A typical conversation with 500 tokens costs $0.01-0.05.
+
+### Can I run MixCode offline?
+
+No, MixCode requires internet access to connect to Claude and Codex APIs.
+
+You can run locally-hosted models, but would need to modify the runners.
+
+## Installation & Setup
+
+### What are the system requirements?
+
+- **Node.js** >= 20
+- **Bun** (latest)
+- Unix-like terminal (macOS, Linux)
+- 2GB+ free RAM
+- Internet connection
+
+Windows users can use WSL2 (Windows Subsystem for Linux).
+
+### Can I install MixCode on Windows?
+
+MixCode is built for Unix-like systems (macOS, Linux).
+
+Windows users should use **WSL2** (Windows Subsystem for Linux):
+
+1. Install WSL2
+2. Install Ubuntu in WSL2
+3. Install Node.js and Bun in WSL2
+4. Clone and run MixCode
+
+Or use Docker:
+```bash
+docker run -it -e ANTHROPIC_API_KEY=sk-ant-xxxxx mixcode
+```
+
+### What if I'm behind a corporate proxy?
+
+Configure npm to use the proxy:
+
+```bash
+npm config set http-proxy http://proxy:port
+npm config set https-proxy https://proxy:port
+npm install
+```
+
+### Can I run multiple instances?
+
+Yes! Use the `mixcode` command for project-specific instances:
+
+```bash
+cd ~/project-1 && mixcode  # Port 4567
+cd ~/project-2 && mixcode  # Port 4568
+```
+
+Each runs independently with isolated sessions.
+
+## Usage
+
+### What's the difference between Claude and Codex?
+
+| Aspect | Claude | Codex |
+|--------|--------|-------|
+| **Company** | Anthropic | OpenAI |
+| **Strength** | Reasoning, long context | Code generation |
+| **Context** | 100K tokens | 128K tokens |
+| **Cost** | Cheaper | More expensive |
+| **Speed** | Standard | Slightly faster |
+
+Both are excellent at code! Use both to compare.
+
+### How do I switch between Claude and Codex?
+
+**Quick switch:**
+```
+/switch
+```
+
+**Explicit selection:**
+```
+/claude
+/codex
+```
+
+**In browse mode:**
+Press `Esc`, select session, press `Return`
+
+### Can I use multiple runners in one session?
+
+Yes! Switch runners anytime:
+
+```
+/claude
+> Build me a function
+
+/switch
+> How would you optimize that?
+
+/switch
+> Explain the algorithm
+```
+
+Each runner has its own conversation context within the session.
+
+### How do I save conversations?
+
+Conversations are auto-saved in transcripts:
+
+```
+~/.mixcode/projects/<project>/transcripts/sess_*.json
+```
+
+Export manually:
+```bash
+/export markdown
+/export json
+/export pdf
+```
+
+### Can I share sessions with others?
+
+Transcripts are JSON files that can be shared:
+
+```bash
+# Export
+cat ~/.mixcode/projects/<project>/transcripts/sess_xyz.json > session.json
+
+# Send via email/Slack
+# Recipient can import:
+mixcode import session.json
+```
+
+Live collaboration isn't supported yet.
+
+### How do I delete old sessions?
+
+In browse mode:
+1. Press `Esc`
+2. Select session with `j/k`
+3. Press `dd` (delete)
+
+Or use command:
+```
+/delete-session
+```
+
+Transcripts are archived, not permanently deleted.
+
+## Advanced Usage
+
+### Can MixCode execute code?
+
+Yes, with tools. For example:
+```
+> Create a Python script that calculates fibonacci
+
+Claude creates the script, then:
+> Can you run this script?
+
+Claude executes it and shows results.
+```
+
+Requires `ALLOW_EXECUTE_COMMAND=true` in `.env`.
+
+### Can I use MixCode with custom tools?
+
+Yes! MixCode supports MCP (Model Context Protocol) servers.
+
+Add custom tools by implementing the MCP interface:
+```typescript
+// Define custom tools
+// Register in server config
+// Use like built-in tools
+```
+
+See [Extending MixCode](/development/extending) for details.
+
+### How do I compare two approaches?
+
+1. Ask Claude for approach A:
+   ```
+   > Build me a REST API with Express
+   ```
+
+2. Switch to Codex:
+   ```
+   /switch
+   > Build me a REST API with Express
+   ```
+
+3. Compare responses in transcript
+
+### Can I have multiple projects?
+
+Yes! Use the `mixcode` command:
+
+```bash
+cd ~/frontend && mixcode  # Project 1
+cd ~/backend && mixcode   # Project 2
+```
+
+Each has isolated sessions and configuration.
+
+### How do I clear my conversation history?
+
+To clear a session:
+```
+/clear-history
+```
+
+Transcript is archived (for recovery).
+
+To completely delete:
+```
+/delete-session
+```
+
+Then create a new session:
+```
+/new-session
+```
+
+## Performance & Optimization
+
+### Why is MixCode slow?
+
+Check:
+1. **Network:** `ping api.anthropic.com`
+2. **API status:** Check status pages
+3. **System:** `top` or Activity Monitor
+4. **Logs:** `tail -f ~/.mixcode/projects/<project>/server.log`
+
+### How do I reduce API costs?
+
+1. **Reduce context:**
+   ```
+   /context-size 25000
+   ```
+
+2. **Limit output tokens:**
+   ```
+   /token-limit 2048
+   ```
+
+3. **Batch operations:**
+   ```
+   ✓ "Create button, form, and modal"
+   ✗ "Create button" / "Create form" / "Create modal"
+   ```
+
+4. **Choose cheaper model:**
+   ```
+   /model claude-3-haiku-20240307
+   ```
+
+### How do I improve response speed?
+
+1. **Use cheaper models:** Haiku instead of Sonnet
+2. **Reduce context window:** Speeds up token counting
+3. **Limit output:** Set lower token limit
+4. **Batch operations:** Fewer API calls
+
+### What should I do if I hit rate limits?
+
+Wait the specified time (usually 60 seconds). If frequent:
+
+1. Check your rate limit tier
+2. Upgrade your plan
+3. Spread requests over time
+4. Use the cheaper Haiku model
+
+## Troubleshooting
+
+### Sessions keep disconnecting
+
+**Solution:**
+```bash
+# Check logs
+tail -f ~/.mixcode/projects/<project>/server.log
+
+# Restart backend
+pkill -f "mixcode.*server"
+npm start
+```
+
+### API key keeps failing
+
+**Solution:**
+1. Verify key format (should start with `sk-ant-` or `sk-`)
+2. Regenerate key in console
+3. Check for typos: `echo $ANTHROPIC_API_KEY`
+4. Ensure `.env` is in right location
+
+### Cannot find file when using `@file.js`
+
+**Solution:**
+1. Use absolute path: `@/home/user/project/file.js`
+2. Use glob patterns: `@src/**/*.ts`
+3. Check file exists: `ls src/file.js`
+
+### Terminal display is broken
+
+**Solution:**
+```bash
+clear
+# Resize terminal to standard size
+npm start
+```
+
+For more issues, see [Troubleshooting](/troubleshooting).
+
+## Development & Contributing
+
+### Can I modify MixCode?
+
+Yes! MixCode is open source. Fork and modify as needed.
+
+### How do I run MixCode in development mode?
+
+```bash
+# Terminal 1: Backend
+npm run server
+
+# Terminal 2: TUI
+npm run tui
+```
+
+### How do I add a new slash command?
+
+1. Add handler in `/server/src/index.ts`
+2. Add corresponding TUI handler
+3. Document in `/docs/guides/slash-commands.mdx`
+4. Submit PR
+
+### Can I add custom runners?
+
+Yes! Implement the runner interface:
+
+```typescript
+interface Runner {
+  run(prompt: string): Promise<void>
+  cancel(): void
+}
+```
+
+See [Extending MixCode](/development/extending).
+
+## API & Integration
+
+### Does MixCode have a REST API?
+
+Not yet, but there's a WebSocket API for integration.
+
+See [WebSocket Protocol](/concepts/websocket-protocol).
+
+### Can I programmatically control MixCode?
+
+Yes, via the WebSocket protocol:
+
+```typescript
+const ws = new WebSocket('ws://127.0.0.1:4567/ws')
+ws.send(JSON.stringify({
+  type: 'send',
+  sessionId: 'sess_123',
+  text: 'Your prompt'
+}))
+```
+
+### Can I embed MixCode in my app?
+
+The backend is embeddable. The TUI is terminal-specific.
+
+You could:
+1. Run MixCode backend as a service
+2. Build custom UI over WebSocket API
+3. Reuse runner implementations
+
+## Security
+
+### Are my API keys safe?
+
+API keys are:
+- ✓ Stored locally in `.env`
+- ✓ Not sent to any third party
+- ✗ Never commit to git (`.env` in `.gitignore`)
+- ✗ Not stored on disk permanently
+
+### What if I accidentally commit `.env`?
+
+1. Rotate your API keys immediately
+2. Git won't recover from revert
+3. `git filter-branch` to remove (advanced)
+
+Use git hooks to prevent:
+```bash
+npm run setup-hooks
+```
+
+### Can tools access my entire filesystem?
+
+By default, tools can:
+- Read/write files in working directory
+- Execute commands
+- Access environment variables
+
+Control with:
+```env
+ALLOW_EXECUTE_COMMAND=false
+ALLOW_FILE_OPERATIONS=false
+```
+
+## Roadmap & Future
+
+### What features are planned?
+
+Upcoming:
+- [ ] Dark mode UI
+- [ ] Custom model support
+- [ ] Live collaboration
+- [ ] Mobile app
+- [ ] Local model support
+
+### Can I request features?
+
+Yes! Open an issue on GitHub:
+https://github.com/yourusername/mixcode/issues
+
+### When will [feature] be available?
+
+Check the GitHub issues and milestones:
+https://github.com/yourusername/mixcode/milestones
+
+## Getting Help
+
+### Where can I ask questions?
+
+- **GitHub Discussions:** https://github.com/yourusername/mixcode/discussions
+- **Discord:** https://discord.gg/example
+- **Email:** support@example.com
+- **Docs:** https://docs.example.com
+
+### How do I report bugs?
+
+Open an issue with:
+1. Detailed description
+2. Steps to reproduce
+3. Expected vs actual behavior
+4. Diagnostic output: `mixcode --diagnose`
+
+---
+
+More questions? [Check the docs](/introduction) or [get help](/troubleshooting).

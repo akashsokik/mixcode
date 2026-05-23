@@ -1,0 +1,276 @@
+---
+title: Quick Start
+description: Get MixCode running in 5 minutes
+---
+
+# Quick Start
+
+Get MixCode up and running in under 5 minutes.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- **Node.js** >= 20 installed ([download](https://nodejs.org/))
+- **Bun** installed (`curl -fsSL https://bun.sh/install | bash`)
+- At least one API key:
+  - **Anthropic API Key** (for Claude) - [Get it](https://console.anthropic.com/)
+  - **OpenAI API Key** (for Codex) - [Get it](https://platform.openai.com/)
+
+## Installation
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/yourusername/mixcode.git
+cd mixcode
+```
+
+### 2. Install Dependencies
+
+```bash
+npm install
+```
+
+This installs both the server and TUI dependencies across workspaces.
+
+### 3. Configure API Keys
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and add your API keys:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+```
+
+<Note>
+  The `.env` file is in `.gitignore` - never commit it! If using env vars instead, set `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY` in your shell.
+</Note>
+
+### 4. Verify Installation
+
+```bash
+npm run typecheck
+```
+
+This checks both TypeScript workspaces. If there are no errors, you're ready to go!
+
+## Running MixCode
+
+### Option A: Start Everything
+
+```bash
+npm start
+```
+
+This boots the backend and launches the TUI. On exit, the backend is automatically killed.
+
+**Logs:** Backend logs go to `~/.adverserial-code/server.log`
+
+### Option B: Run Backend Only
+
+```bash
+npm run server
+```
+
+Useful for debugging or running the TUI in a separate window.
+
+### Option C: Use Global `mixcode` Command
+
+For recurring use across projects:
+
+```bash
+npm link
+cd ~/your-project
+mixcode
+```
+
+This creates an isolated environment for each project directory with separate sessions, transcripts, and logs stored in `~/.mixcode/projects/<encoded-pwd>/`.
+
+## Your First Session
+
+Once the TUI is running:
+
+### 1. Write a Prompt
+
+```
+Type a message or command:
+└─ Build me a function that sorts an array
+```
+
+### 2. Choose Your Agent
+
+Press `/claude` to use Claude:
+
+```
+/claude
+```
+
+Press Enter. Claude will process your request!
+
+### 3. Switch Agents (Optional)
+
+Try the same prompt with Codex:
+
+```
+/switch
+```
+
+Or explicitly use:
+
+```
+/codex
+```
+
+## Essential Keybindings
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send prompt |
+| `Esc` | Enter browse mode |
+| `j` / `k` | Cycle sessions (browse mode) |
+| `n` | New session |
+| `dd` | Delete session |
+| `↑` / `↓` | Message history |
+| `@` | Fuzzy file completion |
+| `Return` | Return to prompt (from browse) |
+
+## Common Tasks
+
+### Compare Claude and Codex
+
+1. Send a prompt with Claude: `/claude` → Enter
+2. Switch agents: `/switch`
+3. See Codex's response to the same prompt
+
+### Work on a Project
+
+```bash
+cd ~/my-project
+mixcode
+```
+
+Each project gets its own isolated sessions and environment files.
+
+### Use Custom Environment
+
+Create `.env` in your project directory:
+
+```bash
+cd ~/my-project
+cp ~/.mixcode/.env .env
+# Edit .env with project-specific keys
+mixcode
+```
+
+Env lookup order (most specific first):
+1. `<pwd>/.env` (project-specific)
+2. `~/.mixcode/.env` (user global)
+3. Fallback from install directory
+
+### Debug the Server
+
+Set up debugging in separate windows:
+
+```bash
+# Terminal 1: Start backend with logging
+npm run server
+
+# Terminal 2: Start TUI only (in same directory)
+PORT=4567 bun --cwd tui run dev
+```
+
+## Troubleshooting
+
+### "Port 4567 already in use"
+
+The server from a previous run is still active. Either:
+
+```bash
+# Kill the previous process
+pkill -f "adverserial-code"
+
+# Or use a different port
+PORT=4568 npm start
+```
+
+### "API Key not found"
+
+Ensure your `.env` file has:
+
+```env
+ANTHROPIC_API_KEY=your-key
+OPENAI_API_KEY=your-key
+```
+
+Or set environment variables:
+
+```bash
+export ANTHROPIC_API_KEY=your-key
+npm start
+```
+
+### "Connection refused"
+
+If the TUI can't connect to the backend:
+
+1. Check backend is running (default: `ws://127.0.0.1:4567`)
+2. Check for port conflicts: `lsof -i :4567`
+3. Try a different port: `PORT=4568 npm start`
+
+### "TypeScript errors"
+
+Run typecheck to verify setup:
+
+```bash
+npm run typecheck
+```
+
+If you see errors, ensure Node.js >= 20:
+
+```bash
+node --version
+```
+
+## Next Steps
+
+Now that you're running:
+
+<CardGroup cols={2}>
+  <Card
+    title="User Guide"
+    icon="book"
+    href="/guides/usage"
+  >
+    Learn all features and advanced usage
+  </Card>
+  <Card
+    title="Slash Commands"
+    icon="terminal"
+    href="/guides/slash-commands"
+  >
+    Discover powerful slash commands
+  </Card>
+  <Card
+    title="Architecture"
+    icon="building"
+    href="/architecture/overview"
+  >
+    Understand how MixCode works
+  </Card>
+  <Card
+    title="Development"
+    icon="code"
+    href="/development/setup"
+  >
+    Set up for local development
+  </Card>
+</CardGroup>
+
+---
+
+**Stuck?** Check [Troubleshooting](/troubleshooting) or [FAQ](/faq).

@@ -1,0 +1,396 @@
+---
+title: Extending MixCode
+description: Add custom runners and tools
+---
+
+# Extending MixCode
+
+Build custom runners and tools for MixCode.
+
+## Custom Runners
+
+### Creating a Runner
+
+Runners implement a common interface:
+
+```typescript
+// src/runners/custom-runner.ts
+import type { RunEvent } from "../../shared/events.js"
+
+export class CustomRunner {
+  sessionId: string | null = null
+
+  async run(
+    prompt: string,
+    onEvent: (event: RunEvent) => void
+  ): Promise<void> {
+    try {
+      onEvent({ type: "text_delta", delta: "Processing..." })
+      
+      // Your logic here
+      const response = await this.process(prompt)
+      
+      onEvent({ type: "text_delta", delta: response })
+      onEvent({ type: "usage", inputTokens: 10, outputTokens: 20 })
+      onEvent({ type: "complete" })
+    } catch (error) {
+      onEvent({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error"
+      })
+    }
+  }
+
+  async process(prompt: string): Promise<string> {
+    // Implementation
+    return "Response"
+  }
+
+  cancel(): void {
+    // Cleanup if needed
+  }
+}
+```
+
+### Registering Runner
+
+In `/server/src/index.ts`:
+
+```typescript
+import { CustomRunner } from "./runners/custom.js"
+
+// Initialize
+const customRunner = new CustomRunner()
+
+// Map to command
+const runners: Record<RunnerKind, Runner> = {
+  "claude": claudeRunner,
+  "codex": codexRunner,
+  "custom": customRunner  // Add here
+}
+
+// Handle in router
+app.post("/api/runners/:name", async (c) => {
+  const runner = runners[c.req.param("name")]
+  // ...
+})
+```
+
+### Using Custom Runner
+
+In the TUI:
+
+```
+/custom
+> Build me something
+
+// Uses your custom runner
+```
+
+## Custom Tools
+
+### Creating MCP Tools
+
+Define tools for your runner:
+
+```typescript
+// Define tool schema
+const tools = [
+  {
+    name: "my_tool",
+    description: "Does something cool",
+    input_schema: {
+      type: "object",
+      properties: {
+        input: { type: "string" }
+      },
+      required: ["input"]
+    }
+  }
+]
+
+// Handle tool use
+if (response.tool_use) {
+  const toolInput = response.tool_use.input
+  const result = await executeTool(response.tool_use.name, toolInput)
+  
+  onEvent({
+    type: "tool_result",
+    toolUseId: response.tool_use.id,
+    result: JSON.stringify(result)
+  })
+}
+```
+
+## Adding Slash Commands
+
+### Creating Commands
+
+Add to `/server/src/index.ts`:
+
+```typescript
+function parseCommand(text: string): {
+  command: string
+  args: string
+} | null {
+  const match = text.match(/^\/(\w+)\s*(.*)/);
+  if (!match) return null
+  return { command: match[1], args: match[2] }
+}
+
+async function handleCommand(
+  command: string,
+  args: string,
+  sessionId: string
+): Promise<void> {
+  switch (command) {
+    case "mycommand":
+      return handleMyCommand(args, sessionId)
+    // ...
+  }
+}
+
+async function handleMyCommand(args: string, sessionId: string) {
+  const session = sessions.get(sessionId)
+  if (!session) return
+
+  // Implementation
+}
+```
+
+### TUI Support
+
+In `/tui/src/util/slash.ts`:
+
+```typescript
+export const slashCommands = [
+  {
+    name: "mycommand",
+    description: "Does something",
+    aliases: ["mc"],
+    requiresArg: false
+  }
+]
+```
+
+## Custom Models
+
+### Add Model Support
+
+Create a runner for your model:
+
+```typescript
+export class MyModelRunner {
+  async run(prompt: string, onEvent: (event: RunEvent) => void) {
+    const client = new MyModelClient({
+      apiKey: process.env.MY_MODEL_API_KEY
+    })
+
+    const stream = client.stream({
+      model: "my-model",
+      messages: [{ role: "user", content: prompt }]
+    })
+
+    for await (const chunk of stream) {
+      onEvent({
+        type: "text_delta",
+        delta: chunk.content
+      })
+    }
+  }
+}
+```
+
+Register and use like custom runners above.
+
+## Hooks & Plugins
+
+### Session Hooks
+
+Add hooks for session events:
+
+```typescript
+type SessionHook = {
+  name: string
+  event: "created" | "deleted" | "switched" | "messageAdded"
+  handler: (session: Session) => void | Promise<void>
+}
+
+const hooks: SessionHook[] = []
+
+export function onSessionCreated(handler: (session: Session) => void) {
+  hooks.push({
+    name: "on_session_created",
+    event: "created",
+    handler
+  })
+}
+
+// Trigger hooks
+function emitHook(event: string, session: Session) {
+  for (const hook of hooks.filter(h => h.event === event)) {
+    hook.handler(session).catch(console.error)
+  }
+}
+```
+
+### Tool Hooks
+
+```typescript
+type ToolHook = {
+  name: string
+  phase: "before" | "after"
+  tool: string
+  handler: (input: any) => any
+}
+
+// Use in tool execution
+for (const hook of hooks.filter(h => h.phase === "before")) {
+  input = await hook.handler(input)
+}
+```
+
+## Custom Middleware
+
+### Add Request Middleware
+
+```typescript
+// In Hono server
+app.use("/ws", async (c, next) => {
+  // Pre-processing
+  console.log("WebSocket connection")
+  
+  await next()
+  
+  // Post-processing
+  console.log("WebSocket closed")
+})
+```
+
+## Testing Extensions
+
+### Test Custom Runner
+
+```typescript
+import { describe, it, expect } from "vitest"
+import { CustomRunner } from "./custom-runner"
+
+describe("CustomRunner", () => {
+  it("processes prompts", async () => {
+    const runner = new CustomRunner()
+    const events: RunEvent[] = []
+    
+    await runner.run("test", (event) => {
+      events.push(event)
+    })
+    
+    expect(events.some(e => e.type === "text_delta")).toBe(true)
+    expect(events.some(e => e.type === "complete")).toBe(true)
+  })
+})
+```
+
+### Test Tools
+
+```typescript
+describe("CustomTool", () => {
+  it("executes correctly", async () => {
+    const result = await executeTool("my_tool", { input: "test" })
+    expect(result).toBeDefined()
+  })
+})
+```
+
+## Publishing Extensions
+
+### Package Structure
+
+```
+my-mixcode-extension/
+├── src/
+│   ├── runner.ts
+│   ├── tools.ts
+│   └── index.ts
+├── package.json
+└── README.md
+```
+
+### package.json
+
+```json
+{
+  "name": "mixcode-my-extension",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "peerDependencies": {
+    "mixcode": "^0.2.0"
+  }
+}
+```
+
+### Integration
+
+Users install and use:
+
+```bash
+npm install mixcode-my-extension
+```
+
+Then in their MixCode config:
+
+```json
+{
+  "extensions": [
+    "mixcode-my-extension"
+  ]
+}
+```
+
+## Examples
+
+### Example: Calculator Runner
+
+```typescript
+export class CalculatorRunner {
+  async run(prompt: string, onEvent: (event: RunEvent) => void) {
+    try {
+      // Simple math evaluation
+      const result = eval(prompt)
+      onEvent({ type: "text_delta", delta: String(result) })
+      onEvent({ type: "complete" })
+    } catch (error) {
+      onEvent({
+        type: "error",
+        message: "Invalid expression"
+      })
+    }
+  }
+}
+```
+
+### Example: URL Fetcher Tool
+
+```typescript
+const fetchToolSchema = {
+  name: "fetch_url",
+  description: "Fetch content from URL",
+  input_schema: {
+    type: "object",
+    properties: {
+      url: { type: "string" }
+    }
+  }
+}
+
+async function executeFetchTool(url: string) {
+  const response = await fetch(url)
+  return response.text()
+}
+```
+
+---
+
+Next: [Development Setup](/development/setup) | [Server Development](/development/server)

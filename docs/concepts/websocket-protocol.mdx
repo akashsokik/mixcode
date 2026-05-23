@@ -1,0 +1,515 @@
+---
+title: WebSocket Protocol
+description: MixCode's real-time communication protocol
+---
+
+# WebSocket Protocol
+
+MixCode uses WebSocket for real-time bidirectional communication between the TUI and backend server.
+
+## Overview
+
+```
+TUI (Client)                 Server
+    │                          │
+    ├─────── ws://127.0.0.1:4567/ws ──────┤
+    │                          │
+    ├─── ClientMsg (JSON) ────→│
+    │                          │
+    │←─ ServerMsg (JSON) ──────┤
+    │                          │
+    ├─ Receive Events ────────→│
+    │                          │
+    └─ Broadcast Updates ──────┤
+```
+
+## Connection
+
+### Establishing Connection
+
+**Endpoint:** `ws://127.0.0.1:4567/ws`
+
+**URL Parameters:**
+
+| Parameter | Type | Optional | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | Yes | Resume specific session |
+| `clientId` | string | No | Unique client identifier |
+
+**Example:**
+
+```javascript
+// TUI client connects
+const ws = new WebSocket(
+  'ws://127.0.0.1:4567/ws?clientId=client_xyz&sessionId=sess_abc'
+)
+
+// Server receives connection
+ws.on('open', () => {
+  console.log('Connected to MixCode backend')
+})
+```
+
+### Connection Lifecycle
+
+```
+1. TUI connects
+   └─→ Server assigns clientId
+   └─→ Server loads session (if sessionId provided)
+   └─→ Server broadcasts current state
+
+2. Connected
+   └─→ TUI sends ClientMsg
+   └─→ Server broadcasts ServerMsg
+   └─→ Other clients see same events
+
+3. Disconnect
+   └─→ Server cleans up session references
+   └─→ Session stays alive (in memory or persisted)
+   └─→ TUI can reconnect with same sessionId
+```
+
+## Message Types
+
+### ClientMsg (TUI → Server)
+
+Messages sent **from TUI to server**.
+
+#### Send Prompt
+
+```json
+{
+  "type": "send",
+  "sessionId": "sess_abc123",
+  "text": "Build me a function that sorts arrays"
+}
+```
+
+**Fields:**
+- `type` (string): Always "send"
+- `sessionId` (string): Target session ID
+- `text` (string): User prompt or command
+
+#### Cancel Run
+
+```json
+{
+  "type": "cancel",
+  "sessionId": "sess_abc123"
+}
+```
+
+**Fields:**
+- `type` (string): Always "cancel"
+- `sessionId` (string): Session to cancel
+
+#### Create Session
+
+```json
+{
+  "type": "create_session",
+  "name": "API Design",
+  "runner": "claude"
+}
+```
+
+**Fields:**
+- `type` (string): Always "create_session"
+- `name` (string): Display name
+- `runner` (string): "claude" or "codex"
+
+#### Switch Session
+
+```json
+{
+  "type": "switch_session",
+  "sessionId": "sess_def456"
+}
+```
+
+**Fields:**
+- `type` (string): Always "switch_session"
+- `sessionId` (string): Session to activate
+
+#### Delete Session
+
+```json
+{
+  "type": "delete_session",
+  "sessionId": "sess_abc123"
+}
+```
+
+**Fields:**
+- `type` (string): Always "delete_session"
+- `sessionId` (string): Session to delete
+
+### ServerMsg (Server → TUI)
+
+Messages sent **from server to all connected clients**.
+
+#### Event Broadcast
+
+```json
+{
+  "type": "event",
+  "sessionId": "sess_abc123",
+  "event": {
+    "type": "text_delta",
+    "delta": "Here's a function"
+  }
+}
+```
+
+**Fields:**
+- `type` (string): Always "event"
+- `sessionId` (string): Source session
+- `event` (RunEvent): See RunEvent types below
+
+#### Error Message
+
+```json
+{
+  "type": "error",
+  "sessionId": "sess_abc123",
+  "message": "API key not found"
+}
+```
+
+**Fields:**
+- `type` (string): Always "error"
+- `sessionId` (string): Affected session
+- `message` (string): Error description
+
+#### Session Created
+
+```json
+{
+  "type": "session_created",
+  "sessionId": "sess_new123",
+  "session": {
+    "id": "sess_new123",
+    "name": "API Design",
+    "runner": "claude",
+    "createdAt": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+#### Session Deleted
+
+```json
+{
+  "type": "session_deleted",
+  "sessionId": "sess_abc123"
+}
+```
+
+#### Sessions List
+
+```json
+{
+  "type": "sessions",
+  "sessions": [
+    {
+      "id": "sess_1",
+      "name": "Build API",
+      "runner": "claude",
+      "messageCount": 5
+    },
+    {
+      "id": "sess_2",
+      "name": "Debug Component",
+      "runner": "codex",
+      "messageCount": 3
+    }
+  ],
+  "activeSessionId": "sess_1"
+}
+```
+
+## RunEvent Types
+
+Events emitted by runners during processing.
+
+### Text Delta
+
+Real-time text streaming:
+
+```json
+{
+  "type": "text_delta",
+  "delta": "function sort"
+}
+```
+
+### Tool Use
+
+Tool execution request:
+
+```json
+{
+  "type": "tool_use",
+  "toolName": "create_file",
+  "toolUseId": "tool_xyz",
+  "input": {
+    "path": "utils.js",
+    "content": "export function sort(...) {...}"
+  }
+}
+```
+
+### Tool Result
+
+Tool execution result:
+
+```json
+{
+  "type": "tool_result",
+  "toolUseId": "tool_xyz",
+  "result": "File created successfully",
+  "success": true
+}
+```
+
+### Tool Log
+
+Tool output logging:
+
+```json
+{
+  "type": "tool_log",
+  "tool": "create_file",
+  "log": "✓ Created utils.js (245 bytes)"
+}
+```
+
+### Model Metadata
+
+Model and configuration info:
+
+```json
+{
+  "type": "model",
+  "model": "claude-3-5-sonnet-20241022",
+  "provider": "anthropic"
+}
+```
+
+### Usage Statistics
+
+Token and cost information:
+
+```json
+{
+  "type": "usage",
+  "inputTokens": 150,
+  "outputTokens": 350,
+  "totalTokens": 500,
+  "costUSD": 0.0045
+}
+```
+
+### Completion
+
+Run completed:
+
+```json
+{
+  "type": "complete"
+}
+```
+
+### Error
+
+Run encountered error:
+
+```json
+{
+  "type": "error",
+  "message": "Rate limit exceeded. Please retry in 60 seconds.",
+  "code": "RATE_LIMIT"
+}
+```
+
+## Protocol Examples
+
+### Example 1: Simple Prompt
+
+```
+TUI                            Server
+
+1. User types: "Hello"
+   
+   │
+   ├─→ {
+   │     type: "send",
+   │     sessionId: "sess_1",
+   │     text: "Hello"
+   │   }
+   │
+   │←─ { type: "event", event: { type: "text_delta", delta: "Hi," } }
+   │
+   │←─ { type: "event", event: { type: "text_delta", delta: " how" } }
+   │
+   │←─ { type: "event", event: { type: "text_delta", delta: " can I help?" } }
+   │
+   │←─ { type: "event", event: { type: "usage", inputTokens: 20, outputTokens: 15 } }
+   │
+   │←─ { type: "event", event: { type: "complete" } }
+```
+
+### Example 2: With Tool Use
+
+```
+1. User: "Read package.json"
+   
+   ├─→ { type: "send", text: "Read package.json" }
+   
+   │←─ { type: "event", event: { 
+   │    type: "tool_use", 
+   │    toolName: "read_file",
+   │    input: { path: "package.json" }
+   │  }}
+   
+   │←─ { type: "event", event: {
+   │    type: "tool_result",
+   │    result: "{ \"name\": \"app\", ... }"
+   │  }}
+   
+   │←─ { type: "event", event: { type: "text_delta", delta: "The package.json" } }
+   
+   │←─ { type: "event", event: { type: "complete" } }
+```
+
+### Example 3: Multi-Client Broadcast
+
+```
+Client A                 Server                 Client B
+
+                  ┌─ Connected
+                  │ sessionId: "sess_1"
+
+┌─ Connected
+│ clientId: "A"
+│                        │
+├─→ { send: "Build API" }
+│                        │ Process
+│                        │ Emit text_delta
+│                        ├→ Client A
+│                        └→ Client B (same session)
+│                        │
+│←─ { event: { text_delta } }
+                         │
+                         └→ { event: { text_delta } }
+```
+
+## Error Handling
+
+### API Key Errors
+
+```json
+{
+  "type": "error",
+  "message": "ANTHROPIC_API_KEY not configured",
+  "code": "INVALID_CONFIG"
+}
+```
+
+### Rate Limiting
+
+```json
+{
+  "type": "error",
+  "message": "Rate limit exceeded",
+  "code": "RATE_LIMIT",
+  "retryAfterSeconds": 60
+}
+```
+
+### Connection Errors
+
+```json
+{
+  "type": "error",
+  "message": "Failed to connect to Claude SDK",
+  "code": "CONNECTION_ERROR"
+}
+```
+
+### Validation Errors
+
+```json
+{
+  "type": "error",
+  "message": "Invalid sessionId",
+  "code": "VALIDATION_ERROR"
+}
+```
+
+## Heartbeat / Keep-Alive
+
+The connection uses TCP keep-alive. For long-running operations:
+
+```javascript
+// Server sends periodic status updates
+setInterval(() => {
+  ws.send(JSON.stringify({
+    type: "heartbeat",
+    timestamp: Date.now()
+  }))
+}, 30000)
+```
+
+## Reconnection
+
+If connection drops:
+
+```javascript
+// TUI reconnects with same sessionId
+const ws = new WebSocket(
+  `ws://127.0.0.1:4567/ws?clientId=${newClientId}&sessionId=${sessionId}`
+)
+
+// Server loads previous session state
+// TUI requests transcripts for this session
+```
+
+## Performance Considerations
+
+### Message Size
+
+- **Typical text_delta**: 50-200 bytes
+- **With tool output**: 500-5000 bytes
+- **With full transcript**: 10KB-100KB
+
+### Latency
+
+| Operation | Latency |
+|-----------|---------|
+| Text delta | <50ms |
+| Tool execution | 100-1000ms |
+| Session switch | <100ms |
+| Full reconnect | <500ms |
+
+### Backpressure
+
+If TUI falls behind:
+
+```javascript
+// Server can buffer events
+if (eventQueue.length > 100) {
+  // Wait for client to catch up
+  await new Promise(r => setTimeout(r, 100))
+}
+```
+
+## Protocol Version
+
+Current protocol version: **1.0**
+
+Breaking changes require version increment and upgrade path.
+
+---
+
+Next: [API Reference](/api/ws-protocol) | [Architecture](/concepts/architecture)

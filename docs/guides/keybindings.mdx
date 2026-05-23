@@ -1,0 +1,152 @@
+---
+title: Keybindings
+description: Complete keybinding reference for MixCode
+---
+
+# Keybindings
+
+All keyboard shortcuts available in MixCode.
+
+## Prompt Mode
+
+Active when you're typing messages (default mode).
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message |
+| `Shift+Enter` | New line in message |
+| `Esc` | Enter browse mode |
+| `↑` Arrow Up | Previous message in history |
+| `↓` Arrow Down | Next message in history |
+| `Ctrl+U` | Clear entire line |
+| `Ctrl+W` | Delete previous word |
+| `@` | File completion (triggers prompt) |
+| `Ctrl+C` | Exit MixCode |
+| `Ctrl+D` | Send (alternative) |
+
+## Browse Mode
+
+Active when you press `Esc` in prompt mode.
+
+| Key | Action |
+|-----|--------|
+| `j` | Next session |
+| `k` | Previous session |
+| `n` | New session |
+| `dd` | Delete session (double-d) |
+| `Return` | Go back to prompt mode |
+| `Esc` | Stay in browse mode |
+
+## Global Shortcuts
+
+Anytime in MixCode.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+C` | Quit immediately |
+| `Ctrl+L` | Clear screen |
+| `Ctrl+T` | Toggle runner (if enabled) |
+
+## Slash Commands
+
+Type `/` for commands:
+
+| Command | Short | Purpose |
+|---------|-------|---------|
+| `/claude` | `/c` | Use Claude |
+| `/codex` | `/cx` | Use Codex |
+| `/switch` | `/s` | Toggle runner |
+| `/new-session` | `/n` | Create session |
+| `/sessions` | `/s` | List sessions |
+| `/delete-session` | `/d` | Delete session |
+| `/history` | `/h` | Show history |
+| `/help` | `/?` | Show help |
+
+See [Slash Commands](/guides/slash-commands) for complete reference.
+
+## File Completion
+
+Start with `@` to get file suggestions:
+
+```
+> @src/
+  ├── App.tsx
+  ├── index.ts
+  └── ...
+
+@src/App.tsx
+```
+
+Patterns supported:
+- `@file.js` - Exact match
+- `@*.jsx` - Glob pattern
+- `@src/**/*.ts` - Recursive
+
+## Customizing Keybindings
+
+### Configuration File
+
+Edit `~/.mixcode/keybindings.json`:
+
+```json
+{
+  "submit": "Enter",
+  "newLine": "Shift+Enter",
+  "browseMode": "Escape",
+  "nextSession": "j",
+  "previousSession": "k",
+  "newSession": "n",
+  "deleteSession": "d",
+  "switchRunner": "Ctrl+T",
+  "exit": "Ctrl+C"
+}
+```
+
+### Per-Project Keybindings
+
+In project `.mixcode.json`:
+
+```json
+{
+  "keybindings": {
+    "submit": "Ctrl+Enter",
+    "browseMode": "Tab"
+  }
+}
+```
+
+Project keybindings override global.
+
+### Key Notation
+
+- `Ctrl+X` - Control + X
+- `Shift+X` - Shift + X
+- `Alt+X` - Alt + X
+- `Meta+X` - Cmd (macOS) / Win (Linux)
+- `X+Y` - Chord (press X, then Y)
+
+## Tips
+
+### Find What Keys Do
+
+```
+/help keybindings
+```
+
+### Discover Shortcuts
+
+Browse mode helps:
+1. Press `Esc`
+2. Commands shown
+3. Try `j`, `k`, `n`, `dd`
+
+### Restore Defaults
+
+Delete your config:
+```bash
+rm ~/.mixcode/keybindings.json
+```
+
+---
+
+Next: [Usage Guide](/guides/usage) | [Slash Commands](/guides/slash-commands)

@@ -1,0 +1,490 @@
+---
+title: Development Setup
+description: Set up MixCode for local development
+---
+
+# Development Setup
+
+Get MixCode running for development and contribution.
+
+## Prerequisites
+
+- **Node.js** >= 20
+- **Bun** (latest)
+- **Git**
+- Code editor (VS Code recommended)
+
+## Initial Setup
+
+### 1. Fork & Clone
+
+Fork the repository on GitHub, then clone:
+
+```bash
+git clone https://github.com/your-username/mixcode.git
+cd mixcode
+```
+
+### 2. Install Dependencies
+
+```bash
+npm install
+```
+
+This installs:
+- Root dependencies
+- Server workspace dependencies
+- TUI dependencies (via Bun)
+
+### 3. Create Environment
+
+```bash
+cp .env.example .env
+
+# Edit .env with your API keys
+# ANTHROPIC_API_KEY=sk-ant-xxxxx
+# OPENAI_API_KEY=sk-xxxxx
+```
+
+### 4. Verify Installation
+
+```bash
+npm run typecheck
+```
+
+Should show no errors.
+
+## Project Structure for Development
+
+```
+mixcode/
+├── shared/
+│   └── events.ts              # Protocol definitions
+│
+├── server/
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── src/
+│   │   ├── index.ts           # Main server
+│   │   ├── sessions.ts
+│   │   ├── runners/
+│   │   │   ├── claude.ts
+│   │   │   └── codex.ts
+│   │   └── ...
+│   └── build/                 # Compiled output
+│
+├── tui/
+│   ├── package.json
+│   ├── bunfig.toml
+│   ├── tsconfig.json
+│   ├── src/
+│   │   ├── index.tsx
+│   │   ├── app.tsx
+│   │   ├── components/
+│   │   ├── state/
+│   │   └── util/
+│   └── dist/                  # Built output
+│
+├── bin/
+│   ├── start.mjs              # npm start
+│   └── mixcode.mjs            # Global command
+│
+└── docs/                      # Mintlify docs
+```
+
+## Development Workflow
+
+### Running Development Servers
+
+**Option 1: Both together**
+
+```bash
+npm start
+```
+
+Starts backend and TUI in the foreground. Ctrl+C to stop both.
+
+**Option 2: Separate terminals**
+
+Terminal 1 - Backend:
+```bash
+npm run server
+```
+
+Terminal 2 - TUI:
+```bash
+npm run tui
+```
+
+This allows you to restart one without killing the other.
+
+### Making Changes
+
+**Backend changes:**
+
+1. Edit files in `/server/src`
+2. Backend auto-restarts (nodemon)
+3. Or manually restart: `npm run server`
+
+**TUI changes:**
+
+1. Edit files in `/tui/src`
+2. Bun auto-rebuilds
+3. Refresh browser (if running in browser mode)
+4. Or restart TUI: `npm run tui`
+
+**Shared types:**
+
+1. Edit `/shared/events.ts`
+2. Both backend and TUI automatically sync
+3. No rebuild needed
+
+### Testing Changes
+
+```bash
+# Type checking
+npm run typecheck
+
+# Format check
+npm run lint
+
+# Run tests (if implemented)
+npm run test
+```
+
+## IDE Setup
+
+### VS Code
+
+**Extensions:**
+- ES7+ React/Redux/React-Native snippets
+- TypeScript Vue Plugin
+- Prettier
+- ESLint
+
+**Settings:**
+
+Create `.vscode/settings.json`:
+
+```json
+{
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true
+  },
+  "typescript.tsdk": "node_modules/typescript/lib"
+}
+```
+
+**Debug Configuration:**
+
+Create `.vscode/launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Backend",
+      "program": "${workspaceFolder}/node_modules/.bin/tsx",
+      "args": ["server/src/index.ts"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Tests",
+      "program": "${workspaceFolder}/node_modules/.bin/vitest",
+      "console": "integratedTerminal"
+    }
+  ]
+}
+```
+
+## Git Workflow
+
+### Branching
+
+```bash
+# Create feature branch
+git checkout -b feature/new-feature
+
+# Or bug fix
+git checkout -b fix/bug-description
+
+# Or documentation
+git checkout -b docs/update-guide
+```
+
+### Commits
+
+```bash
+# Small, focused commits
+git add src/file.ts
+git commit -m "type: description
+
+Longer explanation if needed.
+
+Fixes #123"
+```
+
+**Types:**
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation
+- `refactor`: Code refactoring
+- `test`: Tests
+- `chore`: Dependencies, config
+
+### Push & PR
+
+```bash
+git push origin feature/new-feature
+```
+
+Then create PR on GitHub.
+
+## Code Style
+
+### TypeScript
+
+```typescript
+// Use proper typing
+interface Session {
+  id: string
+  name: string
+  createdAt: Date
+}
+
+// Avoid any
+const session: Session = {
+  // ...
+}
+
+// Use const for immutability
+const MAX_SESSIONS = 50
+```
+
+### React
+
+```typescript
+// Functional components
+export const Button: React.FC<ButtonProps> = ({ label }) => {
+  return <button>{label}</button>
+}
+
+// Use hooks
+const [state, setState] = useState(0)
+```
+
+### File Organization
+
+```
+src/
+├── components/
+│   ├── Button.tsx           # Component file
+│   ├── Button.test.tsx      # Test file
+│   └── index.ts             # Barrel export
+├── hooks/
+│   ├── useSession.ts
+│   └── useHistory.ts
+├── utils/
+│   ├── format.ts
+│   └── files.ts
+└── types/
+    └── index.ts
+```
+
+## Testing
+
+### Add Tests
+
+```typescript
+// src/utils/format.test.ts
+import { describe, it, expect } from 'vitest'
+import { formatBytes } from './format'
+
+describe('formatBytes', () => {
+  it('formats bytes correctly', () => {
+    expect(formatBytes(1024)).toBe('1.0 KB')
+    expect(formatBytes(1024 * 1024)).toBe('1.0 MB')
+  })
+})
+```
+
+### Run Tests
+
+```bash
+npm run test
+npm run test:watch
+npm run test:coverage
+```
+
+## Debugging
+
+### Backend Debugging
+
+Enable debug logs:
+
+```bash
+DEBUG=mixcode:* npm run server
+```
+
+Or use node inspector:
+
+```bash
+node --inspect ./server/src/index.ts
+
+# Then open chrome://inspect in Chrome
+```
+
+### TUI Debugging
+
+Run with React dev tools:
+
+```bash
+REACT_DEBUG=true npm run tui
+```
+
+### WebSocket Debugging
+
+Monitor network traffic:
+
+```bash
+# In browser (if running in browser mode)
+# Open DevTools → Network → WS
+```
+
+Or use wscat:
+
+```bash
+npm install -g wscat
+wscat -c ws://127.0.0.1:4567/ws
+```
+
+## Building for Production
+
+### Build Outputs
+
+```bash
+# Build server
+npm --workspace server run build
+
+# Build TUI
+bun --cwd tui run build
+
+# Both
+npm run build
+```
+
+Outputs:
+- Server: `/server/dist`
+- TUI: `/tui/dist`
+
+### Docker Build
+
+```bash
+docker build -t mixcode:latest .
+docker run -p 4567:4567 mixcode
+```
+
+## Documentation
+
+### Editing Docs
+
+Docs use Mintlify format (MDX):
+
+```bash
+# Edit markdown files in /docs
+cat docs/introduction.mdx
+
+# Preview locally (requires Mintlify CLI)
+mintlify dev
+```
+
+### Adding New Docs
+
+1. Create file in appropriate folder
+2. Add to `mint.json` navigation
+3. Link from related docs
+4. Build: `mintlify build`
+
+## Contributing
+
+### Before Submitting PR
+
+- [ ] Changes compile: `npm run typecheck`
+- [ ] Tests pass: `npm run test`
+- [ ] Code is formatted
+- [ ] Commit messages follow convention
+- [ ] Documentation updated
+- [ ] Changes tested manually
+
+### PR Template
+
+```markdown
+## Description
+Brief description of changes
+
+## Type of Change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Documentation
+- [ ] Refactoring
+
+## Testing
+- [ ] Manual testing done
+- [ ] Tests added
+- [ ] No breaking changes
+
+## Screenshots/Logs
+If applicable, add screenshots or logs
+
+## Checklist
+- [ ] Code follows style guidelines
+- [ ] Documentation updated
+- [ ] No new warnings generated
+```
+
+## Troubleshooting Development
+
+### "Module not found" errors
+
+```bash
+# Reinstall dependencies
+rm -rf node_modules package-lock.json bun.lock
+npm install
+```
+
+### "Port already in use"
+
+```bash
+# Use different port
+PORT=4568 npm start
+```
+
+### "TypeScript errors"
+
+```bash
+# Check types across workspace
+npm run typecheck
+
+# Fix individual workspace
+cd server && npx tsc --noEmit
+```
+
+### "Build failures"
+
+```bash
+# Clean and rebuild
+rm -rf server/dist tui/dist
+npm run build
+```
+
+---
+
+Next: [Server Development](/development/server) | [TUI Development](/development/tui)

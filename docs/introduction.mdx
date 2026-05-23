@@ -1,0 +1,179 @@
+---
+title: Introduction
+description: Welcome to MixCode - a terminal UI for running Claude and Codex side-by-side
+---
+
+# Welcome to MixCode
+
+MixCode is a powerful terminal user interface (TUI) that lets you run **Claude Code** and **Codex** side-by-side directly from your terminal. It's built on [OpenTUI](https://opentui.com/) and provides a seamless environment for comparing AI agents, testing approaches, and building with multiple code generation models simultaneously.
+
+## What is MixCode?
+
+MixCode is a custom coding-agent TUI that bridges your terminal with two state-of-the-art AI coding assistants:
+
+- **Claude Code** - Powered by Anthropic's Claude models via the Claude Agent SDK
+- **Codex** - Powered by OpenAI's advanced code models
+
+Both agents run in a unified interface with:
+- Real-time streaming of model outputs
+- Tool execution and logging
+- Session management and history
+- Project-scoped environments
+- Per-directory configuration
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card
+    title="Dual Agent Support"
+    icon="code"
+    href="/concepts/runners"
+  >
+    Run Claude and Codex agents simultaneously or switch between them with a single command.
+  </Card>
+  <Card
+    title="Project Scoping"
+    icon="folder"
+    href="/guides/project-scoping"
+  >
+    Each directory gets isolated sessions, transcripts, and configuration - no cross-project bleeding.
+  </Card>
+  <Card
+    title="Rich Terminal UI"
+    icon="terminal"
+    href="/guides/usage"
+  >
+    Intuitive keybindings, session browsing, and a responsive interface built with React.
+  </Card>
+  <Card
+    title="WebSocket Architecture"
+    icon="network"
+    href="/api/ws-protocol"
+  >
+    Local backend server communicates with TUI via WebSocket for real-time event streaming.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+```
+┌─────────────────────────────────────┐
+│         MixCode TUI (React)          │
+│    Terminal UI via @opentui/react   │
+└──────────────────┬──────────────────┘
+                   │ WebSocket (ws)
+                   │ JSON Events
+┌──────────────────▼──────────────────┐
+│    Node.js Backend (Hono Server)    │
+│  Manages Sessions & Agent Runners   │
+├──────────────┬──────────────────────┤
+│              │                      │
+│         Claude SDK          OpenAI Codex SDK
+│  Agent Orchestration    Agent Orchestration
+│                                     │
+└──────────────┬──────────────────────┘
+               │
+          Tool Execution
+```
+
+1. **You type** a prompt in the MixCode terminal
+2. **TUI sends** the message to the backend via WebSocket
+3. **Backend selects** the active runner (Claude or Codex)
+4. **SDK processes** the request with tool execution
+5. **Events stream** back to the TUI in real-time
+6. **You see** the results as they happen
+
+## Use Cases
+
+- **Comparison Testing** - See how Claude and Codex approach the same problem
+- **Code Review** - Get multiple perspectives on code solutions
+- **Algorithm Exploration** - Test different implementations rapidly
+- **Learning** - Understand how different AI models reason about code
+- **Development** - Leverage the best agent for each task in your workflow
+
+## Quick Start
+
+Get started in seconds:
+
+```bash
+# Install and setup
+npm install
+cp .env.example .env
+# Add your API keys to .env
+
+# Start MixCode
+npm start
+
+# Or use the global mixcode command (after npm link)
+cd ~/your-project
+mixcode
+```
+
+Then in the TUI:
+- Type your prompt and press Enter
+- Use `/claude` or `/codex` to switch agents
+- Browse with `j`/`k`, create new sessions with `n`
+- Press `Esc` to enter browse mode
+
+## Architecture Overview
+
+MixCode consists of three main components:
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **TUI** | Bun + React + @opentui/react | Terminal UI rendering and user interaction |
+| **Server** | Node.js + Hono + WebSocket | Session management and agent orchestration |
+| **Shared** | TypeScript | Protocol definitions and type sharing |
+
+Each runs independently but communicates over a local WebSocket connection. The server maintains session state and SDK continuity, while the TUI is a thin stateless projection of that state.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Installation"
+    icon="download"
+    href="/installation"
+  >
+    Set up MixCode on your machine
+  </Card>
+  <Card
+    title="Quick Start Guide"
+    icon="play"
+    href="/quickstart"
+  >
+    Get up and running in 5 minutes
+  </Card>
+  <Card
+    title="Architecture Deep Dive"
+    icon="building"
+    href="/architecture/overview"
+  >
+    Understand how MixCode works internally
+  </Card>
+  <Card
+    title="User Guide"
+    icon="book"
+    href="/guides/usage"
+  >
+    Master all features and keybindings
+  </Card>
+</CardGroup>
+
+## Requirements
+
+- **Node.js** >= 20
+- **Bun** (install with `curl -fsSL https://bun.sh/install | bash`)
+- **Anthropic API Key** (for Claude) or **OpenAI API Key** (for Codex)
+- Unix-like terminal (macOS, Linux)
+
+## Community & Support
+
+- 📚 Read the [full documentation](/docs)
+- 🐛 Report issues on [GitHub](https://github.com)
+- 💬 Join our community discussions
+- 📧 Contact support for enterprise needs
+
+---
+
+**Ready to code with two AI agents?** Start with [Installation](/installation).

@@ -1,0 +1,311 @@
+---
+title: Contributing
+description: Contribute to MixCode development
+---
+
+# Contributing to MixCode
+
+Thanks for your interest in contributing! Here's how you can help.
+
+## Getting Started
+
+1. Fork the repository
+2. Clone your fork: `git clone https://github.com/your-username/mixcode.git`
+3. Follow [Development Setup](/development/setup)
+4. Make your changes
+5. Submit a PR
+
+## Types of Contributions
+
+### Bug Fixes
+
+Found a bug? Fix it:
+
+1. Open an issue describing the bug
+2. Create a branch: `git checkout -b fix/bug-description`
+3. Fix the code
+4. Add tests
+5. Submit PR
+
+### New Features
+
+Have an idea? Propose it:
+
+1. Open an issue to discuss
+2. Wait for feedback
+3. Create a branch: `git checkout -b feature/feature-name`
+4. Implement with tests
+5. Submit PR
+
+### Documentation
+
+Improve the docs:
+
+1. Edit `.mdx` files in `/docs`
+2. Test with: `mintlify dev`
+3. Submit PR
+
+### Tests
+
+Add test coverage:
+
+1. Create test files: `*.test.ts(x)`
+2. Use vitest: `import { describe, it, expect } from "vitest"`
+3. Run: `npm run test`
+
+## Code Standards
+
+### TypeScript
+
+- Use strict mode
+- Proper typing (no `any`)
+- Use `interface` for types
+
+```typescript
+interface MyInterface {
+  name: string
+  value: number
+}
+
+function myFunction(arg: MyInterface): string {
+  return arg.name
+}
+```
+
+### React
+
+- Functional components
+- Use hooks
+- Prop typing
+
+```typescript
+interface MyComponentProps {
+  title: string
+  onClick: () => void
+}
+
+export const MyComponent: React.FC<MyComponentProps> = ({
+  title,
+  onClick
+}) => {
+  return <button onClick={onClick}>{title}</button>
+}
+```
+
+### File Organization
+
+```
+src/
+├── components/
+│   ├── MyComponent.tsx
+│   ├── MyComponent.test.tsx
+│   └── index.ts
+├── hooks/
+│   └── useMyHook.ts
+└── utils/
+    └── myutil.ts
+```
+
+## Commit Messages
+
+Follow conventional commits:
+
+```
+type(scope): subject
+
+Body explaining the change.
+
+Fixes #123
+```
+
+**Types:**
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation
+- `test`: Tests
+- `refactor`: Code refactoring
+- `chore`: Dependencies, config
+
+**Examples:**
+
+```
+feat(runners): add custom runner support
+
+Adds ability to create custom runners by implementing
+the Runner interface. Includes examples and documentation.
+
+Fixes #456
+
+fix(session): prevent memory leak on delete
+
+Properly cleanup WebSocket listeners when session deleted.
+
+docs(guide): update installation for macOS
+
+Clarifies Homebrew installation path for Node.js.
+```
+
+## Testing
+
+### Write Tests
+
+```typescript
+import { describe, it, expect } from "vitest"
+import { myFunction } from "./myfunction"
+
+describe("myFunction", () => {
+  it("handles valid input", () => {
+    expect(myFunction("test")).toBe("expected")
+  })
+
+  it("handles edge cases", () => {
+    expect(myFunction("")).toThrow()
+  })
+})
+```
+
+### Run Tests
+
+```bash
+npm run test          # Run once
+npm run test:watch   # Watch mode
+npm run test:coverage # With coverage
+```
+
+### Code Coverage
+
+Aim for >80% coverage on new code.
+
+```bash
+npm run test:coverage
+open coverage/index.html
+```
+
+## Pull Request Process
+
+### Before Submitting
+
+- [ ] Code compiles: `npm run typecheck`
+- [ ] Tests pass: `npm run test`
+- [ ] Coverage is good
+- [ ] Commits follow convention
+- [ ] Updated relevant docs
+- [ ] No breaking changes (or documented)
+
+### Create PR
+
+1. Push to your fork
+2. Open PR on GitHub
+3. Fill out PR template
+4. Link related issues
+5. Request reviewers
+
+### PR Template
+
+```markdown
+## Description
+Brief description of changes.
+
+## Type of Change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Breaking change
+- [ ] Documentation
+
+## How to Test
+Steps to verify the fix/feature:
+1. ...
+2. ...
+3. ...
+
+## Checklist
+- [ ] Tests added/updated
+- [ ] Documentation updated
+- [ ] No breaking changes
+- [ ] Code follows style guidelines
+```
+
+## Code Review
+
+### Give Feedback
+
+- Be constructive
+- Suggest improvements
+- Compliment good work
+- Ask questions
+
+### Respond to Feedback
+
+- Explain your decisions
+- Update code as suggested
+- Re-request review when done
+
+## Documentation
+
+### Update Docs
+
+When adding features:
+
+1. Update relevant `.mdx` files
+2. Add examples
+3. Update `mint.json` if adding sections
+4. Test with: `mintlify dev`
+
+### Write Good Docs
+
+- Clear and concise
+- Include examples
+- Link related docs
+- Use proper formatting
+
+## Issue Labels
+
+| Label | Meaning |
+|-------|---------|
+| `bug` | Something broken |
+| `feature` | New feature request |
+| `docs` | Documentation |
+| `good-first-issue` | Good for newcomers |
+| `help-wanted` | Need assistance |
+| `question` | Question/discussion |
+
+## Release Process
+
+Maintainers handle releases:
+
+1. Merge PRs to `main`
+2. Update version in `package.json`
+3. Create GitHub release
+4. Publish to npm
+
+You can help by:
+- Fixing bugs
+- Adding features
+- Improving docs
+- Writing tests
+
+## Recognition
+
+Contributors are:
+- Listed in README
+- Thanked in releases
+- Credited in commits
+
+## Code of Conduct
+
+- Be respectful
+- No harassment
+- Inclusive environment
+- Assume good intent
+
+## Questions?
+
+- Open an issue
+- Start a discussion
+- Email: support@example.com
+
+---
+
+Thank you for contributing to MixCode! 🎉
+
+**Happy coding!**

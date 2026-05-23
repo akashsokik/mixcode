@@ -1,0 +1,468 @@
+---
+title: User Guide
+description: How to use MixCode effectively
+---
+
+# User Guide
+
+Master MixCode and become a power user.
+
+## Interface Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Session: Build API | Runner: [Claude] [Codex] | 0 msgs  │ ← Header
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  msg 1: You: Build me a REST API                       │
+│                                                         │
+│  msg 2: Claude:                                        │
+│  > Here's a REST API implementation...                 │
+│  > function createServer() {...}                       │
+│                                                         │
+│  msg 3: Tool: create_file                             │
+│  ✓ Created: api.js (1024 bytes)                        │
+│                                                         │
+│                        [Transcript] ← Main area         │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│ Type your message or /slash command                     │ ← Prompt area
+│ > Build me a REST API endpoint                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Key Sections
+
+| Section | Purpose |
+|---------|---------|
+| **Header** | Session name, runner selection, message count |
+| **Transcript** | Message history and tool outputs |
+| **Prompt** | Your input area for messages and commands |
+| **Status** | Bottom bar with spinner, usage, runtime |
+
+## Basic Workflow
+
+### 1. Start a Conversation
+
+```
+Type your first message:
+> Build me a function that calculates fibonacci
+
+Press Enter
+```
+
+The selected runner (Claude by default) processes your request.
+
+### 2. See Real-Time Response
+
+```
+Claude:
+
+Here's a fibonacci function:
+
+function fibonacci(n) {
+  if (n <= 1) return n
+  return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+⏳ Processing...
+```
+
+Responses stream in real-time as the model generates tokens.
+
+### 3. Continue the Conversation
+
+```
+You: Can you optimize it with memoization?
+
+Claude:
+Sure! Here's a more efficient version...
+```
+
+The full conversation context is maintained automatically.
+
+### 4. Switch Runners (Optional)
+
+```
+/switch
+
+Now using Codex. Ask the same question:
+> Can you add TypeScript types?
+
+Codex: Here's the TypeScript version...
+```
+
+Same session, different perspective.
+
+## Modes
+
+### Prompt Mode (Default)
+
+```
+> Type your message here
+```
+
+**Active when:** TUI starts  
+**Exit:** Press `Esc`
+
+**Features:**
+- Type messages normally
+- Use `/` for slash commands
+- `↑`/`↓` for message history
+- `@` for file completion
+
+### Browse Mode
+
+```
+┌──────────────────────────┐
+│ Sessions:                │
+│ ▶ Build API (Claude) [5] │ ← Currently active
+│  • Debug Component (Codex)[2]
+│  • Test Suite (Claude)   │
+│
+│ Commands:                │
+│ [j/k] Navigate           │
+│ [n] New session          │
+│ [dd] Delete              │
+│ [Return] Back to prompt  │
+└──────────────────────────┘
+```
+
+**Active when:** You press `Esc`  
+**Exit:** Press `Return`
+
+**Commands:**
+- `j` - Down (next session)
+- `k` - Up (previous session)
+- `n` - New session
+- `dd` - Delete session
+- `Return` - Back to prompt
+
+## Writing Prompts
+
+### Clear, Specific Prompts
+
+```
+❌ Bad:
+> make a function
+
+✅ Good:
+> Create a function that validates email addresses using regex,
+  with comprehensive test cases
+```
+
+### Multi-line Input
+
+```
+> First line of prompt
+  Second line (auto-continues)
+  Third line
+  
+[Press Ctrl+D to send, or Enter twice]
+```
+
+### Using File Context
+
+```
+> @utils.js
+  Can you optimize this file?
+
+// Auto-includes utils.js in the prompt
+```
+
+### Referencing Previous Messages
+
+```
+You: Build me a button component
+
+Claude: [Provides React button]
+
+You: How would you improve the one you just showed?
+
+// Claude understands context from previous message
+```
+
+## Working with Tools
+
+### Seeing Tool Execution
+
+```
+Claude:
+
+Let me create a file for you...
+
+Tool: create_file
+Input: {
+  "path": "utils.js",
+  "content": "export function sort(...) {...}"
+}
+
+✓ Created: utils.js (245 bytes)
+
+Now that the file is created...
+```
+
+### Approving Tool Actions
+
+<Note>
+  For security-sensitive operations, MixCode may request approval before executing tools.
+</Note>
+
+```
+⚠️ Permission requested:
+Tool: execute_command
+Command: npm install
+
+[Approve] [Deny] [Block all from this tool]
+```
+
+### Viewing Tool Logs
+
+```
+Tool Logs:
+├─ create_file: Created api.ts
+├─ run_command: npm install (took 2.3s)
+└─ read_file: Read package.json (1.2KB)
+```
+
+## Session Management
+
+### Creating Sessions
+
+**Method 1: Use the command**
+
+```
+/new-session
+> Name: Build Database Schema
+```
+
+**Method 2: Browse mode**
+
+1. Press `Esc` to enter browse mode
+2. Press `n` for new session
+3. Type session name
+
+### Switching Sessions
+
+**Method 1: Browse mode**
+
+1. Press `Esc`
+2. Use `j`/`k` to select
+3. Press `Return`
+
+**Method 2: Command**
+
+```
+/sessions
+> 1. Build API (Claude)
+> 2. Debug Component (Codex)
+
+Select: 1
+```
+
+### Renaming Sessions
+
+```
+/rename "New API Project"
+```
+
+### Deleting Sessions
+
+**Method 1: Browse mode**
+
+1. Press `Esc`
+2. Select session
+3. Press `dd`
+
+**Method 2: Command**
+
+```
+/delete-session
+```
+
+Transcripts are archived (not deleted).
+
+## Runner Selection
+
+### Setting Default Runner
+
+```
+/claude
+> Now using Claude for this session
+
+/codex
+> Switched to Codex
+```
+
+### Global Runner Switch
+
+```
+/switch
+```
+
+Switches the active runner for the current session.
+
+### Comparing Runners
+
+1. Ask Claude: `Build me an API`
+2. Switch: `/switch`
+3. Ask Codex the same thing
+4. Compare responses in transcript
+
+## Keyboard Shortcuts
+
+### Universal
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+C` | Quit MixCode |
+| `Ctrl+D` | EOF / Submit (alternative) |
+
+### Prompt Mode
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message |
+| `Shift+Enter` | New line in message |
+| `Esc` | Enter browse mode |
+| `↑` | Previous message |
+| `↓` | Next message |
+| `@` | File completion |
+| `Ctrl+U` | Clear line |
+| `Ctrl+W` | Delete word |
+
+### Browse Mode
+
+| Key | Action |
+|-----|--------|
+| `j` | Next session |
+| `k` | Previous session |
+| `n` | New session |
+| `dd` | Delete session |
+| `Return` | Back to prompt |
+| `Esc` | Stay in browse |
+
+## Tips & Tricks
+
+### Quick File Reference
+
+Instead of copying file content:
+
+```
+> @src/App.tsx
+  Can you optimize this component?
+
+// Automatically includes file content
+```
+
+### Session Naming Convention
+
+Use descriptive names for easy navigation:
+
+```
+• Build: User Authentication
+• Fix: Login Component Bug
+• Docs: API Documentation
+• Experiment: Alternative Algorithm
+```
+
+### Saving Work
+
+Transcripts are auto-saved:
+
+```
+~/.adverserial-code/transcripts/
+├── sess_1.json
+├── sess_2.json
+└── sess_3.json
+```
+
+Or when using `mixcode`:
+
+```
+~/.mixcode/projects/<project>/transcripts/
+```
+
+### Debugging Issues
+
+To debug what's happening:
+
+```
+/debug
+> Shows:
+  - Current session
+  - Active runner
+  - Recent events
+  - Memory usage
+  - Server logs
+```
+
+### Clearing Session History
+
+```
+/clear-history
+> This session's messages cleared.
+  Transcript file archived.
+```
+
+### Exporting Sessions
+
+Sessions are saved as JSON:
+
+```bash
+cat ~/.adverserial-code/transcripts/sess_abc.json | jq
+```
+
+Export as markdown:
+
+```bash
+mixcode-export sess_abc.json > session.md
+```
+
+## Performance Tips
+
+### Keep Sessions Focused
+
+- One session per task
+- Clear old sessions when done
+- Reduces memory overhead
+
+### Monitor Usage
+
+Watch the header for token usage:
+
+```
+Messages: 5 | Tokens: 1,250 ↑ | 350 ↓ | Cost: $0.012
+```
+
+### Batch Operations
+
+```
+❌ Inefficient:
+> Create a button
+> Create a form
+> Create a modal
+
+✅ Better:
+> Create a button, form, and modal component
+```
+
+### Use Project Scoping
+
+Keep projects isolated:
+
+```bash
+cd ~/my-project
+mixcode
+
+# vs
+
+cd ~/another-project
+mixcode
+
+# Different sessions, config, logs
+```
+
+---
+
+Next: [Slash Commands](/guides/slash-commands) | [Keybindings](/guides/keybindings)

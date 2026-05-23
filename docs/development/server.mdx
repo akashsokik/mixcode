@@ -1,0 +1,118 @@
+---
+title: Server Development
+description: Develop and extend the MixCode backend
+---
+
+# Server Development
+
+Guide to developing the MixCode backend server.
+
+## Project Structure
+
+```
+server/
+├── src/
+│   ├── index.ts              # Main Hono app & WebSocket
+│   ├── sessions.ts           # Session management
+│   ├── transcript.ts         # Event persistence
+│   ├── permissions.ts        # Permission system
+│   ├── git.ts               # Git utilities
+│   ├── runners/
+│   │   ├── claude.ts        # Claude runner
+│   │   ├── codex.ts         # Codex runner
+│   │   ├── delegate.ts      # Delegation/MCP
+│   │   └── validate.ts      # Validation
+│   └── orchestrator/
+│       └── tasks.ts         # Task management
+├── package.json
+└── tsconfig.json
+```
+
+## Key Concepts
+
+### Session Manager
+
+Manages in-memory sessions:
+
+```typescript
+class SessionManager {
+  sessions: Map<string, Session>
+  
+  get(id: string): Session | undefined
+  set(id: string, session: Session): void
+  list(): Session[]
+  delete(id: string): void
+}
+```
+
+### Runners
+
+Each runner implements:
+
+```typescript
+interface Runner {
+  sessionId: string | null
+  run(prompt: string, onEvent: (e: RunEvent) => void): Promise<void>
+  cancel(): void
+}
+```
+
+### Event System
+
+RunEvents flow through the system:
+
+```
+Runner → formatEvent() → broadcast() → TUI
+```
+
+## Development
+
+### Start Backend Only
+
+```bash
+npm run server
+```
+
+Auto-restarts on changes (nodemon).
+
+### With Debugging
+
+```bash
+DEBUG=mixcode:* npm run server
+```
+
+### Testing
+
+```bash
+npm run test
+npm run test:watch
+```
+
+## Common Tasks
+
+### Add New Runner
+
+1. Create `/server/src/runners/new-runner.ts`
+2. Implement Runner interface
+3. Register in `index.ts`
+4. Handle in routes
+
+### Add New Event Type
+
+1. Update `/shared/events.ts` with new event
+2. Emit from runner
+3. Handle in TUI
+
+### Add Persistence
+
+```typescript
+// Add to transcript
+await transcript.append(sessionId, event)
+
+// Load from transcript
+const events = await transcript.load(sessionId)
+```
+
+---
+
+See [Extending MixCode](/development/extending) for custom runners.

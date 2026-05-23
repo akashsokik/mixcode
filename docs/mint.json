@@ -1,0 +1,115 @@
+{
+  "name": "MixCode",
+  "logo": {
+    "dark": "/logo/dark.svg",
+    "light": "/logo/light.svg"
+  },
+  "favicon": "/favicon.png",
+  "colors": {
+    "primary": "#0D9488",
+    "light": "#07C983",
+    "dark": "#0D9488",
+    "anchors": {
+      "from": "#0D9488",
+      "to": "#07C983"
+    }
+  },
+  "topbarCtaButton": {
+    "name": "GitHub",
+    "url": "https://github.com/yourusername/mixcode"
+  },
+  "topbarLinks": [
+    {
+      "name": "Support",
+      "url": "mailto:support@example.com"
+    }
+  ],
+  "tabs": [
+    {
+      "name": "Documentation",
+      "url": "docs"
+    },
+    {
+      "name": "API Reference",
+      "url": "api"
+    }
+  ],
+  "anchors": [
+    {
+      "name": "GitHub",
+      "icon": "github",
+      "url": "https://github.com"
+    },
+    {
+      "name": "Community",
+      "icon": "slack",
+      "url": "https://community.example.com"
+    }
+  ],
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": [
+        "introduction",
+        "quickstart",
+        "installation"
+      ]
+    },
+    {
+      "group": "Core Concepts",
+      "pages": [
+        "concepts/architecture",
+        "concepts/sessions",
+        "concepts/runners",
+        "concepts/websocket-protocol"
+      ]
+    },
+    {
+      "group": "User Guide",
+      "pages": [
+        "guides/usage",
+        "guides/keybindings",
+        "guides/slash-commands",
+        "guides/environment-setup",
+        "guides/project-scoping"
+      ]
+    },
+    {
+      "group": "Developer Guide",
+      "pages": [
+        "development/setup",
+        "development/server",
+        "development/tui",
+        "development/extending",
+        "development/debugging"
+      ]
+    },
+    {
+      "group": "Architecture",
+      "pages": [
+        "architecture/overview",
+        "architecture/server-design",
+        "architecture/tui-design",
+        "architecture/event-system",
+        "architecture/session-management"
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "api/ws-protocol",
+        "api/events",
+        "api/client-messages",
+        "api/server-messages"
+      ]
+    },
+    {
+      "group": "Resources",
+      "pages": [
+        "troubleshooting",
+        "faq",
+        "contributing"
+      ]
+    }
+  ]
+}

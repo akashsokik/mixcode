@@ -1,0 +1,132 @@
+name: Release
+
+# Triggered by `make publish`, which pushes a semver tag like v1.2.3.
+# Manual workflow_dispatch is also supported for re-running against an existing tag.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (e.g. v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+            echo "error: tag '$TAG' is not semver (vMAJOR.MINOR.PATCH[-PRERELEASE])"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          PRERELEASE="false"
+          if printf '%s' "$VERSION" | grep -q '-'; then PRERELEASE="true"; fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify package.json matches tag
+        env:
+          EXPECTED_VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "error: package.json version ($PKG_VERSION) does not match tag ($EXPECTED_VERSION)"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          npm ci
+          cd tui && bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build release tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          TARBALL=$(npm pack --pack-destination dist --json | node -p "JSON.parse(require('fs').readFileSync(0,'utf8'))[0].filename")
+          echo "tarball=dist/$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "filename=$TARBALL" >> "$GITHUB_OUTPUT"
+          ls -la dist
+
+      - name: Generate release notes
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          {
+            echo "## mixcode $TAG"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "### Changes since $PREV_TAG"
+              echo ""
+              git log --pretty=format:"- %s (%h)" "$PREV_TAG..$TAG"
+              echo ""
+              echo ""
+              echo "**Full diff**: https://github.com/$REPO/compare/$PREV_TAG...$TAG"
+            else
+              echo "Initial release."
+              echo ""
+              git log --pretty=format:"- %s (%h)" "$TAG"
+            fi
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: mixcode ${{ steps.tag.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          files: ${{ steps.pack.outputs.tarball }}
+          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
+          draft: false
+          fail_on_unmatched_files: true

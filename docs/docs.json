@@ -1,0 +1,120 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "MixCode",
+  "colors": {
+    "primary": "#0D9488",
+    "light": "#07C983",
+    "dark": "#0D9488"
+  },
+  "favicon": "/favicon.png",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/sessions",
+              "concepts/runners",
+              "concepts/websocket-protocol"
+            ]
+          },
+          {
+            "group": "User Guide",
+            "pages": [
+              "guides/usage",
+              "guides/keybindings",
+              "guides/slash-commands",
+              "guides/environment-setup",
+              "guides/project-scoping"
+            ]
+          },
+          {
+            "group": "Developer Guide",
+            "pages": [
+              "development/setup",
+              "development/server",
+              "development/tui",
+              "development/extending",
+              "development/debugging"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/server-design",
+              "architecture/tui-design",
+              "architecture/event-system",
+              "architecture/session-management"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "troubleshooting",
+              "faq",
+              "contributing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/ws-protocol",
+              "api/events",
+              "api/client-messages",
+              "api/server-messages"
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "GitHub",
+          "href": "https://github.com",
+          "icon": "github"
+        },
+        {
+          "anchor": "Community",
+          "href": "https://community.example.com",
+          "icon": "slack"
+        }
+      ]
+    }
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Support",
+        "href": "mailto:support@example.com"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "GitHub",
+      "href": "https://github.com/yourusername/mixcode"
+    }
+  }
+}

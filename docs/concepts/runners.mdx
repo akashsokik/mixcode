@@ -1,0 +1,437 @@
+---
+title: Runners
+description: Understanding Claude and Codex runners
+---
+
+# Runners
+
+Runners are the abstraction layer that adapts different AI agent SDKs to MixCode's unified interface.
+
+## Runner Architecture
+
+```
+┌─────────────────────────────────┐
+│      MixCode Server             │
+│      (Hono + WebSocket)         │
+└────────────────┬────────────────┘
+                 │
+        ┌────────┴────────┐
+        │                 │
+    ┌───▼────┐        ┌───▼────┐
+    │ Claude │        │ Codex  │
+    │ Runner │        │ Runner │
+    └────┬───┘        └───┬────┘
+         │                 │
+    ┌────▼────────────────▼─┐
+    │  SDK Interfaces       │
+    │  - Tool Execution     │
+    │  - Message Streaming  │
+    │  - Context Management │
+    └───────────────────────┘
+         │                 │
+    ┌────▼───┐        ┌────▼──────┐
+    │ Claude │        │ OpenAI    │
+    │ SDK    │        │ Codex SDK │
+    └────────┘        └───────────┘
+```
+
+## Runner Interface
+
+Both Claude and Codex runners implement a common interface:
+
+```typescript
+interface Runner {
+  // Session management
+  sessionId: string | null
+  initialize(): Promise<void>
+  
+  // Message processing
+  run(
+    prompt: string,
+    onEvent: (event: RunEvent) => void
+  ): Promise<void>
+  
+  // Lifecycle
+  cancel(): void
+  cleanup(): void
+}
+```
+
+## Claude Runner
+
+**Location:** `/server/src/runners/claude.ts`
+
+### Architecture
+
+```typescript
+export class ClaudeRunner implements Runner {
+  sessionId: string | null = null
+  
+  async run(
+    prompt: string,
+    onEvent: (event: RunEvent) => void
+  ): Promise<void> {
+    // Initialize Claude SDK
+    const client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY
+    })
+    
+    // Send message with tool support
+    const response = await client.messages.create({
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 4096,
+      messages: [{ role: "user", content: prompt }],
+      tools: [/* MCP tools */]
+    })
+    
+    // Emit events as they arrive
+    for (const block of response.content) {
+      if (block.type === "text") {
+        onEvent({ type: "text_delta", delta: block.text })
+      }
+    }
+  }
+}
+```
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Context Window** | 100K tokens (input) / 4K tokens (output) |
+| **Tool Use** | Native tool_use blocks with MCP servers |
+| **Streaming** | Real-time token streaming via SDK |
+| **Vision** | Image understanding included |
+| **Cost** | ~$3 per million input tokens |
+
+### Session State
+
+Claude maintains state through `sessionId`:
+
+```typescript
+// Session initialized
+claudeSessionId = "conv_" + nanoid()
+
+// Messages sent to this session
+messages.push({
+  role: "user",
+  content: "First prompt"
+})
+
+// Response received with context
+response = await claude.messages.create({
+  messages,  // Full history
+  // ...
+})
+
+// Session preserved for next message
+messages.push(response.messages)
+```
+
+### Tool Use
+
+Claude integrates with MCP servers for tool execution:
+
+```typescript
+// Define available tools
+const tools = [
+  {
+    name: "read_file",
+    description: "Read a file from disk",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" }
+      }
+    }
+  }
+]
+
+// Claude requests tool use
+{
+  type: "tool_use",
+  id: "tool_xyz",
+  name: "read_file",
+  input: { path: "package.json" }
+}
+
+// We execute and return result
+{
+  type: "tool_result",
+  tool_use_id: "tool_xyz",
+  content: "{ ... }"
+}
+
+// Claude continues with result context
+```
+
+## Codex Runner
+
+**Location:** `/server/src/runners/codex.ts`
+
+### Architecture
+
+```typescript
+export class CodexRunner implements Runner {
+  threadId: string | null = null
+  
+  async run(
+    prompt: string,
+    onEvent: (event: RunEvent) => void
+  ): Promise<void> {
+    // Initialize OpenAI client
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    })
+    
+    // Create or get thread
+    if (!this.threadId) {
+      const thread = await client.beta.threads.create()
+      this.threadId = thread.id
+    }
+    
+    // Add message to thread
+    await client.beta.threads.messages.create(this.threadId, {
+      role: "user",
+      content: prompt
+    })
+    
+    // Stream response
+    const stream = await client.beta.threads.runs.create(
+      this.threadId,
+      { assistant_id: assistantId }
+    )
+    
+    for await (const event of stream) {
+      if (event.type === "message_delta") {
+        onEvent({
+          type: "text_delta",
+          delta: event.delta.content[0].text.value
+        })
+      }
+    }
+  }
+}
+```
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Context Window** | 128K tokens |
+| **Model** | GPT-4 with code understanding |
+| **Function Calling** | Tool/function definitions |
+| **Streaming** | Event-based streaming API |
+| **Memory** | Thread-based conversation memory |
+| **Cost** | ~$10 per million input tokens |
+
+### Session State
+
+Codex uses OpenAI's threads for state:
+
+```typescript
+// Create thread (one per conversation)
+thread = await client.beta.threads.create()
+threadId = thread.id
+
+// Add messages
+await client.beta.threads.messages.create(threadId, {
+  role: "user",
+  content: "Your prompt"
+})
+
+// Run assistant
+run = await client.beta.threads.runs.create(threadId, {
+  assistant_id: process.env.OPENAI_ASSISTANT_ID
+})
+
+// Thread maintains full history
+// Next message continues with same threadId
+```
+
+## Switching Runners
+
+### Within a Session
+
+```
+Session ABC
+│
+├─ Claude Runner [ACTIVE]
+│  └─ Messages 1-5
+│
+└─ Codex Runner [PAUSED]
+   └─ (Empty, ready to activate)
+
+User: /switch
+│
+├─ Claude Runner → pause (save state)
+│
+└─ Codex Runner → activate (start fresh)
+
+Session ABC
+│
+├─ Claude Runner [PAUSED]
+│  └─ Messages 1-5 (preserved)
+│
+└─ Codex Runner [ACTIVE]
+   └─ Messages 6+ (new conversation)
+```
+
+### State Management
+
+When switching:
+
+1. **Pause active runner** - No cleanup
+2. **Save session state** - Preserve SDK session IDs
+3. **Activate new runner** - Initialize if needed
+4. **Start fresh context** - New message thread/session
+
+The TUI shows which runner is active:
+
+```
+┌─────────────────────────────┐
+│ Session: Build API          │
+│ Runner: [Claude] [Codex]    │ ← Click to switch
+└─────────────────────────────┘
+```
+
+## Runner Events
+
+All runners emit a standard set of events:
+
+```typescript
+type RunEvent =
+  // Text generation
+  | { type: "text_delta"; delta: string }
+  
+  // Tool execution
+  | { type: "tool_use"; name: string; input: object }
+  | { type: "tool_result"; name: string; output: string }
+  | { type: "tool_log"; tool: string; output: string }
+  
+  // Metadata
+  | { type: "usage"; tokens: UsageData }
+  | { type: "model"; name: string }
+  
+  // Lifecycle
+  | { type: "start" }
+  | { type: "complete" }
+  | { type: "error"; message: string }
+```
+
+### Event Flow
+
+```
+Runner emits:
+  text_delta → "Here's"
+  text_delta → " an API"
+  text_delta → " ..."
+  
+  tool_use → { name: "create_file", input: {...} }
+  tool_result → { output: "Created file" }
+  tool_log → "Created: api.ts"
+  
+  usage → { input_tokens: 150, output_tokens: 350 }
+  complete → {}
+```
+
+## Error Handling
+
+### Claude Runner Errors
+
+```typescript
+try {
+  const response = await claude.messages.create({
+    // ...
+  })
+} catch (error) {
+  if (error instanceof Anthropic.RateLimitError) {
+    onEvent({
+      type: "error",
+      message: "Rate limited. Please retry in 60s"
+    })
+  } else if (error instanceof Anthropic.APIError) {
+    onEvent({
+      type: "error",
+      message: `API error: ${error.message}`
+    })
+  }
+}
+```
+
+### Codex Runner Errors
+
+```typescript
+try {
+  const run = await client.beta.threads.runs.create(
+    threadId,
+    { assistant_id }
+  )
+} catch (error) {
+  if (error.status === 429) {
+    onEvent({
+      type: "error",
+      message: "Rate limited"
+    })
+  } else if (error.status === 401) {
+    onEvent({
+      type: "error",
+      message: "Invalid API key"
+    })
+  }
+}
+```
+
+## Choosing a Runner
+
+| Use Case | Best For |
+|----------|----------|
+| **Long context** | Claude (100K tokens) |
+| **Code generation** | Either (both excellent) |
+| **Debugging** | Claude (better reasoning) |
+| **Cost-sensitive** | Codex (if using older models) |
+| **Multi-turn** | Claude (explicit token tracking) |
+| **Vision tasks** | Claude (image understanding) |
+| **Custom tools** | Claude (MCP integration) |
+
+## Advanced: Custom Runners
+
+You can add custom runners by implementing the runner interface:
+
+```typescript
+export class CustomRunner implements Runner {
+  sessionId: string | null = null
+  
+  async run(
+    prompt: string,
+    onEvent: (event: RunEvent) => void
+  ): Promise<void> {
+    // Implementation
+  }
+  
+  cancel(): void {
+    // Cleanup
+  }
+}
+```
+
+Register in `/server/src/index.ts`:
+
+```typescript
+const runners: Record<RunnerKind, Runner> = {
+  "claude": claudeRunner,
+  "codex": codexRunner,
+  "custom": customRunner  // Add here
+}
+```
+
+Then use via command:
+
+```
+/custom
+Build me a function
+```
+
+---
+
+Next: [WebSocket Protocol](/concepts/websocket-protocol) | [Architecture](/concepts/architecture)

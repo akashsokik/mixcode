@@ -1,0 +1,482 @@
+---
+title: Environment Setup
+description: Configure MixCode for your environment
+---
+
+# Environment Setup
+
+Learn how to configure MixCode for different environments and use cases.
+
+## Environment Variables
+
+### Basic Configuration
+
+```env
+# API Keys (required at least one)
+ANTHROPIC_API_KEY=sk-ant-v0-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+
+# Server Configuration (optional)
+PORT=4567
+NODE_ENV=development
+```
+
+### Complete Configuration
+
+```env
+# === API Keys ===
+ANTHROPIC_API_KEY=sk-ant-v0-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+
+# === Server ===
+PORT=4567
+NODE_ENV=development
+ADVERSERIAL_SERVER_URL=http://127.0.0.1:4567
+
+# === Logging ===
+DEBUG=mixcode:*
+LOG_LEVEL=info
+LOG_FILE=~/.adverserial-code/server.log
+
+# === Session ===
+SESSION_TIMEOUT=3600
+MAX_SESSIONS=50
+PERSIST_SESSIONS=true
+
+# === Tools ===
+ALLOW_EXECUTE_COMMAND=true
+ALLOW_FILE_OPERATIONS=true
+ALLOW_NETWORK_REQUESTS=true
+
+# === Model Defaults ===
+DEFAULT_CLAUDE_MODEL=claude-3-5-sonnet-20241022
+DEFAULT_CODEX_MODEL=gpt-4-turbo
+DEFAULT_TEMPERATURE=1.0
+DEFAULT_MAX_TOKENS=4096
+```
+
+## Configuration Files
+
+### `.env` (Root)
+
+```bash
+# Project root .env file
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+```
+
+### `.env.local` (Override)
+
+```bash
+# Local overrides (not in git)
+PORT=4568
+DEBUG=mixcode:*
+```
+
+### `~/.mixcode/.env` (Global)
+
+```bash
+# User-level defaults
+# Applied to all projects
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+```
+
+### `~/.mixcode/config.json` (Global Config)
+
+```json
+{
+  "theme": "dark",
+  "defaultRunner": "claude",
+  "autoSaveTranscripts": true,
+  "defaultModel": "claude-3-5-sonnet-20241022",
+  "keyBindings": {
+    "submit": "Enter",
+    "browseMode": "Escape",
+    "switchRunner": "Ctrl+T"
+  }
+}
+```
+
+## Environment Precedence
+
+When looking for configuration:
+
+1. **Shell environment variables** (highest priority)
+   ```bash
+   export ANTHROPIC_API_KEY=sk-ant-xxxxx
+   npm start
+   ```
+
+2. **`.env.local` in project**
+   ```bash
+   # ProjectRoot/.env.local
+   ANTHROPIC_API_KEY=sk-ant-xxxxx
+   ```
+
+3. **`.env` in project**
+   ```bash
+   # ProjectRoot/.env
+   ANTHROPIC_API_KEY=sk-ant-xxxxx
+   ```
+
+4. **`~/.mixcode/.env`** (user global)
+   ```bash
+   # ~/.mixcode/.env
+   ANTHROPIC_API_KEY=sk-ant-xxxxx
+   ```
+
+5. **Installation directory `.env`** (lowest priority)
+
+## Development Environment
+
+### Setup for Development
+
+```bash
+# Install dependencies with dev tools
+npm install
+
+# Install devDependencies
+npm install --save-dev
+
+# Setup git hooks
+npm run setup-hooks
+```
+
+### Environment Variables for Development
+
+```env
+# .env.development
+NODE_ENV=development
+DEBUG=mixcode:*
+LOG_LEVEL=debug
+PORT=4567
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+MOCK_TOOLS=false
+```
+
+### Development Server
+
+```bash
+# Run with nodemon for auto-reload
+npm run dev
+
+# Or separately
+npm run server    # Terminal 1
+npm run tui       # Terminal 2
+```
+
+## Production Environment
+
+### Environment Variables for Production
+
+```env
+# .env.production
+NODE_ENV=production
+DEBUG=''
+LOG_LEVEL=error
+PORT=4567
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+OPENAI_API_KEY=${OPENAI_API_KEY}
+```
+
+### Security Best Practices
+
+```env
+# Do NOT commit secrets
+# ✓ Use environment variable injection
+# ✓ Use secrets management system
+# ✗ Do NOT hardcode keys
+
+# .gitignore already includes .env
+cat .gitignore
+# Should contain:
+# .env
+# .env.local
+# .env.*.local
+```
+
+### Deployment Configuration
+
+```bash
+# Using Heroku
+heroku config:set ANTHROPIC_API_KEY=sk-ant-xxxxx
+heroku config:set OPENAI_API_KEY=sk-xxxxx
+
+# Using Docker
+docker run -e ANTHROPIC_API_KEY=sk-ant-xxxxx mixcode
+
+# Using Kubernetes
+kubectl set env deployment/mixcode ANTHROPIC_API_KEY=sk-ant-xxxxx
+```
+
+## Project-Specific Configuration
+
+### Per-Project `.env`
+
+```bash
+cd ~/my-project
+cat .env
+```
+
+```env
+# ~/my-project/.env
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+OPENAI_API_KEY=sk-xxxxx
+
+# Project-specific tools
+ALLOW_EXECUTE_COMMAND=true
+ALLOW_FILE_OPERATIONS=true
+
+# Project defaults
+DEFAULT_RUNNER=claude
+DEFAULT_TEMPERATURE=0.7
+```
+
+### Project Configuration File
+
+```bash
+# Optional: .mixcode.json in project
+cat .mixcode.json
+```
+
+```json
+{
+  "name": "My Project",
+  "runner": "claude",
+  "tools": {
+    "allowExecuteCommand": true,
+    "allowFileOperations": true,
+    "allowNetworkRequests": false
+  },
+  "models": {
+    "claude": "claude-3-5-sonnet-20241022",
+    "codex": "gpt-4-turbo"
+  },
+  "transcripts": {
+    "autoSave": true,
+    "location": "./transcripts"
+  }
+}
+```
+
+## Docker Configuration
+
+### Dockerfile
+
+```dockerfile
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --omit=dev
+
+# Copy application
+COPY . .
+
+# Build if needed
+RUN npm run build
+
+# Expose port
+EXPOSE 4567
+
+# Environment variables
+ENV NODE_ENV=production
+ENV PORT=4567
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:4567/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+
+# Start MixCode
+CMD ["npm", "start"]
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  mixcode:
+    build: .
+    ports:
+      - "4567:4567"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      NODE_ENV: production
+    volumes:
+      - ~/.mixcode:/root/.mixcode
+    restart: unless-stopped
+```
+
+### Running with Docker
+
+```bash
+# Build
+docker build -t mixcode .
+
+# Run with env vars
+docker run \
+  -e ANTHROPIC_API_KEY=sk-ant-xxxxx \
+  -e OPENAI_API_KEY=sk-xxxxx \
+  -p 4567:4567 \
+  mixcode
+
+# Or with compose
+docker-compose up
+```
+
+## Advanced Configuration
+
+### Custom MCP Servers
+
+```env
+# Configure custom MCP servers
+MCP_SERVERS=my-server,another-server
+
+# MCP server definitions
+MCP_MY_SERVER_PATH=/path/to/server
+MCP_MY_SERVER_ARGS=--arg1 value1
+```
+
+### Rate Limiting
+
+```env
+# Configure rate limits
+RATE_LIMIT_REQUESTS=100
+RATE_LIMIT_WINDOW=60000  # milliseconds
+RATE_LIMIT_PER_USER=50
+```
+
+### Logging
+
+```env
+# Structured logging
+LOG_FORMAT=json
+LOG_LEVEL=info
+LOG_FILE=~/.adverserial-code/server.log
+LOG_MAX_SIZE=10M
+LOG_MAX_FILES=5
+
+# Specific module logging
+DEBUG=mixcode:server,mixcode:runners
+```
+
+### Performance Tuning
+
+```env
+# Memory limits
+MAX_MEMORY_MB=2048
+
+# Connection limits
+MAX_CONCURRENT_CONNECTIONS=100
+CONNECTION_TIMEOUT=30000  # milliseconds
+
+# Caching
+ENABLE_CACHE=true
+CACHE_SIZE_MB=512
+CACHE_TTL=3600000  # milliseconds
+```
+
+## Verifying Configuration
+
+### Check Environment
+
+```bash
+# Print loaded configuration
+mixcode --show-config
+```
+
+```
+Configuration Loaded:
+├── PORT: 4567
+├── NODE_ENV: development
+├── ANTHROPIC_API_KEY: sk-ant-****** (set)
+├── OPENAI_API_KEY: sk-****** (set)
+└── DEBUG: mixcode:*
+```
+
+### Test API Keys
+
+```bash
+# Test Anthropic
+curl -X POST https://api.anthropic.com/v1/health \
+  -H "x-api-key: $ANTHROPIC_API_KEY"
+
+# Test OpenAI
+curl https://api.openai.com/v1/models \
+  -H "Authorization: Bearer $OPENAI_API_KEY"
+```
+
+### Validate Configuration
+
+```bash
+npm run validate-config
+```
+
+## Troubleshooting Configuration
+
+### "API key not found"
+
+```bash
+# Check environment
+env | grep API_KEY
+
+# Check .env file
+cat .env
+
+# Check precedence
+echo $ANTHROPIC_API_KEY
+```
+
+### "Port already in use"
+
+```bash
+# Check what's using port
+lsof -i :4567
+
+# Use different port
+PORT=4568 npm start
+```
+
+### "Configuration not loading"
+
+```bash
+# Verify .env syntax
+cat .env | grep -E '^[A-Z_]+=.*'
+
+# Check file permissions
+ls -la .env
+
+# Load manually
+source .env && npm start
+```
+
+## Environment Checklists
+
+### Before Running
+
+- [ ] API keys added to `.env`
+- [ ] Node.js version verified (`node --version`)
+- [ ] Dependencies installed (`npm install`)
+- [ ] TypeScript checks pass (`npm run typecheck`)
+
+### Before Production
+
+- [ ] All API keys in environment (not committed)
+- [ ] `NODE_ENV=production` set
+- [ ] Logging configured
+- [ ] Rate limits configured
+- [ ] Error handling tested
+- [ ] Health checks working
+
+---
+
+Next: [Project Scoping](/guides/project-scoping) | [Installation](/installation)

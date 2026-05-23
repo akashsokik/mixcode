@@ -1,0 +1,500 @@
+---
+title: Project Scoping
+description: Isolate MixCode sessions per project
+---
+
+# Project Scoping
+
+Use the `mixcode` command to run isolated environments for each project.
+
+## Overview
+
+When you use the `mixcode` command (after `npm link`), MixCode creates a separate environment for each directory:
+
+```
+Project A                    Project B
+   │                            │
+   ├─ ~/.mixcode/projects/   ├─ ~/.mixcode/projects/
+   │  └── <project-a>/       │  └── <project-b>/
+   │     ├─ sessions/        │     ├─ sessions/
+   │     ├─ transcripts/      │     ├─ transcripts/
+   │     ├─ .env             │     ├─ .env
+   │     ├─ server.log       │     ├─ server.log
+   │     └─ port: 4567       │     └─ port: 4568
+```
+
+## Global Installation
+
+### Install Once
+
+```bash
+# In the MixCode repository
+cd ~/dev/mixcode
+npm install
+npm link
+```
+
+This makes the `mixcode` command available everywhere.
+
+### Use Everywhere
+
+```bash
+cd ~/my-project-1
+mixcode
+
+# In another terminal or later
+cd ~/my-project-2
+mixcode
+```
+
+Each project gets its own isolated server and session storage.
+
+## How It Works
+
+### Directory Encoding
+
+Projects are identified by encoding their absolute path:
+
+```
+/Users/akashswamy/Workspace/fun-projects/
+
+Base64 → L1VzZXJzL2Frc...
+
+~/.mixcode/projects/
+└── L1VzZXJzL2Frc...
+    ├── sessions.json
+    ├── transcripts/
+    ├── server.log
+    └── .env
+```
+
+This ensures:
+- Same path always maps to same environment
+- Different paths get different environments
+- Path changes create new environments
+
+### Port Assignment
+
+Each project gets an auto-assigned port to prevent conflicts:
+
+```
+Project 1 → port 4567
+Project 2 → port 4568
+Project 3 → port 4569
+...
+```
+
+If a port is in use, the next available is used.
+
+## Project Structure
+
+### Default Project Location
+
+```
+~/.mixcode/projects/
+├── <encoded-project-1>/
+│   ├── sessions.json          # Session list
+│   ├── transcripts/
+│   │   ├── sess_1.json
+│   │   ├── sess_2.json
+│   │   └── sess_3.json
+│   ├── .env                   # Project-specific env
+│   ├── server.log             # Backend logs
+│   ├── port.txt               # Assigned port
+│   └── config.json            # Project config
+│
+└── <encoded-project-2>/
+    ├── sessions.json
+    ├── transcripts/
+    ├── .env
+    └── ...
+```
+
+### Custom Project Directory
+
+```bash
+# Use custom location
+export MIXCODE_DATA_HOME=/data/mixcode
+mixcode
+
+# Now uses:
+/data/mixcode/projects/<encoded-pwd>/
+```
+
+## Environment Files
+
+### Per-Project `.env`
+
+Create `.env` in your project:
+
+```bash
+cd ~/my-project
+cat .env
+```
+
+```env
+# Project-specific keys
+ANTHROPIC_API_KEY=sk-ant-project-specific
+OPENAI_API_KEY=sk-project-specific
+
+# Project-specific settings
+DEFAULT_RUNNER=claude
+ALLOW_EXECUTE_COMMAND=true
+```
+
+### Env File Lookup
+
+When MixCode starts, it looks for env files in order:
+
+1. **`<pwd>/.env`** (project root)
+   ```bash
+   ~/my-project/.env
+   ```
+
+2. **`~/.mixcode/.env`** (user global)
+   ```bash
+   ~/.mixcode/.env
+   ```
+
+3. **Installation directory `.env`** (fallback)
+   ```bash
+   ~/dev/mixcode/.env
+   ```
+
+**Example:**
+
+```bash
+# Specific to my-project
+cat ~/my-project/.env
+ANTHROPIC_API_KEY=sk-ant-project1
+
+# Used by other projects
+cat ~/.mixcode/.env
+ANTHROPIC_API_KEY=sk-ant-global
+
+# my-project uses project-specific key
+cd ~/my-project && mixcode
+# → Uses sk-ant-project1
+
+# Other projects use global key
+cd ~/other-project && mixcode
+# → Uses sk-ant-global
+```
+
+## Session Isolation
+
+### Sessions are Isolated
+
+Each project maintains separate sessions:
+
+```
+Project: ~/frontend
+Sessions:
+  • Build Button Component (Claude)
+  • Fix CSS Bug (Codex)
+
+Project: ~/backend
+Sessions:
+  • Design API (Claude)
+  • Optimize Query (Claude)
+
+Switch: cd ~/backend && mixcode
+→ Shows only backend sessions
+→ Reconnects if already running
+```
+
+### Reattaching to Sessions
+
+If you close the TUI but the backend is still running:
+
+```bash
+cd ~/my-project
+mixcode
+
+# Detects running backend for this directory
+Connected to existing backend (port 4567)
+Reattaching to session...
+```
+
+### Preserving Sessions
+
+Transcripts are persistent:
+
+```bash
+~/.mixcode/projects/<project>/transcripts/
+```
+
+Even if you delete sessions, transcripts are archived for recovery.
+
+## Backend Management
+
+### One Backend per Project
+
+Only one backend runs per project:
+
+```bash
+cd ~/my-project
+mixcode
+
+# Opens TUI
+# Backend runs in background
+# If you open another terminal in same directory...
+cd ~/my-project
+mixcode
+
+# Detects running backend
+# Reattaches TUI instead of starting new backend
+```
+
+### Check Running Backends
+
+```bash
+ps aux | grep mixcode
+# Shows backend processes and their ports
+
+# Or check the data directory
+ls ~/.mixcode/projects/*/port.txt
+```
+
+### Managing Backends
+
+```bash
+# Kill specific project's backend
+pkill -f "mixcode.*<project-name>"
+
+# Kill all MixCode backends
+pkill -f "mixcode.*server"
+
+# Or restart MixCode (auto-restarts backend)
+cd ~/my-project && mixcode
+```
+
+## Configuration Files
+
+### Project Configuration
+
+```bash
+# Optional: .mixcode.json in project root
+cat .mixcode.json
+```
+
+```json
+{
+  "name": "My Awesome Project",
+  "defaultRunner": "claude",
+  "autoSaveTranscripts": true,
+  "allowedTools": [
+    "create_file",
+    "read_file",
+    "execute_command"
+  ]
+}
+```
+
+### Shared Configuration
+
+```bash
+# ~/.mixcode/config.json (applies to all projects)
+cat ~/.mixcode/config.json
+```
+
+```json
+{
+  "theme": "dark",
+  "autoStartBackend": true,
+  "persistSessions": true,
+  "logLevel": "info"
+}
+```
+
+## Advanced Usage
+
+### Custom Data Directory
+
+```bash
+# Store MixCode data elsewhere
+export MIXCODE_DATA_HOME=/path/to/data
+cd ~/my-project
+mixcode
+
+# Uses /path/to/data/projects/<encoded-pwd>/
+```
+
+### Multiple Workspaces
+
+Organize by workspace:
+
+```bash
+# Workspace 1: Frontend projects
+~/workspace-frontend/
+├── project-a/
+├── project-b/
+└── project-c/
+
+# Each project has isolated MixCode environment
+cd ~/workspace-frontend/project-a && mixcode
+cd ~/workspace-frontend/project-b && mixcode
+```
+
+### Sharing Sessions (Enterprise)
+
+Export session for sharing:
+
+```bash
+# Export session
+mixcode export sess_abc123 > session.json
+
+# On another machine
+mixcode import session.json
+
+# Session restored in same project
+```
+
+## Performance Considerations
+
+### Memory Usage
+
+Each project backend uses ~50-100MB RAM:
+
+```bash
+# Monitor backends
+top -p $(pgrep -f "mixcode.*server" | tr '\n' ',')
+
+# Limit concurrent backends
+# Keep < 5 active backends to avoid resource issues
+```
+
+### Cleanup
+
+Remove old projects:
+
+```bash
+# List all project data
+ls -lah ~/.mixcode/projects/
+
+# Check last modified date
+stat ~/.mixcode/projects/*/server.log
+
+# Remove old projects (optional)
+rm -rf ~/.mixcode/projects/<old-project>/
+```
+
+### Session Storage
+
+Transcripts grow over time:
+
+```bash
+# Check project size
+du -sh ~/.mixcode/projects/<project>/
+
+# Archive old transcripts
+cd ~/.mixcode/projects/<project>/transcripts
+tar czf archive-2024.tar.gz sess_*.json
+rm sess_*.json
+```
+
+## Troubleshooting
+
+### "Port already in use"
+
+```bash
+# Check what's using the port
+lsof -i :4567
+
+# MixCode auto-assigns next port
+# Or manually specify:
+PORT=4568 mixcode
+```
+
+### "Cannot connect to backend"
+
+```bash
+# Check if backend is running
+ps aux | grep mixcode
+
+# Restart backend
+cd ~/my-project && mixcode
+
+# Or manually kill and restart
+pkill -f "mixcode.*server"
+cd ~/my-project && mixcode
+```
+
+### "Lost Sessions"
+
+Sessions are stored in transcripts:
+
+```bash
+~/.mixcode/projects/<project>/transcripts/
+
+# Even if sessions.json is corrupt, transcripts survive
+# Restore from transcripts using:
+mixcode restore <transcript-file>
+```
+
+### "Cannot find .env"
+
+Check env file precedence:
+
+```bash
+# Show which .env is loaded
+mixcode --show-config | grep -i env
+
+# Verify file exists
+cat ~/my-project/.env
+cat ~/.mixcode/.env
+
+# Set explicitly
+export ANTHROPIC_API_KEY=sk-ant-xxxxx
+mixcode
+```
+
+## Best Practices
+
+### Organization
+
+```
+~/projects/
+├── work/
+│   ├── project-a/
+│   ├── project-b/
+│   └── project-c/
+│
+├── personal/
+│   ├── hobby-a/
+│   └── hobby-b/
+│
+└── learning/
+    ├── course-a/
+    └── course-b/
+
+# Each directory gets isolated MixCode environment
+cd ~/projects/work/project-a && mixcode
+```
+
+### Session Naming
+
+Use project-aware naming:
+
+```
+Project: ~/my-app
+Sessions:
+  • Feature: Auth System
+  • Fix: Login Button Bug
+  • Docs: API Reference
+  • Experiment: Dark Mode
+```
+
+### Backup
+
+```bash
+# Backup all project data
+tar czf ~/backup-mixcode-$(date +%Y%m%d).tar.gz ~/.mixcode/
+
+# Or individual projects
+tar czf ~/backup-my-project.tar.gz ~/.mixcode/projects/<project>/
+```
+
+---
+
+Next: [Environment Setup](/guides/environment-setup) | [Usage Guide](/guides/usage)

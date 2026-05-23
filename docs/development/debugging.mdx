@@ -1,0 +1,293 @@
+---
+title: Debugging
+description: Debug MixCode during development
+---
+
+# Debugging MixCode
+
+Tools and techniques for debugging MixCode.
+
+## Debug Logging
+
+### Backend Logging
+
+Enable debug output:
+
+```bash
+DEBUG=mixcode:* npm run server
+```
+
+Filters:
+- `DEBUG=mixcode:*` - All
+- `DEBUG=mixcode:server` - Server only
+- `DEBUG=mixcode:ws` - WebSocket only
+- `DEBUG=mixcode:runners` - Runners only
+
+### Log Levels
+
+```typescript
+import debug from "debug"
+
+const log = debug("mixcode:mymodule")
+
+log("Info message")
+log.error("Error message")
+log.warn("Warning message")
+```
+
+View logs:
+
+```bash
+tail -f ~/.mixcode/projects/<project>/server.log
+```
+
+## Node Inspector
+
+Debug backend with Chrome DevTools:
+
+```bash
+node --inspect ./bin/start.mjs
+```
+
+Then open `chrome://inspect` in Chrome.
+
+## WebSocket Debugging
+
+### Monitor Messages
+
+Use wscat:
+
+```bash
+npm install -g wscat
+wscat -c ws://127.0.0.1:4567/ws
+```
+
+Send test messages:
+
+```json
+{"type":"send","sessionId":"sess_1","text":"hello"}
+```
+
+### Log WebSocket Traffic
+
+In `/server/src/index.ts`:
+
+```typescript
+ws.on("message", (data) => {
+  console.log("WebSocket RX:", JSON.parse(data))
+})
+
+ws.send(JSON.stringify(msg))
+console.log("WebSocket TX:", msg)
+```
+
+## Session Inspection
+
+### View Session State
+
+```bash
+# List active sessions
+curl http://127.0.0.1:4567/api/sessions
+
+# Get specific session
+curl http://127.0.0.1:4567/api/sessions/sess_abc
+
+# Watch changes
+watch -n 1 'curl -s http://127.0.0.1:4567/api/sessions | jq'
+```
+
+### Check Transcripts
+
+```bash
+# View transcript
+cat ~/.mixcode/projects/<project>/transcripts/sess_abc.json | jq
+
+# Pretty print
+jq . ~/.mixcode/projects/<project>/transcripts/sess_abc.json | less
+
+# Filter events
+jq '.events[] | select(.type=="text_delta")' sess_abc.json
+```
+
+## Memory Debugging
+
+### Monitor Memory Usage
+
+```bash
+# Watch memory
+watch -n 1 'ps aux | grep mixcode | grep server'
+
+# or
+top -p $(pgrep -f "mixcode.*server")
+```
+
+### Check for Leaks
+
+Enable Node memory diagnostics:
+
+```bash
+node --expose-gc --max-old-space-size=256 ./bin/start.mjs
+
+# In code:
+setInterval(() => {
+  global.gc?.()
+  const mem = process.memoryUsage()
+  console.log("Memory:", {
+    rss: (mem.rss / 1024 / 1024).toFixed(2) + " MB",
+    heap: (mem.heapUsed / 1024 / 1024).toFixed(2) + " MB"
+  })
+}, 30000)
+```
+
+## Performance Profiling
+
+### CPU Profiling
+
+```bash
+node --prof ./bin/start.mjs
+
+# Process isolate file
+node --prof-process isolate-*.log > profile.txt
+
+# View profile
+cat profile.txt | less
+```
+
+### Heap Snapshots
+
+```bash
+node --inspect ./bin/start.mjs
+
+# In Chrome DevTools:
+# 1. Open chrome://inspect
+# 2. Click "inspect" under MixCode process
+# 3. Memory tab
+# 4. Take heap snapshot
+# 5. Analyze allocations
+```
+
+## Error Debugging
+
+### Trace Errors
+
+Enable full stack traces:
+
+```bash
+NODE_ENV=development npm run server
+```
+
+### Error Logs
+
+```bash
+# View recent errors
+grep ERROR ~/.mixcode/projects/<project>/server.log
+
+# Count errors
+grep ERROR ~/.mixcode/projects/<project>/server.log | wc -l
+
+# Specific error type
+grep "APIError" ~/.mixcode/projects/<project>/server.log
+```
+
+## Network Debugging
+
+### Monitor API Calls
+
+Use network monitoring:
+
+```bash
+# macOS: Charles or Wireshark
+# Linux: tcpdump
+
+tcpdump -i lo -n "port 443" -A | grep -i "claude\|openai"
+```
+
+### Check Rate Limiting
+
+```bash
+# Monitor 429 responses
+grep "429\|rate" ~/.mixcode/projects/<project>/server.log
+```
+
+## TUI Debugging
+
+### React DevTools
+
+Enable React debug info:
+
+```bash
+REACT_DEBUG=true npm run tui
+```
+
+### Inspect Components
+
+In terminal (with @opentui):
+
+```typescript
+console.log("Component:", <MyComponent />)
+```
+
+### Debug State
+
+```typescript
+const [state, setState] = useState(initialState)
+
+// Log updates
+useEffect(() => {
+  console.log("State updated:", state)
+}, [state])
+```
+
+## Common Issues
+
+### "Connection refused"
+
+```bash
+# Check if server is running
+ps aux | grep mixcode | grep server
+
+# Start server
+npm run server
+
+# Check port
+lsof -i :4567
+```
+
+### "WebSocket message error"
+
+Enable message logging:
+
+```bash
+DEBUG=mixcode:ws npm run server
+```
+
+### "Memory leaks"
+
+Check for:
+- Unresolved promises
+- Event listener cleanup
+- Circular references
+
+```typescript
+// Good: cleanup on unmount
+useEffect(() => {
+  ws.on("message", handler)
+  return () => ws.off("message", handler)
+}, [])
+```
+
+### "Slow responses"
+
+Profile with:
+
+```bash
+node --prof ./bin/start.mjs
+
+# Run slow operation
+
+# Analyze: node --prof-process isolate-*.log > profile.txt
+```
+
+---
+
+See [Development Setup](/development/setup) for complete dev setup.

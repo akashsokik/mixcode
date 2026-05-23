@@ -1,0 +1,256 @@
+---
+title: WebSocket Protocol
+description: Technical reference for MixCode WebSocket API
+---
+
+# WebSocket Protocol Reference
+
+Complete technical documentation for MixCode's WebSocket protocol.
+
+See [WebSocket Protocol Concepts](/concepts/websocket-protocol) for comprehensive guide.
+
+## Connection
+
+**Endpoint:** `ws://127.0.0.1:4567/ws`
+
+**URL Parameters:**
+- `clientId` (required): Unique client identifier
+- `sessionId` (optional): Specific session to resume
+
+## Client Messages (ClientMsg)
+
+### Message Format
+
+```json
+{
+  "type": "string",
+  "sessionId": "string",
+  "...": "additional fields depend on type"
+}
+```
+
+### Message Types
+
+#### send
+
+```json
+{
+  "type": "send",
+  "sessionId": "sess_abc",
+  "text": "User prompt here"
+}
+```
+
+#### cancel
+
+```json
+{
+  "type": "cancel",
+  "sessionId": "sess_abc"
+}
+```
+
+#### create_session
+
+```json
+{
+  "type": "create_session",
+  "name": "Session Name",
+  "runner": "claude"
+}
+```
+
+#### switch_session
+
+```json
+{
+  "type": "switch_session",
+  "sessionId": "sess_def"
+}
+```
+
+#### delete_session
+
+```json
+{
+  "type": "delete_session",
+  "sessionId": "sess_abc"
+}
+```
+
+## Server Messages (ServerMsg)
+
+### Message Format
+
+```json
+{
+  "type": "event|error|session_created|...",
+  "sessionId": "string",
+  "...": "additional fields"
+}
+```
+
+### Message Types
+
+#### event
+
+```json
+{
+  "type": "event",
+  "sessionId": "sess_abc",
+  "event": {
+    "type": "text_delta|tool_use|complete|...",
+    "...": "event data"
+  }
+}
+```
+
+#### error
+
+```json
+{
+  "type": "error",
+  "sessionId": "sess_abc",
+  "message": "Error description",
+  "code": "ERROR_CODE"
+}
+```
+
+#### session_created
+
+```json
+{
+  "type": "session_created",
+  "sessionId": "sess_new",
+  "session": {
+    "id": "sess_new",
+    "name": "New Session",
+    "runner": "claude"
+  }
+}
+```
+
+#### session_deleted
+
+```json
+{
+  "type": "session_deleted",
+  "sessionId": "sess_abc"
+}
+```
+
+#### sessions
+
+```json
+{
+  "type": "sessions",
+  "sessions": [
+    {
+      "id": "sess_1",
+      "name": "Session 1",
+      "runner": "claude"
+    }
+  ],
+  "activeSessionId": "sess_1"
+}
+```
+
+## RunEvent Types
+
+Events emitted during processing.
+
+### text_delta
+
+```json
+{
+  "type": "text_delta",
+  "delta": "text content"
+}
+```
+
+### tool_use
+
+```json
+{
+  "type": "tool_use",
+  "toolName": "tool_name",
+  "toolUseId": "id_xyz",
+  "input": {}
+}
+```
+
+### tool_result
+
+```json
+{
+  "type": "tool_result",
+  "toolUseId": "id_xyz",
+  "result": "result content",
+  "success": true
+}
+```
+
+### tool_log
+
+```json
+{
+  "type": "tool_log",
+  "tool": "tool_name",
+  "log": "log message"
+}
+```
+
+### model
+
+```json
+{
+  "type": "model",
+  "model": "model_name",
+  "provider": "anthropic|openai"
+}
+```
+
+### usage
+
+```json
+{
+  "type": "usage",
+  "inputTokens": 100,
+  "outputTokens": 50,
+  "totalTokens": 150,
+  "costUSD": 0.001
+}
+```
+
+### complete
+
+```json
+{
+  "type": "complete"
+}
+```
+
+### error
+
+```json
+{
+  "type": "error",
+  "message": "error message",
+  "code": "ERROR_CODE"
+}
+```
+
+## Error Codes
+
+| Code | Meaning |
+|------|---------|
+| `INVALID_CONFIG` | Configuration error |
+| `INVALID_SESSION` | Session not found |
+| `RATE_LIMIT` | Rate limited |
+| `AUTHENTICATION` | Auth failure |
+| `NETWORK_ERROR` | Network issue |
+| `INVALID_INPUT` | Invalid input |
+
+---
+
+See [Concepts: WebSocket Protocol](/concepts/websocket-protocol) for examples and full documentation.

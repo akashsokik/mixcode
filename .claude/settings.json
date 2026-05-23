@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx tsc --noEmit *)",
+      "Bash(bun test)",
+      "Bash(bun test *)",
+      "Bash(go test *)",
+      "Bash(curl -s http://127.0.0.1:*)",
+      "Bash(git -C * status *)",
+      "Bash(git -C * status)",
+      "Bash(git -C * diff *)",
+      "Bash(git -C * diff)",
+      "Bash(git -C * log *)",
+      "Bash(git -C * log)",
+      "Bash(git -C * show *)",
+      "Bash(git -C * branch *)",
+      "Bash(git -C * branch)",
+      "Bash(git -C * rev-parse *)"
+    ]
+  }
+}

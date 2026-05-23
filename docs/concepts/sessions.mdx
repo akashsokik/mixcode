@@ -1,0 +1,326 @@
+---
+title: Sessions
+description: Understanding MixCode's session management
+---
+
+# Sessions
+
+Sessions are the core abstraction for managing conversations with AI agents in MixCode.
+
+## What is a Session?
+
+A session is a **stateful conversation** with a single runner (Claude or Codex):
+
+```
+Session = {
+  id: string                    // Unique identifier
+  name: string                  // User-friendly name
+  createdAt: Date              // Creation timestamp
+  runner: "claude" | "codex"   // Active runner
+  messages: Message[]          // Conversation history
+  claudeSessionId?: string     // Claude SDK session ID
+  codexThreadId?: string       // Codex conversation ID
+}
+```
+
+Each session maintains:
+- **Message history** - All prompts and responses
+- **Runner continuity** - SDK session state for context
+- **Metadata** - Creation time, name, settings
+
+## Session Lifecycle
+
+### Creating a Session
+
+```
+User Starts MixCode
+    │
+    ├─→ No session exists
+    │
+    ├─→ Server creates default session
+    │
+    ├─→ Session stored in memory
+    │
+    └─→ Transcript file created
+```
+
+New sessions are created:
+1. **Automatically** - First run or first in a directory
+2. **Manually** - User presses `n` in browse mode
+3. **Per-directory** - When using `mixcode` command
+
+### Using a Session
+
+```
+Session Active
+    │
+    ├─→ User types prompt
+    │
+    ├─→ TUI sends ClientMsg
+    │
+    ├─→ Server routes to active runner
+    │
+    ├─→ Runner processes with SDK
+    │
+    ├─→ RunEvents emitted
+    │
+    ├─→ Server broadcasts to clients
+    │
+    ├─→ TUI renders in real-time
+    │
+    └─→ Transcript updated
+```
+
+### Switching Sessions
+
+When you switch between sessions:
+
+1. **Previous session** - Stays in memory, preserves state
+2. **New session** - Becomes active
+3. **Runner continuity** - Maintained per session
+4. **Transcript** - Separate file for each session
+
+```
+Session A (Claude)        Session B (Codex)
+│                        │
+├─ Claude SDK state      ├─ Codex conversation history
+├─ Message history       ├─ Message history
+├─ Transcript A.json     └─ Transcript B.json
+└─ session_a.state
+
+Switch: Press 'j' or 'k'
+    │
+    └─→ Session A paused (state preserved)
+    └─→ Session B resumed (state loaded)
+```
+
+### Deleting a Session
+
+```
+Delete Session
+    │
+    ├─→ Session removed from memory
+    │
+    ├─→ Transcript file archived
+    │
+    ├─→ SDK resources cleaned up
+    │
+    └─→ Next message creates new session
+```
+
+<Note>
+  Transcript files are preserved even after deletion, allowing session recovery if needed.
+</Note>
+
+## Runner Continuity
+
+### Claude Sessions
+
+Claude maintains conversation context through a `sessionId`:
+
+```typescript
+interface ClaudeSession {
+  sessionId: string           // Unique per conversation
+  messages: Message[]         // Full message history
+  toolResults: ToolResult[]   // Tool execution cache
+}
+```
+
+When you switch runners within a session:
+- Claude session state is **paused** (not lost)
+- Next Claude message in that session **resumes** the conversation
+- Full context is preserved across switches
+
+### Codex Sessions
+
+Codex uses conversation history:
+
+```typescript
+interface CodexSession {
+  threadId: string            // OpenAI thread ID
+  messages: Message[]         // Conversation history
+  model: string              // Model variant
+}
+```
+
+Similar to Claude:
+- State is preserved when switching
+- Full context available on resume
+
+## Session Storage
+
+### In-Memory State
+
+Active sessions live in the server's memory:
+
+```typescript
+const sessions = new Map<string, Session>()
+
+sessions.get(sessionId)  // Fast access
+sessions.set(sessionId, session)  // Updates
+sessions.delete(sessionId)  // Cleanup
+```
+
+**Advantages:**
+- Fast access (O(1) lookup)
+- Real-time state updates
+- Live runner connections
+
+**Limitation:**
+- Lost on server restart
+- Not persisted across sessions
+
+### Transcript Files
+
+All events are written to transcript files:
+
+```
+~/.adverserial-code/transcripts/
+├── sess_abc123.json
+├── sess_def456.json
+└── sess_ghi789.json
+```
+
+Each transcript contains:
+
+```json
+{
+  "id": "sess_abc123",
+  "name": "Build API",
+  "createdAt": "2024-01-15T10:30:00Z",
+  "runner": "claude",
+  "messages": [
+    {
+      "id": "msg_1",
+      "role": "user",
+      "content": "Build me an API",
+      "timestamp": "2024-01-15T10:30:05Z"
+    },
+    {
+      "id": "msg_2",
+      "role": "assistant",
+      "content": "Here's an API...",
+      "timestamp": "2024-01-15T10:30:10Z"
+    }
+  ],
+  "events": [
+    {
+      "type": "text_delta",
+      "delta": "Here's",
+      "timestamp": "2024-01-15T10:30:10Z"
+    }
+  ]
+}
+```
+
+### Per-Project Sessions (mixcode command)
+
+When using `mixcode` from different directories:
+
+```
+~/.mixcode/projects/
+│
+├── dXVzcm9vdC9wcmplY3QxLw==/    (base64 encoded: /root/project1/)
+│   ├── sessions.json
+│   ├── transcripts/
+│   │   ├── sess_1.json
+│   │   └── sess_2.json
+│   ├── server.log
+│   └── .env
+│
+└── dXVzcm9vdC9wcmplY3QyLw==/    (base64 encoded: /root/project2/)
+    ├── sessions.json
+    ├── transcripts/
+    │   └── sess_3.json
+    ├── server.log
+    └── .env
+```
+
+Each project has:
+- **Isolated sessions** - No cross-project contamination
+- **Separate transcripts** - Full conversation history per project
+- **Own configuration** - Project-specific .env
+- **Independent logs** - Separate server.log
+
+## Session API
+
+### Creating Sessions
+
+```typescript
+// Via TUI
+const newSession = {
+  id: nanoid(),
+  name: "New Session",
+  runner: "claude",
+  createdAt: new Date(),
+  messages: []
+}
+
+sessions.set(newSession.id, newSession)
+```
+
+### Switching Runners
+
+```typescript
+// Within same session
+session.runner = "codex"  // Switch to Codex
+
+// Next message uses Codex SDK
+// But session history is preserved
+```
+
+### Adding Messages
+
+```typescript
+const message = {
+  id: nanoid(),
+  role: "user",
+  content: "Your prompt",
+  timestamp: new Date()
+}
+
+session.messages.push(message)
+
+// Broadcast to all clients
+broadcastEvent({
+  type: "message_added",
+  sessionId: session.id,
+  message
+})
+```
+
+## Session Limits
+
+To prevent memory issues:
+
+| Setting | Default | Configurable |
+|---------|---------|--------------|
+| Max sessions per project | Unlimited | Via env |
+| Max messages per session | Unlimited | Via env |
+| Transcript file size | No limit | Via cleanup script |
+| Session timeout | Never | Via env |
+
+## Best Practices
+
+### Organizing Sessions
+
+- **One session per task** - Keep sessions focused
+- **Name clearly** - Use descriptive session names
+- **Archive old sessions** - Delete completed sessions
+- **Use project scoping** - Isolate projects with `mixcode`
+
+### Session Switching
+
+- **Compare approaches** - Switch between Claude and Codex
+- **Try alternatives** - Multiple sessions for alternatives
+- **Preserve context** - Sessions remember full history
+
+### Performance
+
+- **Limit active sessions** - Keep <10 concurrent
+- **Clean transcripts** - Archive large transcript files
+- **Monitor memory** - Check `~/.adverserial-code/server.log`
+
+---
+
+Next: [Runners](/concepts/runners) | [WebSocket Protocol](/concepts/websocket-protocol)
