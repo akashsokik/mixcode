@@ -163,9 +163,7 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate, 
         <input value={query} onInput={setQuery} placeholder={placeholder} focused flexGrow={1} />
       </box>
       <box flexDirection="column" flexShrink={0}>
-        {filtered.slice(0, 10).map((item, i) => (
-          <Row key={item.id} item={item} selected={i === safeIndex} />
-        ))}
+        {renderViewport(filtered, safeIndex)}
         {filtered.length === 0 && <text fg={theme.textFaint}>(no matches)</text>}
       </box>
       {actionSheet && (
@@ -193,6 +191,35 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate, 
       )}
     </box>
   );
+}
+
+// Sliding window of rows that keeps the selected item visible. Anchors the
+// cursor ~4 rows below the top when room allows, then clamps at both ends so
+// long lists scroll past row 9 (the previous hard slice cap) and short lists
+// don't leave dead rows at the bottom.
+const VIEWPORT_ROWS = 10;
+const VIEWPORT_ANCHOR = 4;
+function renderViewport(items: PaletteItem[], selected: number) {
+  const start = Math.max(
+    0,
+    Math.min(
+      selected - VIEWPORT_ANCHOR,
+      Math.max(0, items.length - VIEWPORT_ROWS),
+    ),
+  );
+  const end = Math.min(items.length, start + VIEWPORT_ROWS);
+  const rows = [] as ReturnType<typeof Row>[];
+  for (let i = start; i < end; i++) {
+    rows.push(<Row key={items[i].id} item={items[i]} selected={i === selected} />);
+  }
+  if (items.length > end) {
+    rows.push(
+      <text key="__more" fg={theme.textFaint}>
+        {`  … ${items.length - end} more`}
+      </text>,
+    );
+  }
+  return rows;
 }
 
 function Row({ item, selected }: { item: PaletteItem; selected: boolean }) {
