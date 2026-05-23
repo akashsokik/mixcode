@@ -6,16 +6,19 @@ import {
   type ToolCategory,
 } from "../util/format";
 import { theme } from "../theme";
+import { StatusDot, toolLogStatus } from "./StatusDot";
 
 export function ToolCard({ log }: { log: ToolLog }) {
   const { header, body, isError, category, edit, peer } = formatToolLog(log);
   const { verb, summary } = splitHeader(header);
   const accent = isError ? theme.toolError : accentFor(category);
+  const status = toolLogStatus(log);
 
   return (
     <box flexDirection="column" paddingLeft={1} paddingRight={1} marginTop={1}>
       <box flexDirection="row">
-        <text fg={theme.textMuted}>{"• "}</text>
+        <StatusDot status={status} />
+        <text fg={theme.text}>{" "}</text>
         {peer && (
           <text fg={peerColor(peer)} attributes={TextAttributes.BOLD}>{`[${peer}] `}</text>
         )}
