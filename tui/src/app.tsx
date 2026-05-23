@@ -6,7 +6,7 @@ import { Spinner } from "./components/Spinner";
 import { PermissionPanel } from "./components/PermissionPanel";
 import { ModelPicker } from "./components/ModelPicker";
 import { Palette, type PaletteItem } from "./components/Palette";
-import type { ClaudePermissionMode } from "../../shared/events.ts";
+import type { ClaudePermissionMode, SessionSkillEntry } from "../../shared/events.ts";
 import { useSessions } from "./state/sessions";
 import { parseSlash, SLASH_COMMANDS, toggleRunner } from "./util/slash";
 import {
@@ -215,39 +215,76 @@ export function App() {
     if (!api.active) return [];
     const runner = api.active.activeRunner;
     const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
-    return skillEntries.map((e) => ({
-      id: `${runner}:${e.name}`,
-      label: e.name,
-      detail: e.description ? clipDetail(e.description, 60) : (e.isSymlink ? "(symlink)" : "(dir)"),
-      badge: { text: runner, color: runnerColor },
-      onActivate: () => {
-        const sid = api.activeId;
-        if (!sid) return;
-        const fm = readSkillFrontmatter(runner, e.name);
-        addNotice(sid, "/skills info", skillInfoLines(runner, e.name, fm));
-        setPaletteMode(null);
-      },
-      actions: [
-        {
+    // Prefer the SDK-sourced listing when the active session has one for the
+    // current runner — that's what the agent actually sees, including
+    // plugin-bundled and built-in CLI skills the FS walk can't enumerate.
+    // Falls back to the FS walk during the bootstrap window (no turn yet) and
+    // for Codex (no equivalent SDK stream).
+    const sid = api.activeId;
+    const snap = sid ? api.sessionSkills[sid] : null;
+    const useSdk = !!(snap && snap.runner === runner);
+
+    type Row = {
+      name: string;
+      detail: string;
+      isFsRemovable: boolean;
+    };
+    const rows: Row[] = useSdk
+      ? snap!.entries.map((e) => ({
+          name: e.name,
+          detail: detailForSdkSkill(e),
+          isFsRemovable: e.isFsRemovable,
+        }))
+      : skillEntries.map((e) => ({
+          name: e.name,
+          detail: e.description
+            ? clipDetail(e.description, 60)
+            : e.isSymlink
+              ? "(symlink)"
+              : "(dir)",
+          isFsRemovable: e.isSymlink,
+        }));
+
+    return rows.map((row) => {
+      const actions: NonNullable<PaletteItem["actions"]> = [];
+      if (row.isFsRemovable) {
+        actions.push({
           key: "d",
           label: "remove (press d again to confirm)",
           destructive: true,
           run: () => {
-            const sid = api.activeId;
-            const res = removeSkill(runner, e.name);
-            if (sid) {
+            const aid = api.activeId;
+            const res = removeSkill(runner, row.name);
+            if (aid) {
               addNotice(
-                sid,
+                aid,
                 "/skills remove",
                 skillsLines(runner, listSkills(runner), res.ok ? `removed: ${res.name}` : `failed: ${res.error}`),
               );
             }
             setPaletteMode(null);
           },
+        });
+      }
+      return {
+        id: `${runner}:${row.name}`,
+        label: row.name,
+        detail: row.detail,
+        badge: { text: runner, color: runnerColor },
+        onActivate: () => {
+          const aid = api.activeId;
+          if (!aid) return;
+          // Frontmatter lookup uses the bare skill name; plugin-qualified
+          // names won't resolve to ~/.<runner>/skills, so the info notice
+          // shows what we know (the name + source) without the body.
+          const fm = readSkillFrontmatter(runner, row.name);
+          addNotice(aid, "/skills info", skillInfoLines(runner, row.name, fm));
+          setPaletteMode(null);
         },
-      ],
-    }));
-  }, [skillEntries, api.active?.activeRunner, api.activeId]);
+        actions: actions.length > 0 ? actions : undefined,
+      } satisfies PaletteItem;
+    });
+  }, [skillEntries, api.active?.activeRunner, api.activeId, api.sessionSkills]);
 
   const mcpItems = useMemo<PaletteItem[]>(() => {
     if (!api.active) return [];
@@ -795,6 +832,16 @@ export function App() {
 
 function clipDetail(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+function detailForSdkSkill(e: SessionSkillEntry): string {
+  if (e.pluginName) return `plugin: ${e.pluginName}`;
+  if (e.isFsRemovable) return "(installed)";
+  // Bare names that aren't symlinks in the user's skills dir are either
+  // built-in CLI skills (no SKILL.md anywhere on disk) or project-local —
+  // neither is meaningfully labelled without extra IO. Mark them as "built-in"
+  // so they're visually distinct from the plugin and installed entries.
+  return "(built-in)";
 }
 
 function parseMcpNames(stdout: string): string[] {

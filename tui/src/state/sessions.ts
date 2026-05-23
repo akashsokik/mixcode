@@ -8,9 +8,15 @@ import type {
   RunnerKind,
   Session,
   SessionMessage,
+  SessionSkillEntry,
   ServerMsg,
 } from "../../../shared/events.ts";
 import { WSClient, type WSStatus } from "../api/ws";
+
+export type SessionSkillSnapshot = {
+  runner: RunnerKind;
+  entries: SessionSkillEntry[];
+};
 
 export type PermissionResponsePayload = {
   answers?: Record<string, string>;
@@ -24,6 +30,11 @@ type State = {
   activeId: string | null;
   pendingPermissions: PermissionRequest[];
   rules: string[];
+  // SDK-sourced skill listings per session, tagged with the runner that
+  // produced them. Absent for sessions that haven't run a turn yet (palette
+  // falls back to a filesystem walk), or whose runner was switched after the
+  // listing was captured (the stale runner check rejects the entry).
+  sessionSkills: Record<string, SessionSkillSnapshot>;
 };
 
 const initialState: State = {
@@ -31,6 +42,7 @@ const initialState: State = {
   activeId: null,
   pendingPermissions: [],
   rules: [],
+  sessionSkills: {},
 };
 
 function reduce(state: State, msg: ServerMsg): State {
@@ -40,7 +52,13 @@ function reduce(state: State, msg: ServerMsg): State {
       const activeId = state.activeId
         ? sessions.find((s) => s.id === state.activeId)?.id ?? sessions[0]?.id ?? null
         : sessions[0]?.id ?? null;
-      return { ...state, sessions, activeId, rules: msg.permissions };
+      return {
+        ...state,
+        sessions,
+        activeId,
+        rules: msg.permissions,
+        sessionSkills: msg.sessionSkills ?? {},
+      };
     }
 
     case "session_updated": {
@@ -59,7 +77,9 @@ function reduce(state: State, msg: ServerMsg): State {
       const pendingPermissions = state.pendingPermissions.filter(
         (p) => p.sessionId !== msg.sessionId,
       );
-      return { ...state, sessions, activeId, pendingPermissions };
+      const sessionSkills = { ...state.sessionSkills };
+      delete sessionSkills[msg.sessionId];
+      return { ...state, sessions, activeId, pendingPermissions, sessionSkills };
     }
 
     case "message_started": {
@@ -136,6 +156,16 @@ function reduce(state: State, msg: ServerMsg): State {
     case "permissions":
       return { ...state, rules: msg.rules };
 
+    case "session_skills": {
+      return {
+        ...state,
+        sessionSkills: {
+          ...state.sessionSkills,
+          [msg.sessionId]: { runner: msg.runner, entries: msg.skills },
+        },
+      };
+    }
+
     case "error":
       // Surfaced via status bar / toast in v2. For now, keep state stable.
       return state;
@@ -184,6 +214,7 @@ export function useSessions() {
     status,
     pendingPermissions: state.pendingPermissions,
     rules: state.rules,
+    sessionSkills: state.sessionSkills,
 
     setActive(id: string): void {
       setActiveOverride(id);

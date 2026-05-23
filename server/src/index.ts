@@ -1,3 +1,5 @@
+import { existsSync, lstatSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
@@ -10,6 +12,7 @@ import type {
   RunEvent,
   RunnerKind,
   ServerMsg,
+  SessionSkillEntry,
 } from "../../shared/events.js";
 import type { DelegateRunRecord } from "./runners/delegate.js";
 import { SessionManager } from "./sessions.js";
@@ -68,6 +71,65 @@ const permissions = new PermissionStore();
 // Map sessionId -> AbortController for the in-flight turn, so deleting a
 // session or starting a new turn can cancel pending permission prompts.
 const turnAborts = new Map<string, AbortController>();
+// Map sessionId -> last SDK-reported skill listing, tagged with the runner
+// that produced it. Populated when the Claude runner sees its `system init`
+// message (so it's empty until the first turn). Codex doesn't expose an
+// equivalent stream — its sessions stay unset and the TUI falls back to its
+// filesystem walk. The runner tag lets the client ignore stale entries when
+// the user switches runners mid-session.
+const sessionSkills = new Map<
+  string,
+  { runner: RunnerKind; entries: SessionSkillEntry[] }
+>();
+
+function resolveSessionSkills(
+  runner: RunnerKind,
+  skills: string[],
+  _plugins: { name: string; path: string }[],
+): SessionSkillEntry[] {
+  // _plugins is reserved for future description resolution out of the plugin
+  // cache. The current palette only needs name + classification.
+  const fsSkillsDir = path.join(homedir(), runner === "claude" ? ".claude" : ".codex", "skills");
+  const out: SessionSkillEntry[] = [];
+  for (const raw of skills) {
+    if (typeof raw !== "string" || !raw) continue;
+    const colon = raw.indexOf(":");
+    if (colon > 0) {
+      out.push({
+        name: raw,
+        source: "sdk",
+        pluginName: raw.slice(0, colon),
+        isFsRemovable: false,
+      });
+      continue;
+    }
+    // Bare name: removable only when it lives as a symlink under the user's
+    // skills dir. Built-in CLI skills and project-local skills won't qualify.
+    let removable = false;
+    const target = path.join(fsSkillsDir, raw);
+    try {
+      removable = existsSync(target) && lstatSync(target).isSymbolicLink();
+    } catch {
+      removable = false;
+    }
+    out.push({ name: raw, source: "sdk", isFsRemovable: removable });
+  }
+  // Stable order — names already come in SDK order, but sort so two clients
+  // looking at the same session see the same palette regardless of init race.
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+function updateSessionSkills(
+  sessionId: string,
+  runner: RunnerKind,
+  skills: string[],
+  plugins: { name: string; path: string }[],
+): void {
+  const entries = resolveSessionSkills(runner, skills, plugins);
+  sessionSkills.set(sessionId, { runner, entries });
+  sessions.broadcast({ type: "session_skills", sessionId, runner, skills: entries });
+}
 
 permissions.bind({
   onChange: (rules) => sessions.broadcast({ type: "permissions", rules }),
@@ -288,6 +350,7 @@ app.get(
         type: "hello",
         sessions: sessions.list(),
         permissions: permissions.list(),
+        sessionSkills: Object.fromEntries(sessionSkills.entries()),
       });
       // Replay any prompts still waiting on a decision so a fresh client can
       // act on them.
@@ -346,6 +409,7 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
       turnAborts.delete(msg.sessionId);
       cancelTasksForSession(msg.sessionId);
       clearTasksForSession(msg.sessionId);
+      sessionSkills.delete(msg.sessionId);
       sessions.delete(msg.sessionId);
       return;
     }
@@ -601,6 +665,9 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           else delete runtime.claudeSessionId;
           sessions.logRuntime(sessionId, "claudeSessionId", id);
           sessions.markDirty();
+        },
+        onSkillInfo: ({ skills, plugins }) => {
+          updateSessionSkills(sessionId, "claude", skills, plugins);
         },
       });
     } else {

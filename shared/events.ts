@@ -103,6 +103,26 @@ export type Session = {
   delegations?: DelegationStats;
 };
 
+// One skill as exposed to a runner session. SDK-sourced entries come from the
+// Claude SDK's `system init` message (`skills: string[]` + `plugins`) and
+// reflect what the agent actually has loaded for the turn — including
+// plugin-bundled and built-in CLI skills the TUI can't see by scanning
+// `~/.<runner>/skills`. FS-sourced entries are the legacy filesystem walk
+// used as a bootstrap before the first turn (and the only source for Codex,
+// whose SDK stream carries no equivalent skill listing).
+export type SessionSkillEntry = {
+  // Bare name (e.g. "use-railway") or plugin-qualified ("superpowers:brainstorming").
+  name: string;
+  source: "sdk" | "fs";
+  // Set for SDK-sourced entries that originate from a plugin. Used by the
+  // TUI to resolve descriptions out of the installed plugin cache.
+  pluginName?: string;
+  // True only for entries that live as a symlink under
+  // `~/.<runner>/skills/<name>` and can be removed via /skills remove. SDK
+  // entries from plugins / built-ins are false (the d action is hidden).
+  isFsRemovable: boolean;
+};
+
 export type PermissionDecision = "allow_once" | "allow_always" | "deny";
 
 // One pending tool-permission prompt. `suggestions` are SDK-generated rule
@@ -159,7 +179,19 @@ export type ClientMsg =
 
 // Server -> client.
 export type ServerMsg =
-  | { type: "hello"; sessions: Session[]; permissions: string[] }
+  | {
+      type: "hello";
+      sessions: Session[];
+      permissions: string[];
+      // Per-session SDK-sourced skill listings captured on the most recent
+      // init. Empty for sessions that haven't run a turn yet. The runner tag
+      // lets the client discard stale entries after the user switches runners
+      // mid-session (e.g. claude -> codex).
+      sessionSkills: Record<
+        string,
+        { runner: RunnerKind; entries: SessionSkillEntry[] }
+      >;
+    }
   | { type: "session_updated"; session: Session }
   | { type: "session_deleted"; sessionId: string }
   | { type: "message_started"; sessionId: string; message: SessionMessage }
@@ -173,4 +205,10 @@ export type ServerMsg =
   | { type: "permission_request"; request: PermissionRequest }
   | { type: "permission_resolved"; requestId: string }
   | { type: "permissions"; rules: string[] }
+  | {
+      type: "session_skills";
+      sessionId: string;
+      runner: RunnerKind;
+      skills: SessionSkillEntry[];
+    }
   | { type: "error"; sessionId?: string; message: string };

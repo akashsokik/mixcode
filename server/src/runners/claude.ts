@@ -36,6 +36,15 @@ type ClaudeRunArgs = {
   mcpServers?: Record<string, unknown>;
   onEvent: (ev: RunEvent) => void;
   onResumeId: (id: string | null) => void;
+  // Fires once per turn from the SDK's `system init` message with the actual
+  // skill names and plugin metadata loaded into this session. Names are bare
+  // (`use-railway`, built-ins like `update-config`) or plugin-qualified
+  // (`superpowers:brainstorming`). Plugins gives the install path so the TUI
+  // can resolve descriptions out of the cache.
+  onSkillInfo?: (info: {
+    skills: string[];
+    plugins: { name: string; path: string }[];
+  }) => void;
   // Audit hook — fires for every raw SDK message before translation to a
   // RunEvent. The transcript NDJSON uses this to preserve detail (session
   // init, tool_use ids, result summaries) that the normalized stream drops.
@@ -56,6 +65,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     mcpServers,
     onEvent,
     onResumeId,
+    onSkillInfo,
     onRaw,
   } = args;
 
@@ -147,8 +157,19 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
       onRaw?.(message);
       switch (message.type) {
         case "system":
-          if ((message as any).subtype === "init" && (message as any).session_id) {
-            onResumeId((message as any).session_id);
+          if ((message as any).subtype === "init") {
+            const m = message as any;
+            if (m.session_id) onResumeId(m.session_id);
+            if (onSkillInfo) {
+              const skills: string[] = Array.isArray(m.skills) ? m.skills : [];
+              const plugins: { name: string; path: string }[] = Array.isArray(m.plugins)
+                ? m.plugins.filter(
+                    (p: any) =>
+                      p && typeof p === "object" && typeof p.name === "string" && typeof p.path === "string",
+                  )
+                : [];
+              onSkillInfo({ skills, plugins });
+            }
           }
           break;
 
