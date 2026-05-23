@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "../../../shared/events.ts";
 import { theme } from "../theme";
+import { formatTokens } from "../util/status";
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const WORDS = [
@@ -25,15 +26,11 @@ function pickWord(): string {
   return WORDS[Math.floor(Math.random() * WORDS.length)];
 }
 
-function formatTokens(n: number): string {
-  if (n < 1000) return `${n}`;
-  return `${(n / 1000).toFixed(1)}k`;
-}
-
 type Stats = {
   elapsed: number;
   thoughtFor: number | null;
-  tokens: number;
+  sent: number;
+  received: number;
 };
 
 function useStreamingStats(active: Session | null): Stats | null {
@@ -70,16 +67,27 @@ function useStreamingStats(active: Session | null): Stats | null {
     ? Math.max(0, Math.floor((startedRef.current.firstTokenAt - startedRef.current.at) / 1000))
     : null;
 
-  let tokens = 0;
-  for (let i = last.events.length - 1; i >= 0; i--) {
-    const e = last.events[i];
+  // The Anthropic streaming protocol emits multiple usage events per turn:
+  // message_start carries the real input_tokens with output_tokens=1 (a
+  // placeholder), and later message_delta/result events carry the real
+  // output_tokens but may report input_tokens as 0. Taking the per-field max
+  // recovers the latest accurate counts regardless of arrival order.
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  for (const e of last.events) {
     if (e.type === "usage") {
-      tokens = e.output;
-      break;
+      if (e.input > input) input = e.input;
+      if (e.output > output) output = e.output;
+      if (e.cacheRead > cacheRead) cacheRead = e.cacheRead;
+      if (e.cacheWrite > cacheWrite) cacheWrite = e.cacheWrite;
     }
   }
+  const sent = input + cacheRead + cacheWrite;
+  const received = output;
 
-  return { elapsed, thoughtFor, tokens };
+  return { elapsed, thoughtFor, sent, received };
 }
 
 export function Spinner({ active }: { active: Session | null }) {
@@ -103,7 +111,12 @@ export function Spinner({ active }: { active: Session | null }) {
   if (!isActive || !stats) return <box height={1} flexShrink={0} />;
 
   const parts: string[] = [`${stats.elapsed}s`];
-  if (stats.tokens > 0) parts.push(`↑ ${formatTokens(stats.tokens)} tokens`);
+  if (stats.sent > 0 || stats.received > 0) {
+    const tok: string[] = [];
+    if (stats.sent > 0) tok.push(`↑ ${formatTokens(stats.sent)}`);
+    if (stats.received > 0) tok.push(`↓ ${formatTokens(stats.received)}`);
+    parts.push(tok.join(" "));
+  }
   if (stats.thoughtFor != null) parts.push(`thought for ${stats.thoughtFor}s`);
   const meta = ` (${parts.join(" · ")})`;
 

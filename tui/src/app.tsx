@@ -64,11 +64,15 @@ export function App() {
   const [mcpServerNames, setMcpServerNames] = useState<string[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
 
+  // Gate on `helloReceived`, not `status === "open"`. The WS opens a beat
+  // before `hello` arrives, and during that window sessions.length is still
+  // 0 even when the server has persisted sessions to bring back — without
+  // this gate, every TUI start appended a stray empty session.
   useEffect(() => {
-    if (api.status === "open" && api.sessions.length === 0) {
+    if (api.helloReceived && api.sessions.length === 0) {
       api.createSession();
     }
-  }, [api.status, api.sessions.length]);
+  }, [api.helloReceived, api.sessions.length]);
 
   // Drop notices for sessions that no longer exist.
   useEffect(() => {
@@ -178,11 +182,14 @@ export function App() {
   }, [api.active]);
 
   const sessionPill = useMemo(
-    () => ({
-      total: api.sessions.length,
-      streaming: api.sessions.filter((s) => s.streaming).length,
-    }),
-    [api.sessions],
+    () =>
+      api.active
+        ? {
+            name: api.active.title,
+            streaming: api.sessions.filter((s) => s.streaming).length,
+          }
+        : null,
+    [api.active, api.sessions],
   );
 
   const sessionItems = useMemo<PaletteItem[]>(() => {
@@ -766,6 +773,11 @@ export function App() {
           items={itemsForMode(paletteMode)}
           onClose={() => setPaletteMode(null)}
           onCreate={paletteMode === "sessions" ? () => { api.createSession(); setPaletteMode(null); } : undefined}
+          initialItemId={
+            (paletteMode === "sessions" || paletteMode === "global") && api.activeId
+              ? api.activeId
+              : undefined
+          }
           footer={
             paletteMode === "sessions"
               ? "↑↓ nav   enter switch   tab actions   ctrl+n new   esc close"

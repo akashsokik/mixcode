@@ -30,11 +30,19 @@ type Props = {
   onClose: () => void;
   footer?: string;
   onCreate?: () => void; // ctrl+n — sessions mode only
+  // Initial cursor target. Use to land on the currently active session when
+  // opening the palette in sessions/global mode. Captured on mount only —
+  // arrow keys take over after that.
+  initialItemId?: string;
 };
 
-export function Palette({ title, placeholder, items, onClose, footer, onCreate }: Props) {
+export function Palette({ title, placeholder, items, onClose, footer, onCreate, initialItemId }: Props) {
   const [query, setQuery] = useState("");
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(() => {
+    if (!initialItemId) return 0;
+    const i = items.findIndex((it) => it.id === initialItemId);
+    return i >= 0 ? i : 0;
+  });
   const [actionSheet, setActionSheet] = useState<PaletteItem | null>(null);
   const [pendingDestructive, setPendingDestructive] = useState<string | null>(null);
   const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

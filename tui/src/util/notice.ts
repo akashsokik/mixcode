@@ -117,19 +117,33 @@ function sumUsage(session: Session): {
   cacheRead: number;
   cacheWrite: number;
 } {
+  // The Anthropic SDK emits several usage events per assistant turn: a
+  // message_start with real input_tokens but placeholder output_tokens=1,
+  // streaming partials, and a final result event. Each later event reports
+  // cumulative-within-the-turn counts (often with input_tokens=0 on the
+  // tail). Summing them all triple-counts; take the per-field max within
+  // each message, then sum across messages.
   let input = 0;
   let output = 0;
   let cacheRead = 0;
   let cacheWrite = 0;
   for (const m of session.messages) {
+    let mIn = 0;
+    let mOut = 0;
+    let mCacheR = 0;
+    let mCacheW = 0;
     for (const ev of m.events) {
       if (ev.type === "usage") {
-        input += ev.input;
-        output += ev.output;
-        cacheRead += ev.cacheRead;
-        cacheWrite += ev.cacheWrite;
+        if (ev.input > mIn) mIn = ev.input;
+        if (ev.output > mOut) mOut = ev.output;
+        if (ev.cacheRead > mCacheR) mCacheR = ev.cacheRead;
+        if (ev.cacheWrite > mCacheW) mCacheW = ev.cacheWrite;
       }
     }
+    input += mIn;
+    output += mOut;
+    cacheRead += mCacheR;
+    cacheWrite += mCacheW;
   }
   return { input, output, cacheRead, cacheWrite };
 }

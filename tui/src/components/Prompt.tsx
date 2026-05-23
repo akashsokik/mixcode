@@ -35,7 +35,7 @@ type PromptProps = {
   projectLabel?: string | null;
   branch?: { name: string; dirty: boolean } | null;
   delegations?: DelegationStats | null;
-  sessionPill?: { total: number; streaming: number } | null;
+  sessionPill?: { name: string; streaming: number } | null;
 };
 
 export function Prompt({
@@ -345,7 +345,7 @@ function MetaRow({
   projectLabel: string | null;
   branch: { name: string; dirty: boolean } | null;
   streaming: boolean;
-  sessionPill: { total: number; streaming: number } | null;
+  sessionPill: { name: string; streaming: number } | null;
 }) {
   if (!runner) return null;
   const showMode = runner === "claude" && claudeMode && claudeMode !== "default";
@@ -358,7 +358,7 @@ function MetaRow({
   if (branch?.name) segments.push("branch");
   if (showMode) segments.push("mode");
   if (showCtx) segments.push("ctx");
-  if (sessionPill && sessionPill.total > 1) segments.push("sess");
+  if (sessionPill) segments.push("sess");
 
   return (
     <box flexDirection="row" height={1} paddingLeft={1}>
@@ -381,7 +381,7 @@ function MetaRow({
           )}
           {seg === "sess" && (
             <>
-              <text fg={theme.textMuted}>{`sess ${sessionPill!.total}`}</text>
+              <text fg={theme.textMuted}>{truncate(sessionPill!.name, 28)}</text>
               {sessionPill!.streaming > 0 && (
                 <text fg={theme.toolError}>{`●${sessionPill!.streaming}`}</text>
               )}
@@ -406,6 +406,13 @@ function MetaRow({
 
 function Dot() {
   return <text fg={theme.textSubtle}>{"  ·  "}</text>;
+}
+
+function truncate(s: string, n: number): string {
+  if (n <= 0) return "";
+  if (s.length <= n) return s;
+  if (n <= 1) return s.slice(0, n);
+  return `${s.slice(0, n - 1)}…`;
 }
 
 function placeholderForMode(

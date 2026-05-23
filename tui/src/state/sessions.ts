@@ -24,6 +24,10 @@ type State = {
   activeId: string | null;
   pendingPermissions: PermissionRequest[];
   rules: string[];
+  // True once the server's `hello` has been processed. The WS status flips to
+  // "open" before `hello` arrives, so callers that need the authoritative
+  // session list (e.g. the empty-list bootstrap) must wait on this instead.
+  helloReceived: boolean;
 };
 
 const initialState: State = {
@@ -31,6 +35,7 @@ const initialState: State = {
   activeId: null,
   pendingPermissions: [],
   rules: [],
+  helloReceived: false,
 };
 
 function reduce(state: State, msg: ServerMsg): State {
@@ -40,7 +45,13 @@ function reduce(state: State, msg: ServerMsg): State {
       const activeId = state.activeId
         ? sessions.find((s) => s.id === state.activeId)?.id ?? sessions[0]?.id ?? null
         : sessions[0]?.id ?? null;
-      return { ...state, sessions, activeId, rules: msg.permissions };
+      return {
+        ...state,
+        sessions,
+        activeId,
+        rules: msg.permissions,
+        helloReceived: true,
+      };
     }
 
     case "session_updated": {
@@ -182,6 +193,7 @@ export function useSessions() {
     activeId,
     active,
     status,
+    helloReceived: state.helloReceived,
     pendingPermissions: state.pendingPermissions,
     rules: state.rules,
 
