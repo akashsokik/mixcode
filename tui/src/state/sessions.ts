@@ -8,9 +8,15 @@ import type {
   RunnerKind,
   Session,
   SessionMessage,
+  SessionSkillEntry,
   ServerMsg,
 } from "../../../shared/events.ts";
 import { WSClient, type WSStatus } from "../api/ws";
+
+export type SessionSkillSnapshot = {
+  runner: RunnerKind;
+  entries: SessionSkillEntry[];
+};
 
 export type PermissionResponsePayload = {
   answers?: Record<string, string>;
@@ -28,6 +34,11 @@ type State = {
   // "open" before `hello` arrives, so callers that need the authoritative
   // session list (e.g. the empty-list bootstrap) must wait on this instead.
   helloReceived: boolean;
+  // SDK-sourced skill listings per session, tagged with the runner that
+  // produced them. Absent for sessions that haven't run a turn yet (palette
+  // falls back to a filesystem walk), or whose runner was switched after the
+  // listing was captured (the stale runner check rejects the entry).
+  sessionSkills: Record<string, SessionSkillSnapshot>;
 };
 
 const initialState: State = {
@@ -36,6 +47,7 @@ const initialState: State = {
   pendingPermissions: [],
   rules: [],
   helloReceived: false,
+  sessionSkills: {},
 };
 
 function reduce(state: State, msg: ServerMsg): State {
@@ -51,6 +63,7 @@ function reduce(state: State, msg: ServerMsg): State {
         activeId,
         rules: msg.permissions,
         helloReceived: true,
+        sessionSkills: msg.sessionSkills ?? {},
       };
     }
 
@@ -70,7 +83,9 @@ function reduce(state: State, msg: ServerMsg): State {
       const pendingPermissions = state.pendingPermissions.filter(
         (p) => p.sessionId !== msg.sessionId,
       );
-      return { ...state, sessions, activeId, pendingPermissions };
+      const sessionSkills = { ...state.sessionSkills };
+      delete sessionSkills[msg.sessionId];
+      return { ...state, sessions, activeId, pendingPermissions, sessionSkills };
     }
 
     case "message_started": {
@@ -147,6 +162,16 @@ function reduce(state: State, msg: ServerMsg): State {
     case "permissions":
       return { ...state, rules: msg.rules };
 
+    case "session_skills": {
+      return {
+        ...state,
+        sessionSkills: {
+          ...state.sessionSkills,
+          [msg.sessionId]: { runner: msg.runner, entries: msg.skills },
+        },
+      };
+    }
+
     case "error":
       // Surfaced via status bar / toast in v2. For now, keep state stable.
       return state;
@@ -196,6 +221,7 @@ export function useSessions() {
     helloReceived: state.helloReceived,
     pendingPermissions: state.pendingPermissions,
     rules: state.rules,
+    sessionSkills: state.sessionSkills,
 
     setActive(id: string): void {
       setActiveOverride(id);
