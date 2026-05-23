@@ -695,10 +695,10 @@ export function App() {
       width={width}
       height={height}
       backgroundColor={theme.bg}
-      marginTop={1}
-      marginBottom={1}
-      marginLeft={2}
-      marginRight={2}
+      paddingTop={1}
+      paddingBottom={1}
+      paddingLeft={2}
+      paddingRight={2}
     >
       <Transcript
         session={api.active}

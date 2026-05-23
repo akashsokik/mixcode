@@ -2,12 +2,18 @@ import { useEffect, useRef } from "react";
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import type { Session, SessionMessage } from "../../../shared/events.ts";
 import { ToolCard } from "./ToolCard";
+import { TaskCard } from "./TaskCard";
 import { NoticeCard } from "./NoticeCard";
 import { Welcome } from "./Welcome";
 import { theme } from "../theme";
 import { markdownStyle } from "../markdown-style";
 import type { Notice } from "../util/notice";
-import { cleanModelText, peerToolSummary } from "../util/format";
+import {
+  cleanModelText,
+  peerToolSummary,
+  stripMcpPrefix,
+  stripPeerPrefix,
+} from "../util/format";
 import {
   blocksFromEvents,
   groupDelegations,
@@ -55,8 +61,17 @@ export function Transcript({
     if (!lastMsg) return 0;
     let n = lastMsg.text.length + lastMsg.events.length;
     for (const ev of lastMsg.events) {
-      if (ev.type === "tool_log" && typeof ev.log.output === "string") {
-        n += ev.log.output.length;
+      if (ev.type !== "tool_log") continue;
+      const out = ev.log.output;
+      if (typeof out === "string") n += out.length;
+      else if (out && typeof out === "object") {
+        // Live snapshots (task) update in place with object payloads; fall
+        // back to stringified length so the scroll effect still re-fires.
+        try {
+          n += JSON.stringify(out).length;
+        } catch {
+          n += 1;
+        }
       }
     }
     return n;
@@ -78,7 +93,6 @@ export function Transcript({
       stickyScroll
       stickyStart="bottom"
       scrollbarOptions={{ showArrows: false }}
-      contentOptions={{ justifyContent: "flex-end" }}
     >
       {entries.map((e) =>
         e.kind === "message" ? (
@@ -192,7 +206,11 @@ function BlockRow({
   block: Block;
   firstInMessage: boolean;
 }) {
-  if (block.kind === "tool") return <ToolCard log={block.log} />;
+  if (block.kind === "tool") {
+    const bare = stripMcpPrefix(stripPeerPrefix(block.log.name).rest);
+    if (bare === "task") return <TaskCard log={block.log} />;
+    return <ToolCard log={block.log} />;
+  }
   if (block.kind === "error") {
     return (
       <box flexDirection="row" paddingLeft={1} paddingRight={1}>
@@ -233,17 +251,18 @@ function BlockRow({
       </box>
     );
   }
+  // Assistant prose — no leading bullet. The markdown element is block-level
+  // and doesn't compose cleanly as a flex-row sibling: the bullet's trailing
+  // space gets eaten and subsequent paragraph lines wrap flush-left over the
+  // bullet column. Drop the marker; let the markdown content stand on its own.
   return (
     <box
-      flexDirection="row"
+      flexDirection="column"
       paddingLeft={1}
       paddingRight={1}
       marginTop={firstInMessage ? 0 : 1}
     >
-      <text fg={theme.textMuted}>{"• "}</text>
-      <box flexGrow={1}>
-        <markdown content={cleanModelText(block.text)} syntaxStyle={markdownStyle} fg={theme.text} />
-      </box>
+      <markdown content={cleanModelText(block.text)} syntaxStyle={markdownStyle} fg={theme.text} />
     </box>
   );
 }
@@ -271,6 +290,13 @@ function DelegationGroup({
   // Count tool uses only (peer reply/thinking are separate streams, not tools)
   // so the collapsed line matches what the expanded view shows as `• [peer] X`.
   const toolCount = stats.tools;
+  // For completed validate groups, pull the verdict out of the anchor's
+  // output JSON so the collapsed line shows pass / needs_changes / fail at
+  // a glance without expanding.
+  const verdict =
+    !isPending && group.tag === "validate"
+      ? extractVerdict(group.header)
+      : null;
   // Same "ctrl+x to <action>" hint style as the prompt footer chips.
   const hint = isLatest
     ? expanded
@@ -282,6 +308,7 @@ function DelegationGroup({
     <box flexDirection="column">
       {isPending ? (
         <PendingHeader
+          tag={group.tag}
           runner={group.pendingRunner}
           toolCount={stats.tools}
           lastSummary={stats.lastSummary}
@@ -292,7 +319,18 @@ function DelegationGroup({
       )}
       {hasChildren && !expanded && !isPending && (
         <box flexDirection="column" paddingLeft={3} paddingRight={1}>
-          {stats.previewSummaries.length > 0 && (
+          {verdict && (
+            <box flexDirection="row">
+              <text fg={theme.textFaint}>{"└ "}</text>
+              <text fg={verdictColor(verdict.verdict)} attributes={TextAttributes.BOLD}>
+                {`verdict: ${verdict.verdict}`}
+              </text>
+              {verdict.summary && (
+                <text fg={theme.textMuted}>{`  ${truncate(verdict.summary, 80)}`}</text>
+              )}
+            </box>
+          )}
+          {!verdict && stats.previewSummaries.length > 0 && (
             <box flexDirection="row">
               <text fg={theme.textFaint}>{"└ "}</text>
               <text fg={theme.textMuted}>{stats.previewSummaries.join("  ·  ")}</text>
@@ -330,11 +368,13 @@ function DelegationGroup({
 // completed-group rendering — only the trailing meta swaps in live counters
 // and an animated braille frame.
 function PendingHeader({
+  tag,
   runner,
   toolCount,
   lastSummary,
   replyChars,
 }: {
+  tag: "delegate" | "validate";
   runner: string | null;
   toolCount: number;
   lastSummary: string | null;
@@ -345,15 +385,19 @@ function PendingHeader({
   const meta: string[] = [];
   meta.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
   if (replyChars > 0) meta.push(`${formatChars(replyChars)} reply`);
+  const label = tag === "validate" ? "validate" : "delegate";
+  const verb = tag === "validate" ? "  validating…" : "  working…";
+  // Sage for validate so it reads as review/safety; mauve toolTask for delegate work.
+  const accent = tag === "validate" ? theme.toolEdit : theme.toolTask;
   return (
     <box flexDirection="column" paddingLeft={1} paddingRight={1} marginTop={1}>
       <box flexDirection="row">
         <text fg={theme.textMuted}>{"• "}</text>
         <text fg={peerColor(peer)} attributes={TextAttributes.BOLD}>{`[${peer}] `}</text>
-        <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>{"delegate"}</text>
+        <text fg={accent} attributes={TextAttributes.BOLD}>{label}</text>
         <text fg={theme.textFaint}>{"  "}</text>
         <text fg={peerColor(peer)}>{blink}</text>
-        <text fg={theme.textMuted}>{"  working…"}</text>
+        <text fg={theme.textMuted}>{verb}</text>
       </box>
       <box flexDirection="row">
         <text fg={theme.textFaint}>{"  └ "}</text>
@@ -362,6 +406,42 @@ function PendingHeader({
       </box>
     </box>
   );
+}
+
+// Extract a verdict from a validate_run anchor's output. The MCP body
+// returns a JSON payload; the SDK delivers it either as a string or
+// pre-parsed object.
+function extractVerdict(
+  header: import("../../../shared/events.ts").ToolLog | null,
+): { verdict: string; summary: string } | null {
+  if (!header) return null;
+  const out = header.output;
+  let parsed: unknown = out;
+  if (typeof out === "string") {
+    try {
+      parsed = JSON.parse(out);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const p = parsed as Record<string, unknown>;
+  const v = typeof p.verdict === "string" ? p.verdict : null;
+  if (!v) return null;
+  const summary = typeof p.summary === "string" ? p.summary : "";
+  return { verdict: v, summary };
+}
+
+function verdictColor(v: string): string {
+  if (v === "pass") return theme.runnerClaude; // sage
+  if (v === "needs_changes") return theme.toolBash; // amber
+  if (v === "fail") return theme.toolError; // brick
+  return theme.textMuted; // unknown
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "…";
 }
 
 function formatChars(n: number): string {

@@ -25,6 +25,19 @@ import {
   registerParentCallbacks,
   unregisterParentCallbacks,
 } from "./runners/delegate.js";
+import { executeValidate } from "./runners/validate.js";
+import {
+  awaitTask,
+  cancelTask,
+  cancelTasksForSession,
+  clearTasksForSession,
+  createTask,
+  doneTask,
+  observeTask,
+  registerTaskEmitter,
+  spawnSubtasks,
+  unregisterTaskEmitter,
+} from "./orchestrator/tasks.js";
 import { PermissionStore } from "./permissions.js";
 import { gitInfoEquals, readGitInfo } from "./git.js";
 
@@ -35,7 +48,20 @@ const ORCHESTRATOR_TOKEN = nanoid();
 // Resolved relative to this file so it works whether tsx is run from the
 // repo root, the server workspace, or via the bin/start.mjs launcher.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ORCHESTRATOR_SCRIPT_PATH = path.join(__dirname, "mcp-codex-orchestrator.mjs");
+const ORCHESTRATOR_SCRIPT_PATH = path.join(
+  __dirname,
+  "modules",
+  "mcp-codex-orchestrator.mjs",
+);
+
+// Appended to the Claude SDK's system prompt for every turn. Nudges the
+// agent to use validate_run as its final step before declaring done. The
+// agent is free to skip it — verdict is informational, not enforced.
+const ADVERSARIA_SYSTEM_PROMPT_APPEND =
+  "Before you declare a task complete, call `validate_run` with a concise " +
+  "`claim` describing what you did. The peer agent will adversarially review " +
+  "your work and return a verdict (pass / needs_changes / fail). Treat " +
+  "needs_changes and fail as work to do; pass means you can stop.";
 
 const sessions = new SessionManager();
 const permissions = new PermissionStore();
@@ -137,6 +163,119 @@ app.post("/internal/delegate", async (c) => {
   if (action === "cancel_run") {
     return c.json(executeCancelRun(String(args.runId ?? "")));
   }
+  if (action === "validate_run") {
+    if (!body.parentRunner || !body.parentSessionId || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const filesIn = args.files;
+    const files = Array.isArray(filesIn)
+      ? filesIn.filter((f): f is string => typeof f === "string")
+      : undefined;
+    const result = await executeValidate(
+      {
+        peer:
+          args.peer === "claude" || args.peer === "codex"
+            ? (args.peer as RunnerKind)
+            : undefined,
+        claim: String(args.claim ?? ""),
+        context: typeof args.context === "string" ? args.context : undefined,
+        files,
+        focus: typeof args.focus === "string" ? args.focus : undefined,
+        timeoutSec:
+          typeof args.timeoutSec === "number" && Number.isFinite(args.timeoutSec)
+            ? args.timeoutSec
+            : 180,
+      },
+      {
+        parentRunner: body.parentRunner,
+        parentSessionId: body.parentSessionId,
+        parentCwd: body.parentCwd,
+        depth: typeof body.depth === "number" ? body.depth : 0,
+      },
+    );
+    return c.json(result);
+  }
+  if (action === "task_create") {
+    if (!body.parentSessionId) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const task = createTask({
+      sessionId: body.parentSessionId,
+      title: String(args.title ?? ""),
+      description:
+        typeof args.description === "string" ? args.description : undefined,
+    });
+    return c.json({ ok: true, payload: { taskId: task.id } });
+  }
+  if (action === "task_spawn") {
+    if (!body.parentRunner || !body.parentSessionId || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const subtasksIn = Array.isArray(args.subtasks) ? args.subtasks : [];
+    const subtasks = subtasksIn.map((s: Record<string, unknown>) => ({
+      runner: s.runner as RunnerKind,
+      prompt: String(s.prompt ?? ""),
+      sessionId: typeof s.sessionId === "string" ? s.sessionId : undefined,
+    }));
+    const r = spawnSubtasks(
+      String(args.taskId ?? ""),
+      subtasks,
+      {
+        parentRunner: body.parentRunner,
+        parentCwd: body.parentCwd,
+        depth: (typeof body.depth === "number" ? body.depth : 0) + 1,
+        timeoutSec:
+          typeof args.timeoutSec === "number" ? args.timeoutSec : 600,
+      },
+      {
+        maxConcurrent:
+          typeof args.maxConcurrent === "number" ? args.maxConcurrent : 4,
+      },
+    );
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({ ok: true, payload: { subtaskIds: r.subtaskIds } });
+  }
+  if (action === "task_await") {
+    const r = await awaitTask(String(args.taskId ?? ""), {
+      timeoutSec:
+        typeof args.timeoutSec === "number" ? args.timeoutSec : 1200,
+    });
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({ ok: true, payload: r });
+  }
+  if (action === "task_observe") {
+    const r = observeTask(String(args.taskId ?? ""));
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({ ok: true, payload: { snapshot: r.snapshot } });
+  }
+  if (action === "task_done") {
+    const r = doneTask(
+      String(args.taskId ?? ""),
+      typeof args.summary === "string" ? args.summary : undefined,
+    );
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({
+      ok: true,
+      payload: { taskId: r.taskId, status: r.status },
+    });
+  }
+  if (action === "task_cancel") {
+    const r = cancelTask(String(args.taskId ?? ""));
+    if (!r.ok) return c.json({ ok: false, payload: { error: r.error } });
+    return c.json({
+      ok: true,
+      payload: { taskId: r.taskId, cancelled: r.cancelled },
+    });
+  }
   return c.json({ ok: false, payload: { error: `unknown action: ${action}` } }, 400);
 });
 
@@ -205,6 +344,8 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
     case "delete_session": {
       turnAborts.get(msg.sessionId)?.abort();
       turnAborts.delete(msg.sessionId);
+      cancelTasksForSession(msg.sessionId);
+      clearTasksForSession(msg.sessionId);
       sessions.delete(msg.sessionId);
       return;
     }
@@ -222,6 +363,8 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
       // try to bump finish stats, but bumpOnFinish skips when the session's
       // stats entry is gone — which we wipe next.
       cancelRunsForSession(msg.sessionId);
+      cancelTasksForSession(msg.sessionId);
+      clearTasksForSession(msg.sessionId);
       clearDelegationStats(msg.sessionId);
       sessions.setDelegations(msg.sessionId, null);
       sessions.clearSession(msg.sessionId);
@@ -386,6 +529,10 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
     onPeerEvent: forwardPeerEvent,
     onStatsChange,
   });
+  // task_* tools emit a tool_log per Task snapshot. Same parentSessionId
+  // lookup as parentCallbacks — works for both in-process Claude and the
+  // HTTP-proxy Codex path.
+  registerTaskEmitter(sessionId, onEvent);
 
   try {
     if (session.activeRunner === "claude") {
@@ -407,6 +554,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         permissionMode: session.claudeMode,
         abortController: abort,
         mcpServers: { orchestrator },
+        systemPrompt: ADVERSARIA_SYSTEM_PROMPT_APPEND,
         canUseTool: async (toolName, input, ctx) => {
           const resolution = await permissions.request({
             sessionId,
@@ -493,6 +641,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   } finally {
     if (turnAborts.get(sessionId) === abort) turnAborts.delete(sessionId);
     unregisterParentCallbacks(sessionId);
+    unregisterTaskEmitter(sessionId);
     sessions.finishMessage(sessionId, asst.id);
   }
 }

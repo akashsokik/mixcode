@@ -5,7 +5,7 @@ import type { RunEvent, RunnerKind } from "../../../shared/events.js";
 // codex.ts wires an `mcp_servers.orchestrator` stdio entry into the Codex
 // CLI config so the spawned codex process gets the same `delegate_run` /
 // `get_run` / `cancel_run` tools that Claude has in-process. The MCP child
-// (mcp-codex-orchestrator.mjs) proxies tool calls back to the Hono server's
+// (modules/mcp-codex-orchestrator.mjs) proxies tool calls back to the Hono server's
 // `/internal/delegate` endpoint using these env values.
 export type OrchestratorConfig = {
   url: string;
