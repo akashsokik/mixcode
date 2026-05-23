@@ -620,6 +620,25 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         mcpServers: { orchestrator },
         systemPrompt: ADVERSARIA_SYSTEM_PROMPT_APPEND,
         canUseTool: async (toolName, input, ctx) => {
+          // The SDK routes every tool call through canUseTool when it's set
+          // (it adds --permission-prompt-tool stdio), which overrides
+          // permissionMode's built-in shortcuts. Honor the mode here instead
+          // so bypass/acceptEdits don't degrade into "ask every time".
+          // Read live from session so a shift+tab mid-turn takes effect.
+          // AskUserQuestion is a user-input channel, not a permission gate.
+          // Short-circuiting it would feed the SDK undefined updatedInput,
+          // which fails its Zod schema (see buildAskUserUpdatedInput comment)
+          // and silently drops the question. Always route it through the UI.
+          const mode = session.claudeMode;
+          if (toolName !== "AskUserQuestion") {
+            if (mode === "bypassPermissions") {
+              return { behavior: "allow" };
+            }
+            if (mode === "acceptEdits" && isEditTool(toolName)) {
+              return { behavior: "allow" };
+            }
+          }
+
           const resolution = await permissions.request({
             sessionId,
             tool: toolName,
@@ -731,6 +750,19 @@ function buildAskUserUpdatedInput(
     out.annotations = annotations;
   }
   return out;
+}
+
+// File-mutating built-in tools that acceptEdits mode is documented to
+// auto-approve. Matches the SDK's own classification.
+const EDIT_TOOL_NAMES = new Set([
+  "Edit",
+  "Write",
+  "MultiEdit",
+  "NotebookEdit",
+]);
+
+function isEditTool(toolName: string): boolean {
+  return EDIT_TOOL_NAMES.has(toolName);
 }
 
 function sendTo(ws: { send: (data: string) => void }, msg: ServerMsg): void {

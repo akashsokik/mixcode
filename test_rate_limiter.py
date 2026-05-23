@@ -2,7 +2,7 @@ import math
 import unittest
 
 try:
-    from rate_limiter import RateLimitRule, RateLimiter
+    from rate_limiter import RateLimiter, RateLimitRule
 except ModuleNotFoundError:
     RateLimitRule = None
     RateLimiter = None
@@ -29,8 +29,12 @@ class RateLimiterTests(unittest.TestCase):
         clock = ManualClock()
         limiter = RateLimiter(
             [
-                RateLimitRule("per_second", capacity=10, refill_rate_per_sec=10),
-                RateLimitRule("per_minute", capacity=100, refill_rate_per_sec=100 / 60),
+                RateLimitRule(
+                    "per_second", capacity=10, refill_rate_per_sec=10
+                ),
+                RateLimitRule(
+                    "per_minute", capacity=100, refill_rate_per_sec=100 / 60
+                ),
             ],
             shards=1,
             clock=clock,

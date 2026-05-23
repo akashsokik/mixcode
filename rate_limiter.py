@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Hashable, Sequence
 
-
 _EPSILON = 1e-12
 
 
@@ -26,7 +25,9 @@ class RateLimitRule:
             not math.isfinite(self.refill_rate_per_sec)
             or self.refill_rate_per_sec <= 0
         ):
-            raise ValueError("rule refill_rate_per_sec must be a positive finite number")
+            raise ValueError(
+                "rule refill_rate_per_sec must be a positive finite number"
+            )
 
     @classmethod
     def per_second(cls, name: str, limit: int) -> RateLimitRule:
@@ -61,7 +62,9 @@ class _KeyState:
 class _Shard:
     lock: threading.Lock = field(default_factory=threading.Lock)
     states: dict[Hashable, _KeyState] = field(default_factory=dict)
-    expirations: list[tuple[float, int, int, Hashable]] = field(default_factory=list)
+    expirations: list[tuple[float, int, int, Hashable]] = field(
+        default_factory=list
+    )
     sequence: int = 0
 
 
@@ -157,7 +160,8 @@ class RateLimiter:
     def _new_state(self, now: float) -> _KeyState:
         return _KeyState(
             buckets=[
-                _Bucket(tokens=rule.capacity, updated_at=now) for rule in self.rules
+                _Bucket(tokens=rule.capacity, updated_at=now)
+                for rule in self.rules
             ],
             last_seen=now,
         )
@@ -187,7 +191,9 @@ class RateLimiter:
             if not shard.expirations or shard.expirations[0][0] > now:
                 return
 
-            _expires_at, _sequence, generation, key = heapq.heappop(shard.expirations)
+            _expires_at, _sequence, generation, key = heapq.heappop(
+                shard.expirations
+            )
             state = shard.states.get(key)
             if state is None:
                 continue
