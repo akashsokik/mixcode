@@ -3,9 +3,16 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
-import { serve, upgradeWebSocket } from "@hono/node-server";
+import { createBunWebSocket } from "hono/bun";
+import type { ServerWebSocket } from "bun";
 import { nanoid } from "nanoid";
-import { WebSocketServer } from "ws";
+
+const { upgradeWebSocket, websocket } = createBunWebSocket<ServerWebSocket>();
+
+// Set by startServer() once the listener is bound. Reads of this from
+// request handlers (e.g. the codex orchestrator URL) always happen after
+// the server is up, so the lazy binding is safe.
+let boundPort = 0;
 import type {
   ClientMsg,
   DelegationStats,
@@ -709,7 +716,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           sessions.markDirty();
         },
         orchestrator: {
-          url: `http://127.0.0.1:${port}`,
+          url: `http://127.0.0.1:${boundPort}`,
           token: ORCHESTRATOR_TOKEN,
           scriptPath: ORCHESTRATOR_SCRIPT_PATH,
           parentSessionId: sessionId,
@@ -773,21 +780,78 @@ function sendTo(ws: { send: (data: string) => void }, msg: ServerMsg): void {
   }
 }
 
-const port = Number(process.env.PORT ?? 4567);
-const wss = new WebSocketServer({ noServer: true });
+// Server is embedded in the TUI's Bun process — the TUI calls startServer()
+// before its render loop, so backend + frontend live and die together. There
+// is no separate server process to orphan, no port-spawn race, no SIGTERM
+// dance from the launcher. The legacy SIGINT flush below stays so a hard
+// `kill -2` on the TUI still persists session state.
+export function startServer(
+  opts: { port?: number; hostname?: string } = {},
+): { port: number; attached: boolean; close: () => Promise<void> } {
+  const port =
+    opts.port ?? (process.env.PORT ? Number(process.env.PORT) : 4567);
+  const hostname = opts.hostname ?? "127.0.0.1";
 
-serve(
-  { fetch: app.fetch, port, hostname: "127.0.0.1", websocket: { server: wss } },
-  (info) => {
-    console.log(`adverserial backend listening on http://127.0.0.1:${info.port}`);
-  },
-);
+  let server: ReturnType<typeof Bun.serve>;
+  try {
+    server = Bun.serve({
+      port,
+      hostname,
+      fetch: app.fetch,
+      websocket,
+    });
+  } catch (err) {
+    // EADDRINUSE: another mixcode is already serving this project on this
+    // port. Attach mode — skip starting a duplicate backend; the TUI will
+    // talk to the existing one over the same loopback URL. Tradeoff: when
+    // the primary's TUI closes, its embedded server dies and this TUI's WS
+    // reconnect loop will start surfacing errors. Documented behavior; the
+    // alternative ("refuse to start") was worse for users iterating in two
+    // panes.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/already in use|EADDRINUSE/i.test(msg)) {
+      console.log(
+        `mixcode already running on http://${hostname}:${port} — attaching`,
+      );
+      boundPort = port;
+      return { port, attached: true, close: async () => {} };
+    }
+    throw err;
+  }
 
-// Flush pending session writes when bin/start.mjs sends SIGTERM on TUI exit.
-for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.once(sig, () => {
+  // Bun typings let `port` be `number | undefined` (for unix-socket servers).
+  // We always pass a numeric port above, so a `?? port` fallback keeps TS
+  // honest without lying about runtime behavior.
+  const actualPort = server.port ?? port;
+  boundPort = actualPort;
+  console.log(
+    `adverserial backend listening on http://${server.hostname}:${actualPort}`,
+  );
+
+  // Sync flush on process exit. `writeFileSync` + `closeSync` are both safe
+  // here — they're the only kinds of work we do during shutdown.
+  const onExit = () => {
     sessions.flush();
     sessions.transcript.closeAll();
+  };
+  process.once("exit", onExit);
+
+  // SIGINT/SIGTERM: explicit flush then exit. The TUI's exitOnCtrlC handler
+  // also fires on Ctrl-C, but registering here means a `kill` from outside
+  // the TUI render loop is still graceful.
+  const onSignal = () => {
+    onExit();
     process.exit(0);
-  });
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
+  return {
+    port: actualPort,
+    attached: false,
+    close: async () => {
+      onExit();
+      server.stop();
+    },
+  };
 }

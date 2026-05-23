@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-// mixcode — launcher that boots the local backend + TUI scoped to the
-// directory it's invoked from. Each PWD gets:
-//   - its own sessions store under ~/.mixcode/projects/<encoded-pwd>/
-//   - its own transcript directory
-//   - its own log file
-//   - a deterministic port derived from the PWD, so reopening mixcode in
-//     the same directory attaches to the running backend instead of
-//     starting a duplicate.
+// mixcode — launcher that boots a single Bun process for the directory it's
+// invoked from. The backend is embedded inside the TUI process (see
+// tui/src/index.tsx → startServer), so this launcher's job is just:
+//   - resolve the real cwd and derive a deterministic per-project port
+//   - lay out the per-project state dirs under ~/.mixcode/projects/<slug>/
+//   - load env files (install-dir .env is API-keys-only — see INSTALL_ENV_SKIP)
+//   - spawn `bun` at the TUI entry and exit when it exits
+//
+// No ping, no server spawn, no SIGTERM dance. One PID owns everything; if
+// the user Ctrl-Cs, Bun exits, the embedded server dies with it, no orphans.
 import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  openSync,
-  closeSync,
   readFileSync,
   realpathSync,
 } from "node:fs";
@@ -36,7 +36,7 @@ function realCwd() {
 
 const projectCwd = realCwd();
 
-function loadEnvFile(filePath) {
+function loadEnvFile(filePath, { skip } = {}) {
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf8");
   for (const rawLine of content.split(/\r?\n/)) {
@@ -45,6 +45,7 @@ function loadEnvFile(filePath) {
     const eq = line.indexOf("=");
     if (eq === -1) continue;
     const key = line.slice(0, eq).trim();
+    if (skip && skip.has(key)) continue;
     let value = line.slice(eq + 1).trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
@@ -61,10 +62,22 @@ function loadEnvFile(filePath) {
 // Project-pwd env wins (most specific), then ~/.mixcode/.env (user-global),
 // then the install dir's own .env files (fallback so a fresh user with no
 // global setup still inherits the installer's keys).
+//
+// Install-dir .env is for API keys only — PORT / SERVER_URL must stay
+// per-project, otherwise the install repo's own PORT=… leaks into every
+// project that doesn't define its own, collapsing them onto a shared backend.
+const INSTALL_ENV_SKIP = new Set([
+  "PORT",
+  "SERVER_URL",
+  "ADVERSERIAL_SERVER_URL",
+  "MIXCODE_PROJECT_DIR",
+  "MIXCODE_SESSION_FILE",
+  "MIXCODE_TRANSCRIPT_DIR",
+]);
 loadEnvFile(path.join(projectCwd, ".env"));
 loadEnvFile(path.join(os.homedir(), ".mixcode", ".env"));
-loadEnvFile(path.join(root, ".env"));
-loadEnvFile(path.join(root, "server", ".env"));
+loadEnvFile(path.join(root, ".env"), { skip: INSTALL_ENV_SKIP });
+loadEnvFile(path.join(root, "server", ".env"), { skip: INSTALL_ENV_SKIP });
 
 // Encoded directory: safe filename derived from the absolute path. Mirrors
 // Claude Code's `~/.claude/projects/<encoded-path>/` convention so users get
@@ -74,7 +87,9 @@ function encodeProject(absPath) {
 }
 
 // Deterministic port from the project path. 16 bits of MD5 keeps us inside a
-// safe ephemeral-port window (40000–55535) and makes collisions rare.
+// safe ephemeral-port window (40000–55535) and makes collisions rare. Same
+// invocation twice → same port → the embedded server's EADDRINUSE branch
+// kicks in and the second TUI attaches to the first (see server startServer).
 function projectPort(absPath) {
   const digest = createHash("md5").update(absPath).digest();
   const slot = digest.readUInt16BE(0);
@@ -87,7 +102,6 @@ mkdirSync(projectDir, { recursive: true });
 
 const sessionFile = path.join(projectDir, "sessions.json");
 const transcriptDir = path.join(projectDir, "transcripts");
-const logPath = path.join(projectDir, "server.log");
 const port = Number(process.env.PORT ?? projectPort(projectCwd));
 const base =
   process.env.ADVERSERIAL_SERVER_URL ?? `http://127.0.0.1:${port}`;
@@ -98,102 +112,23 @@ process.env.MIXCODE_TRANSCRIPT_DIR = transcriptDir;
 process.env.PORT = String(port);
 process.env.ADVERSERIAL_SERVER_URL = base;
 
-function localBin(name) {
-  const candidates = [
-    path.join(root, "node_modules", ".bin", name),
-    path.join(root, "server", "node_modules", ".bin", name),
-  ];
-  const found = candidates.find(existsSync);
-  if (!found) {
-    throw new Error(
-      `${name} binary not found. Run \`npm install\` at ${root} first.`,
-    );
-  }
-  return found;
-}
-
 function ensureBun() {
   const probe = spawnSync("bun", ["--version"], { stdio: "ignore" });
   if (probe.error || probe.status !== 0) {
-    console.error("bun is required to run the TUI but was not found on PATH.");
+    console.error("bun is required to run mixcode but was not found on PATH.");
     console.error("install: curl -fsSL https://bun.sh/install | bash");
     process.exit(1);
   }
 }
 
-async function ping() {
-  try {
-    const res = await fetch(`${base}/health`);
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForServer(timeoutMs = 10000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (await ping()) return true;
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return false;
-}
-
-function spawnServer() {
-  const entry = path.join(root, "server", "src", "index.ts");
-  const fd = openSync(logPath, "a");
-  const child = spawn(localBin("tsx"), [entry], {
-    cwd: projectCwd,
-    env: { ...process.env, PORT: String(port) },
-    stdio: ["ignore", fd, fd],
-    detached: false,
-  });
-  child.on("exit", (code, signal) => {
-    if (code !== 0 && code !== null) {
-      console.error(
-        `\nmixcode server exited with code ${code} (signal=${signal})`,
-      );
-      console.error(`see ${logPath} for details`);
-    }
-  });
-  closeSync(fd);
-  return child;
-}
-
-function spawnTui() {
-  const entry = path.join(root, "tui", "src", "index.tsx");
-  return spawn("bun", ["run", entry], {
-    cwd: projectCwd,
-    env: { ...process.env, ADVERSERIAL_SERVER_URL: base },
-    stdio: "inherit",
-  });
-}
-
 ensureBun();
 
-const startedServer = !(await ping());
-const server = startedServer ? spawnServer() : null;
+const tui = spawn("bun", ["run", path.join(root, "tui", "src", "index.tsx")], {
+  cwd: projectCwd,
+  env: process.env,
+  stdio: "inherit",
+});
 
-if (startedServer) {
-  const ok = await waitForServer();
-  if (!ok) {
-    console.error(`backend did not come up at ${base}; see ${logPath}`);
-    server?.kill("SIGTERM");
-    process.exit(1);
-  }
-}
-
-const tui = spawnTui();
-
-let shuttingDown = false;
-function shutdown(code = 0) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  if (server && !server.killed) server.kill("SIGTERM");
-  process.exit(code);
-}
-
-process.on("SIGINT", () => shutdown(130));
-process.on("SIGTERM", () => shutdown(143));
-
-tui.on("exit", (code) => shutdown(code ?? 0));
+tui.on("exit", (code) => process.exit(code ?? 0));
+process.on("SIGINT", () => tui.kill("SIGINT"));
+process.on("SIGTERM", () => tui.kill("SIGTERM"));
