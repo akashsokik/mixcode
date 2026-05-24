@@ -7,9 +7,7 @@
     "dev": "tsx watch --env-file=.env src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx 'src/collectives/*.test.ts'",
-    "smoke:collectives": "tsx --env-file=.env src/smoke-collectives.ts",
-    "example:collectives": "tsx --env-file=.env src/example-collectives.ts"
+    "test": "node --test --import tsx 'src/**/*.test.ts'"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.143",
