@@ -4,9 +4,10 @@ import { Transcript } from "./components/Transcript";
 import { Prompt } from "./components/Prompt";
 import { Spinner } from "./components/Spinner";
 import { PermissionPanel } from "./components/PermissionPanel";
+import { ConsensusModal } from "./components/ConsensusModal";
 import { ModelPicker } from "./components/ModelPicker";
 import { Palette, type PaletteItem } from "./components/Palette";
-import type { ClaudePermissionMode, SessionSkillEntry } from "../../shared/events.ts";
+import type { ClaudePermissionMode, RunnerKind, SessionSkillEntry } from "../../shared/events.ts";
 import { useSessions } from "./state/sessions";
 import { parseSlash, SLASH_COMMANDS, toggleRunner } from "./util/slash";
 import {
@@ -30,7 +31,7 @@ import { addSkill, listSkills, readSkillFrontmatter, removeSkill, type SkillEntr
 import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
 import { theme } from "./theme";
 import { basename } from "./util/path";
-import { latestDelegationId } from "./util/blocks";
+import { collectToolIds, latestDelegationId } from "./util/blocks";
 import {
   contextLimit,
   latestContextTokens,
@@ -51,13 +52,19 @@ export function App() {
   // null when no picker is open. The picker captures keyboard input itself;
   // App only needs to track which runner it's for so it can keep the selected
   // model up to date if the user switches runners while it's open (closes).
-  const [modelPicker, setModelPicker] = useState<{ runner: "claude" | "codex" } | null>(null);
+  const [modelPicker, setModelPicker] = useState<{ runner: RunnerKind } | null>(null);
   const [paletteMode, setPaletteMode] = useState<
     "sessions" | "skills" | "mcp" | "global" | null
   >(null);
-  // Per-session expand set for delegation groups. Keyed by `${messageId}:${blockIndex}`,
-  // matching the ids minted by groupDelegations in util/blocks.
-  const [expandedDelegations, setExpandedDelegations] = useState<
+  // Per-session card selection + expansion. Selection navigates with
+  // shift+up/shift+down; ctrl+e toggles expansion of whichever card is
+  // selected (falling back to the latest delegation when nothing is selected).
+  // The same set covers both tool cards and delegation groups — their ids
+  // share the `${messageId}:${blockIndex}` scheme from util/blocks.
+  const [selectedToolBySession, setSelectedToolBySession] = useState<
+    Record<string, string | null>
+  >({});
+  const [expandedTools, setExpandedTools] = useState<
     Record<string, Set<string>>
   >({});
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
@@ -86,12 +93,22 @@ export function App() {
       }
       return changed ? next : prev;
     });
-    setExpandedDelegations((prev) => {
+    setExpandedTools((prev) => {
       const alive = new Set(api.sessions.map((s) => s.id));
       let changed = false;
       const next: Record<string, Set<string>> = {};
       for (const [id, set] of Object.entries(prev)) {
         if (alive.has(id)) next[id] = set;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+    setSelectedToolBySession((prev) => {
+      const alive = new Set(api.sessions.map((s) => s.id));
+      let changed = false;
+      const next: Record<string, string | null> = {};
+      for (const [id, val] of Object.entries(prev)) {
+        if (alive.has(id)) next[id] = val;
         else changed = true;
       }
       return changed ? next : prev;
@@ -135,17 +152,87 @@ export function App() {
     [notices, api.activeId],
   );
 
-  const activeExpanded = useMemo(
-    () =>
-      api.activeId
-        ? expandedDelegations[api.activeId] ?? EMPTY_SET
-        : EMPTY_SET,
-    [expandedDelegations, api.activeId],
+  const activeToolIds = useMemo(
+    () => collectToolIds(api.active ?? null),
+    [api.active],
   );
 
-  const activeLatestDelegationId = useMemo(
-    () => latestDelegationId(api.active ?? null),
-    [api.active],
+  const activeSelectedToolId = useMemo(() => {
+    if (!api.activeId) return null;
+    const id = selectedToolBySession[api.activeId] ?? null;
+    // Drop a stale selection if the message that owned it has been
+    // truncated (e.g. /clear) or the tool block index no longer exists.
+    if (id && !activeToolIds.includes(id)) return null;
+    return id;
+  }, [selectedToolBySession, api.activeId, activeToolIds]);
+
+  const activeExpandedTools = useMemo(
+    () =>
+      api.activeId ? expandedTools[api.activeId] ?? EMPTY_SET : EMPTY_SET,
+    [expandedTools, api.activeId],
+  );
+
+  const moveToolSelection = useCallback(
+    (direction: "prev" | "next") => {
+      const sid = api.activeId;
+      if (!sid) return;
+      if (activeToolIds.length === 0) return;
+      const current = selectedToolBySession[sid] ?? null;
+      const currentIdx = current ? activeToolIds.indexOf(current) : -1;
+      let nextIdx: number;
+      if (currentIdx === -1) {
+        // First press picks the most recent card (newest end of the list)
+        // so the user lands on the card they're most likely to inspect.
+        nextIdx = direction === "prev" ? activeToolIds.length - 1 : 0;
+      } else if (direction === "prev") {
+        nextIdx = currentIdx === 0 ? activeToolIds.length - 1 : currentIdx - 1;
+      } else {
+        nextIdx = currentIdx === activeToolIds.length - 1 ? 0 : currentIdx + 1;
+      }
+      setSelectedToolBySession((prev) => ({
+        ...prev,
+        [sid]: activeToolIds[nextIdx],
+      }));
+    },
+    [api.activeId, activeToolIds, selectedToolBySession],
+  );
+
+  const toggleSelectedToolExpansion = useCallback(() => {
+    const sid = api.activeId;
+    if (!sid) return false;
+    const id = selectedToolBySession[sid] ?? null;
+    if (!id) return false;
+    setExpandedTools((prev) => {
+      const cur = prev[sid] ?? new Set<string>();
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { ...prev, [sid]: next };
+    });
+    return true;
+  }, [api.activeId, selectedToolBySession]);
+
+  // Mouse activation: first click selects the card; clicking the same already
+  // selected card toggles its expansion. This makes the cards behave like
+  // disclosure widgets without adding a separate "expand" target.
+  const handleToolActivate = useCallback(
+    (toolId: string) => {
+      const sid = api.activeId;
+      if (!sid) return;
+      const current = selectedToolBySession[sid] ?? null;
+      if (current === toolId) {
+        setExpandedTools((prev) => {
+          const cur = prev[sid] ?? new Set<string>();
+          const next = new Set(cur);
+          if (next.has(toolId)) next.delete(toolId);
+          else next.add(toolId);
+          return { ...prev, [sid]: next };
+        });
+        return;
+      }
+      setSelectedToolBySession((prev) => ({ ...prev, [sid]: toolId }));
+    },
+    [api.activeId, selectedToolBySession],
   );
 
   const toggleLatestDelegation = useCallback(() => {
@@ -153,7 +240,7 @@ export function App() {
     if (!sid) return;
     const groupId = latestDelegationId(api.active ?? null);
     if (!groupId) return;
-    setExpandedDelegations((prev) => {
+    setExpandedTools((prev) => {
       const cur = prev[sid] ?? new Set<string>();
       const next = new Set(cur);
       if (next.has(groupId)) next.delete(groupId);
@@ -166,7 +253,11 @@ export function App() {
     const s = api.active;
     if (!s) return null;
     const modelId =
-      s.activeRunner === "claude" ? s.models.claude : s.models.codex;
+      s.activeRunner === "claude"
+        ? s.models.claude
+        : s.activeRunner === "codex"
+          ? s.models.codex
+          : s.models.vercel;
     const modelLabel = prettyModelLabel(modelId, s.activeRunner);
     const limit = contextLimit(modelId, s.activeRunner);
     const used = latestContextTokens(s);
@@ -194,7 +285,12 @@ export function App() {
 
   const sessionItems = useMemo<PaletteItem[]>(() => {
     return api.sessions.map((s) => {
-      const runnerColor = s.activeRunner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+      const runnerColor =
+        s.activeRunner === "claude"
+          ? theme.runnerClaude
+          : s.activeRunner === "codex"
+            ? theme.runnerCodex
+            : theme.runnerVercel;
       const detail = `${basename(s.cwd) || "~"} · ${s.activeRunner} · ${s.messages.length} msg`;
       return {
         id: s.id,
@@ -221,7 +317,12 @@ export function App() {
   const skillItems = useMemo<PaletteItem[]>(() => {
     if (!api.active) return [];
     const runner = api.active.activeRunner;
-    const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+    const runnerColor =
+      runner === "claude"
+        ? theme.runnerClaude
+        : runner === "codex"
+          ? theme.runnerCodex
+          : theme.runnerVercel;
     // Prefer the SDK-sourced listing when the active session has one for the
     // current runner — that's what the agent actually sees, including
     // plugin-bundled and built-in CLI skills the FS walk can't enumerate.
@@ -328,7 +429,12 @@ export function App() {
   const mcpItems = useMemo<PaletteItem[]>(() => {
     if (!api.active) return [];
     const runner = api.active.activeRunner;
-    const runnerColor = runner === "claude" ? theme.runnerClaude : theme.runnerCodex;
+    const runnerColor =
+      runner === "claude"
+        ? theme.runnerClaude
+        : runner === "codex"
+          ? theme.runnerCodex
+          : theme.runnerVercel;
     return mcpServerNames.map((name) => ({
       id: `${runner}:mcp:${name}`,
       label: name,
@@ -402,11 +508,21 @@ export function App() {
       setPaletteMode((m) => (m === "global" ? null : "global"));
       return;
     }
-    // ctrl+e toggles the latest delegation group. Not part of browse mode —
-    // the Prompt input doesn't bind ctrl+e, so this passes through cleanly
-    // while typing.
+    // shift+up / shift+down navigate the tool-card selection. The Prompt
+    // input only binds plain up/down (without shift) for history, so this
+    // chord is unambiguous while typing.
+    if (key.shift && key.name === "up") {
+      moveToolSelection("prev");
+      return;
+    }
+    if (key.shift && key.name === "down") {
+      moveToolSelection("next");
+      return;
+    }
+    // ctrl+e: prefer expanding the selected tool card when one is selected;
+    // otherwise fall back to the delegation-group toggle behavior.
     if (key.ctrl && key.name === "e") {
-      toggleLatestDelegation();
+      if (!toggleSelectedToolExpansion()) toggleLatestDelegation();
       return;
     }
   });
@@ -424,6 +540,7 @@ export function App() {
           return;
         case "claude":
         case "codex":
+        case "vercel":
           api.setRunner(slash.type);
           if (slash.rest) api.send(slash.rest);
           return;
@@ -462,6 +579,40 @@ export function App() {
             });
           }
           return;
+        case "consensus": {
+          if (!sid) return;
+          // /consensus is a claude↔codex pair protocol. Vercel doesn't carry
+          // priorMessages across delegate calls, so it can't continue its
+          // own conversation across iterations — the "talking to each other"
+          // premise breaks. Reject early with a clear message instead of
+          // silently swapping the active runner.
+          if (api.active?.activeRunner === "vercel") {
+            addNotice(sid, "/consensus", [
+              "/consensus is not available for the vercel runner.",
+              "It's a claude↔codex pair protocol — switch with /claude or",
+              "/codex first, then re-run /consensus.",
+            ]);
+            return;
+          }
+          const task = slash.task.trim();
+          if (!task) {
+            addNotice(sid, "/consensus", [
+              "usage: /consensus [max=N] [rounds=N] [producer=claude|codex] <task>",
+              "Actor/critic loop. The producer writes a concrete answer; the",
+              "critic reviews; the producer revises. Loop ends when the critic",
+              "emits AGREE or after `rounds` iterations (default 6).",
+              "max=N caps tool turns per call (default 8).",
+              "producer= picks who writes first (default: active runner).",
+            ]);
+            return;
+          }
+          api.startConsensus(task, {
+            maxTurnsPerPeer: slash.maxTurnsPerPeer,
+            maxRounds: slash.maxRounds,
+            producer: slash.producer,
+          });
+          return;
+        }
         case "permissions": {
           if (!sid) return;
           const action = slash.action;
@@ -788,8 +939,9 @@ export function App() {
       <Transcript
         session={api.active}
         notices={activeNotices}
-        expandedDelegations={activeExpanded}
-        latestDelegationId={activeLatestDelegationId}
+        selectedToolId={activeSelectedToolId}
+        expandedTools={activeExpandedTools}
+        onToolActivate={handleToolActivate}
       />
       <Spinner active={api.active} />
       {api.pendingPermissions.length > 0 && (
@@ -797,6 +949,12 @@ export function App() {
           request={api.pendingPermissions[0]}
           queueSize={api.pendingPermissions.length}
           onDecision={api.respondPermission}
+        />
+      )}
+      {api.activeId && api.consensusReady[api.activeId] && (
+        <ConsensusModal
+          ready={api.consensusReady[api.activeId]}
+          onAction={api.consensusAction}
         />
       )}
       {modelPicker && api.active && (
@@ -866,7 +1024,12 @@ export function App() {
       <Prompt
         focused
         onSubmit={handleSubmit}
-        locked={api.pendingPermissions.length > 0 || modelPicker !== null || paletteMode !== null}
+        locked={
+          api.pendingPermissions.length > 0 ||
+          modelPicker !== null ||
+          paletteMode !== null ||
+          (api.activeId !== null && !!api.consensusReady[api.activeId])
+        }
         streaming={api.active?.streaming ?? false}
         onInterrupt={api.interrupt}
         runner={api.active?.activeRunner ?? null}

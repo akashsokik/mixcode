@@ -131,6 +131,13 @@ export type GroupedBlock =
 export function groupDelegations(
   blocks: Block[],
   messageId: string,
+  // Whether the parent message is currently streaming. If false, a trailing
+  // run of peer blocks without an anchor is NOT folded into a pending group
+  // — the peers ran but their delegate_run anchor never landed (e.g. the
+  // process was killed mid-call). Rendering it as "working…" forever would
+  // be misleading. We let the peer events render as plain passthrough
+  // blocks so the user sees what actually happened.
+  messageStreaming = true,
 ): GroupedBlock[] {
   const items: GroupedBlock[] = [];
 
@@ -165,18 +172,27 @@ export function groupDelegations(
 
   const trailing = consumeTrailingPeers();
   if (trailing.length > 0) {
-    items.push({
-      kind: "delegation_group",
-      id: `${messageId}:pending`,
-      // Without the anchor yet we can't know — default to "delegate"; the
-      // group reclassifies the moment the anchor (delegate_run/validate_run)
-      // lands at the end of the message events.
-      tag: "delegate",
-      anchorIndex: -1,
-      header: null,
-      pendingRunner: inferRunner(trailing),
-      children: trailing,
-    });
+    if (messageStreaming) {
+      items.push({
+        kind: "delegation_group",
+        id: `${messageId}:pending`,
+        // Without the anchor yet we can't know — default to "delegate"; the
+        // group reclassifies the moment the anchor (delegate_run/validate_run)
+        // lands at the end of the message events.
+        tag: "delegate",
+        anchorIndex: -1,
+        header: null,
+        pendingRunner: inferRunner(trailing),
+        children: trailing,
+      });
+    } else {
+      // Orphaned trailing peers from an interrupted/crashed turn: render as
+      // plain passthroughs so the user sees the peer's reasoning but no
+      // misleading "working…" spinner.
+      trailing.forEach((b, j) => {
+        items.push({ kind: "passthrough", block: b, index: blocks.length + j });
+      });
+    }
   }
 
   return items;
@@ -209,4 +225,29 @@ export function latestDelegationId(session: Session | null): string | null {
     }
   }
   return null;
+}
+
+// Tool-card ids the user can navigate to with shift+up / shift+down. Includes
+// top-level tool blocks AND delegation groups (so the user can shift+nav onto
+// a delegate/validate card and ctrl+e to expand it, same as a regular tool).
+// Children of a delegation group stay out — those only render when the group
+// is already expanded. Ids share the `${messageId}:${blockIndex}` scheme that
+// groupDelegations uses for its own ids; a tool index and a delegation anchor
+// index can never collide because each block has a unique position.
+export function collectToolIds(session: Session | null): string[] {
+  if (!session) return [];
+  const out: string[] = [];
+  for (const m of session.messages) {
+    if (m.role !== "assistant") continue;
+    const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
+    for (const g of grouped) {
+      if (g.kind === "delegation_group") {
+        out.push(g.id);
+        continue;
+      }
+      if (g.block.kind !== "tool") continue;
+      out.push(`${m.id}:${g.index}`);
+    }
+  }
+  return out;
 }

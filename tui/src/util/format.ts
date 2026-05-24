@@ -7,6 +7,14 @@ const INLINE_INPUT_LIMIT = 80;
 const DIFF_LINE_LIMIT = 8;
 const DIFF_LINE_CHARS = 100;
 
+// Expanded view caps. Generous enough that "expanded" means "lots more",
+// not "unbounded" — a Read of a 50k-line file still gets clipped with a
+// trailing `(+N more)` tail so the renderer doesn't choke.
+const OUTPUT_CHAR_LIMIT_EXPANDED = 100_000;
+const OUTPUT_LINE_LIMIT_EXPANDED = 5_000;
+const DIFF_LINE_LIMIT_EXPANDED = 200;
+const DIFF_LINE_CHARS_EXPANDED = 200;
+
 export type ToolCategory = "edit" | "read" | "bash" | "web" | "task" | "other";
 
 export type EditPreview = {
@@ -42,7 +50,10 @@ export function categorizeTool(name: string): ToolCategory {
   return "other";
 }
 
-export function formatToolLog(log: ToolLog): {
+export function formatToolLog(
+  log: ToolLog,
+  opts: { expanded?: boolean } = {},
+): {
   header: string;
   body: string;
   isError: boolean;
@@ -50,6 +61,7 @@ export function formatToolLog(log: ToolLog): {
   edit: EditPreview | null;
   peer: string | null;
 } {
+  const expanded = opts.expanded === true;
   const isError = log.isError === true;
   // Peer-prefixed names (e.g. "[codex] Bash") come from the orchestrator's
   // onPeerEvent bridge. Pull the chip out so it can render separately and the
@@ -81,9 +93,9 @@ export function formatToolLog(log: ToolLog): {
   }
 
   const header = formatHeader(displayName, log.input, isError);
-  const body = formatOutput(unwrapMcpContent(log.output));
+  const body = formatOutput(unwrapMcpContent(log.output), expanded);
   const category = categorizeTool(displayName);
-  const edit = category === "edit" ? extractEdit(log.input) : null;
+  const edit = category === "edit" ? extractEdit(log.input, expanded) : null;
   return { header, body, isError, category, edit, peer };
 }
 
@@ -328,7 +340,11 @@ function formatTaskTool(
   }
 }
 
-function extractEdit(input: unknown): EditPreview | null {
+// When `expanded` is true, all edit blocks are flattened into the returned
+// `removed` / `added` lists (separated by a sentinel blank line between
+// blocks) instead of just the first, and per-line clamps lift to the
+// expanded caps so users can scroll the whole diff.
+function extractEdit(input: unknown, expanded = false): EditPreview | null {
   if (!input || typeof input !== "object") return null;
   const obj = input as Record<string, unknown>;
   const filePath = typeof obj.file_path === "string" ? obj.file_path : undefined;
@@ -337,32 +353,50 @@ function extractEdit(input: unknown): EditPreview | null {
   if (typeof obj.old_string === "string" && typeof obj.new_string === "string") {
     return {
       filePath,
-      removed: clampLines(obj.old_string),
-      added: clampLines(obj.new_string),
+      removed: clampLines(obj.old_string, expanded),
+      added: clampLines(obj.new_string, expanded),
       more: 0,
     };
   }
   // Write: { file_path, content }
   if (typeof obj.content === "string" && obj.old_string === undefined) {
-    return { filePath, removed: [], added: clampLines(obj.content), more: 0 };
+    return { filePath, removed: [], added: clampLines(obj.content, expanded), more: 0 };
   }
   // MultiEdit / Codex Edit: { edits | changes: [{ old_string, new_string }] }
   const list = Array.isArray(obj.edits) ? obj.edits : Array.isArray(obj.changes) ? obj.changes : null;
   if (list && list.length > 0) {
-    const first = list[0] as Record<string, unknown>;
-    return {
-      filePath,
-      removed: typeof first.old_string === "string" ? clampLines(first.old_string) : [],
-      added: typeof first.new_string === "string" ? clampLines(first.new_string) : [],
-      more: list.length - 1,
-    };
+    if (!expanded) {
+      const first = list[0] as Record<string, unknown>;
+      return {
+        filePath,
+        removed: typeof first.old_string === "string" ? clampLines(first.old_string, false) : [],
+        added: typeof first.new_string === "string" ? clampLines(first.new_string, false) : [],
+        more: list.length - 1,
+      };
+    }
+    // Flatten every edit block. A blank separator row between blocks keeps
+    // them visually distinguishable without inventing a new render mode.
+    const removed: string[] = [];
+    const added: string[] = [];
+    list.forEach((item, i) => {
+      const e = item as Record<string, unknown>;
+      if (i > 0) {
+        removed.push("");
+        added.push("");
+      }
+      if (typeof e.old_string === "string") removed.push(...clampLines(e.old_string, true));
+      if (typeof e.new_string === "string") added.push(...clampLines(e.new_string, true));
+    });
+    return { filePath, removed, added, more: 0 };
   }
   return null;
 }
 
-function clampLines(text: string): string[] {
-  const lines = text.split("\n").slice(0, DIFF_LINE_LIMIT);
-  return lines.map((l) => (l.length > DIFF_LINE_CHARS ? l.slice(0, DIFF_LINE_CHARS - 1) + "…" : l));
+function clampLines(text: string, expanded = false): string[] {
+  const lineLimit = expanded ? DIFF_LINE_LIMIT_EXPANDED : DIFF_LINE_LIMIT;
+  const charLimit = expanded ? DIFF_LINE_CHARS_EXPANDED : DIFF_LINE_CHARS;
+  const lines = text.split("\n").slice(0, lineLimit);
+  return lines.map((l) => (l.length > charLimit ? l.slice(0, charLimit - 1) + "…" : l));
 }
 
 function formatHeader(name: string, input: unknown, _isError: boolean): string {
@@ -410,16 +444,19 @@ function summarizeInput(name: string, input: unknown): string {
   return truncateOneLine(compactJson(obj), INLINE_INPUT_LIMIT);
 }
 
-function formatOutput(output: unknown): string {
+function formatOutput(output: unknown, expanded = false): string {
   if (output == null || output === "") return "";
   const text = typeof output === "string" ? output : compactJson(output);
   if (!text) return "";
 
+  const lineLimit = expanded ? OUTPUT_LINE_LIMIT_EXPANDED : OUTPUT_LINE_LIMIT;
+  const charLimit = expanded ? OUTPUT_CHAR_LIMIT_EXPANDED : OUTPUT_CHAR_LIMIT;
+
   const lines = text.split("\n");
-  const hadMoreLines = lines.length > OUTPUT_LINE_LIMIT;
-  const body = lines.slice(0, OUTPUT_LINE_LIMIT).join("\n");
-  const truncated = body.length > OUTPUT_CHAR_LIMIT;
-  const finalBody = truncated ? body.slice(0, OUTPUT_CHAR_LIMIT) : body;
+  const hadMoreLines = lines.length > lineLimit;
+  const body = lines.slice(0, lineLimit).join("\n");
+  const truncated = body.length > charLimit;
+  const finalBody = truncated ? body.slice(0, charLimit) : body;
   const trimmedLines = lines.length - finalBody.split("\n").length;
 
   let suffix = "";
@@ -428,6 +465,28 @@ function formatOutput(output: unknown): string {
   }
 
   return finalBody + suffix;
+}
+
+// Pretty-printed input JSON for the expanded view. Capped to the same line
+// budget as expanded output. Returns "" for non-object input — the simple
+// shapes (strings, file paths) are already in the header.
+export function formatInputPretty(input: unknown): string {
+  if (input == null) return "";
+  if (typeof input !== "object") return "";
+  let text: string;
+  try {
+    text = JSON.stringify(input, null, 2);
+  } catch {
+    return "";
+  }
+  if (!text || text === "{}" || text === "[]") return "";
+  const lines = text.split("\n");
+  if (lines.length <= OUTPUT_LINE_LIMIT_EXPANDED) return text;
+  const trimmed = lines.length - OUTPUT_LINE_LIMIT_EXPANDED;
+  return (
+    lines.slice(0, OUTPUT_LINE_LIMIT_EXPANDED).join("\n") +
+    `\n... (+${trimmed} more lines)`
+  );
 }
 
 function compactJson(v: unknown): string {

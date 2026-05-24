@@ -1,7 +1,7 @@
 // Wire protocol between the TUI client and the Hono server.
 // Transport is a single persistent WebSocket at GET /ws.
 
-export type RunnerKind = "claude" | "codex";
+export type RunnerKind = "claude" | "codex" | "vercel";
 
 export type ToolLog = {
   // Stable identifier used to update a tool_log in place. When the server
@@ -51,6 +51,7 @@ export type SessionMessage = {
 export type ModelOverrides = {
   claude?: string;
   codex?: string;
+  vercel?: string;
 };
 
 // Claude SDK permission modes that we expose through the UI. Subset of the
@@ -125,6 +126,40 @@ export type SessionSkillEntry = {
 
 export type PermissionDecision = "allow_once" | "allow_always" | "deny";
 
+// One iteration of the actor/critic consensus loop. The producer writes a
+// draft answer; the critic reviews it and emits a verdict. The loop
+// terminates when verdict === "agree" or maxRounds is hit. `index` is
+// 0-based; iteration 0 is the producer's first draft.
+export type ConsensusVerdict = "agree" | "revise" | "unknown";
+export type ConsensusIteration = {
+  index: number;
+  producerText: string;
+  criticText: string;
+  verdict: ConsensusVerdict;
+  summary: string;
+  // Set when the critic emitted a JSON block we couldn't parse. The TUI
+  // surfaces this as a warning; the loop treats it as "revise" so it doesn't
+  // claim agreement on a malformed reply.
+  parseError?: string;
+};
+
+// Final consensus output presented to the user. `finalDraft` is the
+// producer's latest text (post-convergence or post-max-rounds). `converged`
+// is true iff the critic emitted AGREE on the final iteration.
+// `suggestedRunner` defaults to the producer — they wrote the converged
+// draft, so they're the natural pick to implement it.
+export type ConsensusReady = {
+  sessionId: string;
+  messageId: string;
+  task: string;
+  producer: RunnerKind;
+  critic: RunnerKind;
+  iterations: ConsensusIteration[];
+  finalDraft: string;
+  converged: boolean;
+  suggestedRunner: RunnerKind;
+};
+
 // One pending tool-permission prompt. `suggestions` are SDK-generated rule
 // strings (e.g. "Bash(npm install)"); the client should persist them verbatim
 // when the user picks "allow always".
@@ -165,6 +200,26 @@ export type ClientMsg =
   | { type: "set_claude_mode"; sessionId: string; mode: ClaudePermissionMode }
   | { type: "send"; sessionId: string; text: string }
   | { type: "interrupt"; sessionId: string }
+  | {
+      type: "consensus_start";
+      sessionId: string;
+      task: string;
+      // Per-call tool budget (Claude maxTurns / Vercel maxSteps). Default 5.
+      maxTurnsPerPeer?: number;
+      // Max actor/critic iterations before forced exit. Default 6, ceiling
+      // ~12 on the server. Each iteration is producer-write + critic-review.
+      maxRounds?: number;
+      // Producer override. Default: the session's active runner. The other
+      // runner becomes the critic.
+      producer?: RunnerKind;
+    }
+  | {
+      type: "consensus_action";
+      sessionId: string;
+      action: "implement" | "cancel";
+      runner?: RunnerKind;
+      plan?: string;
+    }
   | {
       type: "permission_response";
       requestId: string;
@@ -211,4 +266,6 @@ export type ServerMsg =
       runner: RunnerKind;
       skills: SessionSkillEntry[];
     }
+  | { type: "consensus_ready"; ready: ConsensusReady }
+  | { type: "consensus_cleared"; sessionId: string }
   | { type: "error"; sessionId?: string; message: string };

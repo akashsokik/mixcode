@@ -3,6 +3,7 @@ import type {
   AskUserAnnotation,
   ClaudePermissionMode,
   ClientMsg,
+  ConsensusReady,
   PermissionDecision,
   PermissionRequest,
   RunnerKind,
@@ -45,6 +46,11 @@ type State = {
   // falls back to a filesystem walk), or whose runner was switched after the
   // listing was captured (the stale runner check rejects the entry).
   sessionSkills: Record<string, SessionSkillSnapshot>;
+  // Per-session adversarial-planning state. Set when a `consensus_ready`
+  // server message arrives; cleared on `consensus_cleared` or session reset.
+  // Only one entry per session at a time — the server is the single source
+  // of truth, so a re-emit (e.g. after `synthesize`) replaces the prior one.
+  consensusReady: Record<string, ConsensusReady>;
 };
 
 const initialState: State = {
@@ -54,6 +60,7 @@ const initialState: State = {
   rules: [],
   helloReceived: false,
   sessionSkills: {},
+  consensusReady: {},
 };
 
 function reduce(state: State, msg: ServerMsg): State {
@@ -178,8 +185,28 @@ function reduce(state: State, msg: ServerMsg): State {
       };
     }
 
+    case "consensus_ready": {
+      return {
+        ...state,
+        consensusReady: {
+          ...state.consensusReady,
+          [msg.ready.sessionId]: msg.ready,
+        },
+      };
+    }
+
+    case "consensus_cleared": {
+      if (!state.consensusReady[msg.sessionId]) return state;
+      const next = { ...state.consensusReady };
+      delete next[msg.sessionId];
+      return { ...state, consensusReady: next };
+    }
+
     case "error":
       // Surfaced via status bar / toast in v2. For now, keep state stable.
+      return state;
+
+    default:
       return state;
   }
 }
@@ -228,6 +255,7 @@ export function useSessions() {
     pendingPermissions: state.pendingPermissions,
     rules: state.rules,
     sessionSkills: state.sessionSkills,
+    consensusReady: state.consensusReady,
 
     setActive(id: string): void {
       setActiveOverride(id);
@@ -271,6 +299,37 @@ export function useSessions() {
     interrupt(): void {
       if (!activeId) return;
       send(client, { type: "interrupt", sessionId: activeId });
+    },
+    startConsensus(
+      task: string,
+      opts?: {
+        maxTurnsPerPeer?: number;
+        maxRounds?: number;
+        producer?: RunnerKind;
+      },
+    ): void {
+      if (!activeId) return;
+      send(client, {
+        type: "consensus_start",
+        sessionId: activeId,
+        task,
+        maxTurnsPerPeer: opts?.maxTurnsPerPeer,
+        maxRounds: opts?.maxRounds,
+        producer: opts?.producer,
+      });
+    },
+    consensusAction(
+      action: "implement" | "cancel",
+      payload?: { runner?: RunnerKind; plan?: string },
+    ): void {
+      if (!activeId) return;
+      send(client, {
+        type: "consensus_action",
+        sessionId: activeId,
+        action,
+        runner: payload?.runner,
+        plan: payload?.plan,
+      });
     },
     respondPermission(
       requestId: string,

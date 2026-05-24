@@ -28,8 +28,15 @@ export type TranscriptLine =
   | { kind: "message_started"; sessionId: string; messageId: string; role: "user" | "assistant"; text: string }
   | { kind: "message_done"; sessionId: string; messageId: string }
   | { kind: "event"; sessionId: string; messageId: string; event: unknown }
-  | { kind: "raw_sdk"; sessionId: string; messageId: string; runner: "claude" | "codex"; raw: unknown }
-  | { kind: "runtime"; sessionId: string; field: "claudeSessionId" | "codexThreadId"; value: string | null };
+  | { kind: "raw_sdk"; sessionId: string; messageId: string; runner: "claude" | "codex" | "vercel"; raw: unknown }
+  | {
+      kind: "runtime";
+      sessionId: string;
+      field: "claudeSessionId" | "codexThreadId" | "vercelMessages";
+      // string for resume ids; number for vercel message count (the full
+      // ModelMessage[] is too noisy to dump on every turn).
+      value: string | number | null;
+    };
 
 export class TranscriptLogger {
   private fds = new Map<string, number>();

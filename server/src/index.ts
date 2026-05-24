@@ -15,16 +15,18 @@ const { upgradeWebSocket, websocket } = createBunWebSocket<ServerWebSocket>();
 let boundPort = 0;
 import type {
   ClientMsg,
+  ConsensusReady,
   DelegationStats,
   RunEvent,
   RunnerKind,
   ServerMsg,
   SessionSkillEntry,
 } from "../../shared/events.js";
-import type { DelegateRunRecord } from "./runners/delegate.js";
 import { SessionManager } from "./sessions.js";
 import { runClaude } from "./runners/claude.js";
 import { runCodex } from "./runners/codex.js";
+import { runVercel } from "./runners/vercel.js";
+import type { ModelMessage } from "ai";
 import {
   buildDelegateMcpServer,
   cancelRunsForSession,
@@ -48,8 +50,15 @@ import {
   spawnSubtasks,
   unregisterTaskEmitter,
 } from "./orchestrator/tasks.js";
+import {
+  clearConsensusReady,
+  getConsensusReady,
+  runConsensus,
+  setConsensusReady,
+} from "./orchestrator/consensus.js";
 import { PermissionStore } from "./permissions.js";
 import { gitInfoEquals, readGitInfo } from "./git.js";
+import { buildPeerEventForwarder } from "./orchestrator/peer-forwarding.js";
 
 // Shared secret used to authenticate the Codex-side MCP child's HTTP
 // callbacks. Generated once per server start; rotates on restart.
@@ -364,6 +373,13 @@ app.get(
       for (const req of permissions.pendingRequests()) {
         sendTo(ws, { type: "permission_request", request: req });
       }
+      // Same idea for pending consensus modals — a TUI that reconnects mid
+      // /consensus decision should re-receive the ready payload, otherwise
+      // the user loses the modal with no way back to it.
+      for (const s of sessions.list()) {
+        const ready = getConsensusReady(s.id);
+        if (ready) sendTo(ws, { type: "consensus_ready", ready });
+      }
     },
     onClose(_evt, ws) {
       sessions.unsubscribe(ws);
@@ -416,6 +432,7 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
       turnAborts.delete(msg.sessionId);
       cancelTasksForSession(msg.sessionId);
       clearTasksForSession(msg.sessionId);
+      clearConsensusReady(msg.sessionId);
       sessionSkills.delete(msg.sessionId);
       sessions.delete(msg.sessionId);
       return;
@@ -436,6 +453,12 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
       cancelRunsForSession(msg.sessionId);
       cancelTasksForSession(msg.sessionId);
       clearTasksForSession(msg.sessionId);
+      if (clearConsensusReady(msg.sessionId)) {
+        sessions.broadcast({
+          type: "consensus_cleared",
+          sessionId: msg.sessionId,
+        });
+      }
       clearDelegationStats(msg.sessionId);
       sessions.setDelegations(msg.sessionId, null);
       sessions.clearSession(msg.sessionId);
@@ -452,6 +475,18 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
 
     case "send":
       await runTurn(msg.sessionId, msg.text);
+      return;
+
+    case "consensus_start":
+      await runConsensusTurn(msg.sessionId, msg.task, {
+        maxTurnsPerPeer: msg.maxTurnsPerPeer,
+        maxRounds: msg.maxRounds,
+        producer: msg.producer,
+      });
+      return;
+
+    case "consensus_action":
+      await handleConsensusAction(msg);
       return;
 
     case "interrupt": {
@@ -515,80 +550,9 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
 
   // Peer events emitted by a delegated run are folded into the parent's
   // assistant message with a `[runner]` chip in the name so the TUI can
-  // render them inline alongside the parent's own events. Same forwarder for
-  // both branches — a function over the parent's onEvent closure.
-  //
-  // text_delta and atomic-mode thinking are wrapped in synthetic tool_log
-  // events that carry a stable `id` (e.g. `peer:<runId>:text:<chunk>`). The
-  // append-event path replaces matching ids in place, so a streaming peer
-  // reply renders as a single block whose body grows — without that wrapping,
-  // peer deltas would silently merge into the parent's text run via the
-  // transcript's text_delta concatenation, which is confusing.
-  //
-  // We bump the chunk counter whenever the peer transitions OUT of a text
-  // run (emits a tool_log, atomic thinking, or error). That way, "text →
-  // tool → more text" renders as two separate reply blocks bracketing the
-  // peer's tool call, matching the natural interleaving.
-  type PeerState = { textBuf: string; chunk: number };
-  const peerStates = new Map<string, PeerState>();
-  const stateFor = (runId: string): PeerState => {
-    let s = peerStates.get(runId);
-    if (!s) {
-      s = { textBuf: "", chunk: 0 };
-      peerStates.set(runId, s);
-    }
-    return s;
-  };
-  const flushText = (s: PeerState): void => {
-    if (s.textBuf) {
-      s.textBuf = "";
-      s.chunk += 1;
-    }
-  };
-  const forwardPeerEvent = (record: DelegateRunRecord, event: RunEvent) => {
-    const s = stateFor(record.runId);
-    if (event.type === "text_delta") {
-      s.textBuf += event.delta;
-      onEvent({
-        type: "tool_log",
-        log: {
-          id: `peer:${record.runId}:text:${s.chunk}`,
-          name: `[${record.runner}] reply`,
-          output: s.textBuf,
-        },
-      });
-    } else if (event.type === "tool_log") {
-      flushText(s);
-      onEvent({
-        type: "tool_log",
-        log: {
-          ...event.log,
-          name: `[${record.runner}] ${event.log.name}`,
-        },
-      });
-    } else if (event.type === "thinking" && typeof event.text === "string") {
-      // Atomic-mode thinking carries its full text on the event; render it as
-      // its own block. Marker-mode (text undefined) is skipped here because
-      // we've already wrapped the preceding deltas as a reply block, not as
-      // an untyped text run we could reclassify.
-      flushText(s);
-      onEvent({
-        type: "tool_log",
-        log: {
-          id: `peer:${record.runId}:think:${s.chunk}`,
-          name: `[${record.runner}] thinking`,
-          output: `(${event.seconds}s) ${event.text}`,
-        },
-      });
-      s.chunk += 1;
-    } else if (event.type === "error") {
-      flushText(s);
-      onEvent({
-        type: "error",
-        message: `[${record.runner}] ${event.message}`,
-      });
-    }
-  };
+  // render them inline alongside the parent's own events. See
+  // peer-forwarding.ts for the chunking contract.
+  const forwardPeerEvent = buildPeerEventForwarder(onEvent);
   const onStatsChange = (stats: DelegationStats): void => {
     sessions.setDelegations(sessionId, stats);
   };
@@ -696,7 +660,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           updateSessionSkills(sessionId, "claude", skills, plugins);
         },
       });
-    } else {
+    } else if (session.activeRunner === "codex") {
       // Codex CLI only accepts stdio MCP servers, so wire it to spawn our
       // own child (mcp-codex-orchestrator.mjs) that proxies tool calls back
       // to /internal/delegate. parentSessionId + token + depth are passed via
@@ -725,6 +689,61 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           depth: 0,
         },
       });
+    } else {
+      // Vercel AI SDK runner. Session continuity rides on
+      // runtime.vercelMessages since streamText is stateless. Switching
+      // model provider mid-session (e.g. gpt-4o -> claude-sonnet) makes the
+      // stored ModelMessage[] poisonous because tool-call / tool-result
+      // content blocks are shaped per-provider; reset history when the
+      // provider family changes.
+      const requestedModelId =
+        session.models.vercel || process.env.VERCEL_MODEL || "gpt-4o";
+      const currentProvider = requestedModelId.startsWith("claude-")
+        ? "anthropic"
+        : "openai";
+      let prior: ModelMessage[] = Array.isArray(runtime.vercelMessages)
+        ? (runtime.vercelMessages as ModelMessage[])
+        : [];
+      if (
+        runtime.vercelLastProvider &&
+        runtime.vercelLastProvider !== currentProvider &&
+        prior.length > 0
+      ) {
+        prior = [];
+        runtime.vercelMessages = [];
+        onEvent({
+          type: "tool_log",
+          log: {
+            name: "vercel: provider switch",
+            input: {
+              from: runtime.vercelLastProvider,
+              to: currentProvider,
+            },
+            output: "message history reset (tool-call shapes differ across providers)",
+          },
+        });
+      }
+      runtime.vercelLastProvider = currentProvider;
+      await runVercel({
+        prompt: text,
+        cwd: session.cwd,
+        priorMessages: prior,
+        model: session.models.vercel,
+        systemPromptAppend: ADVERSARIA_SYSTEM_PROMPT_APPEND,
+        signal: abort.signal,
+        sessionId,
+        permissionMode: session.claudeMode,
+        permissions,
+        allowRules: permissions.list(),
+        depth: 0,
+        onEvent,
+        onRaw: (raw) => sessions.logRaw(sessionId, asst.id, "vercel", raw),
+        onMessages: (msgs) => {
+          runtime.vercelMessages = msgs;
+          sessions.logRuntime(sessionId, "vercelMessages", msgs.length);
+          sessions.markDirty();
+        },
+      });
     }
   } catch (err) {
     onEvent({
@@ -737,6 +756,260 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
     unregisterTaskEmitter(sessionId);
     sessions.finishMessage(sessionId, asst.id);
   }
+}
+
+// /consensus turn — drives the adversarial planning protocol and emits a
+// `consensus_ready` server message when both rounds settle. Mirrors runTurn's
+// lifecycle (user message + assistant message, peer-event forwarding, abort
+// wiring) but doesn't invoke a runner SDK directly — it just orchestrates
+// peers via startSubtaskRun. The assistant message hosts the round
+// breakdown as folded tool cards; the consensus_ready broadcast is what the
+// TUI uses to actually mount the decision modal.
+// Default per-peer turn budget when the client doesn't pass one. Eight is
+// "read 4-5 files + reason + write a draft" — enough for an agent to
+// actually ground in the repo before writing, tight enough that a peer
+// can't burn 80 tool calls before producing one. Drafts written without
+// repo grounding are easy for the critic to shred, so giving them this
+// room is worth more than the marginal token cost.
+// No default per-peer turn cap. The SDK counts every assistant turn —
+// including tool-call turns — so a default like 8 burns through with 3-4
+// Read/Grep/Globs before the agent writes the actual draft. The real
+// bounds for consensus rounds are already in place:
+//   - allowedTools: ["Read", "Grep", "Glob"] + permissionMode: "dontAsk"
+//     (no destructive ops — a peer can't loop on Edit/Bash/ExitPlanMode)
+//   - timeoutSec wall-clock per call
+//   - maxRounds bounds the actor/critic conversation
+// `max=N` from the slash command is opt-in only; we clamp to the ceiling
+// to keep a typo (max=9999) from asking the SDK for runaway exploration.
+const CONSENSUS_MAX_TURNS_CEILING = 60;
+
+const CONSENSUS_DEFAULT_MAX_ROUNDS = 6;
+const CONSENSUS_MAX_ROUNDS_CEILING = 12;
+
+async function runConsensusTurn(
+  sessionId: string,
+  task: string,
+  opts: {
+    maxTurnsPerPeer?: number;
+    maxRounds?: number;
+    producer?: RunnerKind;
+  },
+): Promise<void> {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    sessions.broadcast({
+      type: "error",
+      sessionId,
+      message: `unknown session: ${sessionId}`,
+    });
+    return;
+  }
+
+  // Actor/critic is a claude↔codex pair protocol. Vercel doesn't carry
+  // priorMessages across startSubtaskRun calls yet, so it can't continue
+  // its own conversation across iterations — that breaks the "talking to
+  // each other" premise. Reject early instead of silently swapping the
+  // active runner.
+  if (session.activeRunner === "vercel") {
+    sessions.broadcast({
+      type: "error",
+      sessionId,
+      message:
+        "/consensus is not available for the vercel runner. Switch to claude or codex first (/claude or /codex), then re-run.",
+    });
+    return;
+  }
+  const eligible: RunnerKind[] = ["claude", "codex"];
+  if (opts.producer && !eligible.includes(opts.producer)) {
+    sessions.broadcast({
+      type: "error",
+      sessionId,
+      message: `/consensus producer must be claude or codex (got: ${opts.producer})`,
+    });
+    return;
+  }
+  const producer: RunnerKind = opts.producer ?? session.activeRunner;
+  const critic: RunnerKind = producer === "claude" ? "codex" : "claude";
+
+  sessions.startMessage(sessionId, "user", `/consensus ${task}`);
+  const asst = sessions.startMessage(sessionId, "assistant", "");
+  if (!asst) return;
+
+  const onEvent = (event: RunEvent): void => {
+    sessions.appendEvent(sessionId, asst.id, event);
+  };
+
+  const abort = new AbortController();
+  turnAborts.get(sessionId)?.abort();
+  turnAborts.set(sessionId, abort);
+  // Aborting the parent turn cascades to every in-flight peer call so
+  // interrupt / takeover actually kills the loop mid-iteration. Without
+  // this the abort just marks the signal — the peer that's mid-call keeps
+  // running and streams into a dead message.
+  abort.signal.addEventListener("abort", () => {
+    cancelRunsForSession(sessionId);
+  });
+
+  const forwardPeerEvent = buildPeerEventForwarder(onEvent);
+  const onStatsChange = (stats: DelegationStats): void => {
+    sessions.setDelegations(sessionId, stats);
+  };
+
+  const turnsClamped: number | undefined =
+    typeof opts.maxTurnsPerPeer === "number" && opts.maxTurnsPerPeer > 0
+      ? Math.min(opts.maxTurnsPerPeer, CONSENSUS_MAX_TURNS_CEILING)
+      : undefined;
+  const roundsRequested =
+    typeof opts.maxRounds === "number" && opts.maxRounds > 0
+      ? opts.maxRounds
+      : CONSENSUS_DEFAULT_MAX_ROUNDS;
+  const roundsClamped = Math.min(roundsRequested, CONSENSUS_MAX_ROUNDS_CEILING);
+
+  try {
+    onEvent({
+      type: "tool_log",
+      log: {
+        id: "consensus:header",
+        name: "consensus",
+        output:
+          `Actor/critic loop. PRODUCER=${producer}, CRITIC=${critic}. ` +
+          `Max ${roundsClamped} iterations, ` +
+          (turnsClamped !== undefined
+            ? `${turnsClamped} tool turns per peer per iteration`
+            : `no per-peer turn cap (pass max=N to set one)`) +
+          `. Loop ends when the critic emits AGREE.`,
+      },
+    });
+
+    const result = await runConsensus(task, {
+      parentSessionId: sessionId,
+      parentCwd: session.cwd,
+      pair: { producer, critic },
+      depth: 0,
+      timeoutSec: 240,
+      maxTurnsPerPeer: turnsClamped,
+      maxRounds: roundsClamped,
+      signal: abort.signal,
+      onPeerEvent: forwardPeerEvent,
+    });
+
+    if (abort.signal.aborted) {
+      onEvent({
+        type: "tool_log",
+        log: {
+          id: "consensus:footer",
+          name: "consensus",
+          output: "Consensus loop cancelled.",
+        },
+      });
+      return;
+    }
+
+    for (const err of result.errors) {
+      onEvent({ type: "error", message: err });
+    }
+
+    const ready: ConsensusReady = {
+      sessionId,
+      messageId: asst.id,
+      task,
+      producer,
+      critic,
+      iterations: result.iterations,
+      finalDraft: result.finalDraft,
+      converged: result.converged,
+      // The producer wrote the converged draft, so they're the natural pick
+      // for the implementer turn. User can override in the modal.
+      suggestedRunner: producer,
+    };
+    setConsensusReady(ready);
+
+    onEvent({
+      type: "tool_log",
+      log: {
+        id: "consensus:footer",
+        name: "consensus",
+        output: result.converged
+          ? `Converged after ${result.iterations.length} iteration(s). Critic agreed. Awaiting your implementer choice.`
+          : `Hit max rounds (${roundsClamped}) without agreement. Producer's latest draft is the candidate; critic still had concerns.`,
+      },
+    });
+    sessions.broadcast({ type: "consensus_ready", ready });
+  } catch (err) {
+    onEvent({
+      type: "error",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    if (turnAborts.get(sessionId) === abort) turnAborts.delete(sessionId);
+    sessions.finishMessage(sessionId, asst.id);
+  }
+}
+
+async function handleConsensusAction(
+  msg: Extract<ClientMsg, { type: "consensus_action" }>,
+): Promise<void> {
+  const ready = getConsensusReady(msg.sessionId);
+  if (!ready) {
+    sessions.broadcast({
+      type: "error",
+      sessionId: msg.sessionId,
+      message: "no consensus plan is awaiting a decision",
+    });
+    return;
+  }
+
+  if (msg.action === "cancel") {
+    clearConsensusReady(msg.sessionId);
+    sessions.broadcast({
+      type: "consensus_cleared",
+      sessionId: msg.sessionId,
+    });
+    return;
+    return;
+  }
+
+  // action === "implement"
+  if (!msg.runner) {
+    sessions.broadcast({
+      type: "error",
+      sessionId: msg.sessionId,
+      message: "implement action requires a runner",
+    });
+    return;
+  }
+  const plan = msg.plan?.trim();
+  if (!plan) {
+    sessions.broadcast({
+      type: "error",
+      sessionId: msg.sessionId,
+      message: "implement action requires a plan",
+    });
+    return;
+  }
+
+  // Switch runner if the user picked the non-active one. Same path as
+  // /claude or /codex from the TUI — sets activeRunner on the session.
+  const session = sessions.get(msg.sessionId);
+  if (session && session.activeRunner !== msg.runner) {
+    sessions.setRunner(msg.sessionId, msg.runner);
+  }
+
+  clearConsensusReady(msg.sessionId);
+  sessions.broadcast({
+    type: "consensus_cleared",
+    sessionId: msg.sessionId,
+  });
+
+  const implementationPrompt = [
+    "Implement the following. It was produced by an actor/critic loop",
+    "between you and a peer agent and approved by the user — treat it as",
+    "the agreed deliverable. If it's code, apply it. If it's a design,",
+    "execute it.",
+    "",
+    plan,
+  ].join("\n");
+  await runTurn(msg.sessionId, implementationPrompt);
 }
 
 // Build the `updatedInput` payload the SDK requires when the AskUserQuestion

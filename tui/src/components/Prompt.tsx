@@ -141,8 +141,10 @@ export function Prompt({
     }
 
     if (!completions.active && !slash.active) {
-      if (key.name === "up") return history.movePrev();
-      if (key.name === "down") return history.moveNext();
+      // shift+up / shift+down are reserved for the App-level tool-card
+      // selection navigator — skip them so history doesn't also move.
+      if (key.name === "up" && !key.shift) return history.movePrev();
+      if (key.name === "down" && !key.shift) return history.moveNext();
     }
   });
 
@@ -240,7 +242,13 @@ export function Prompt({
             <>
               <text fg={theme.textFaint}>{"["}</text>
               <text
-                fg={runner === "claude" ? theme.toolBash : theme.toolWeb}
+                fg={
+                  runner === "claude"
+                    ? theme.toolBash
+                    : runner === "codex"
+                      ? theme.toolWeb
+                      : theme.runnerVercel
+                }
                 attributes={TextAttributes.BOLD}
               >
                 {runner}
@@ -306,7 +314,9 @@ function DelegationRow({ stats }: { stats: DelegationStats | null }) {
         ? theme.runnerClaude
         : stats.activePeer === "codex"
           ? theme.runnerCodex
-          : theme.text,
+          : stats.activePeer === "vercel"
+            ? theme.runnerVercel
+            : theme.text,
     });
   }
   if (stats.ok > 0) {

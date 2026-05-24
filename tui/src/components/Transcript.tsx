@@ -4,6 +4,7 @@ import type { Session, SessionMessage } from "../../../shared/events.ts";
 import { ToolCard } from "./ToolCard";
 import { TaskCard } from "./TaskCard";
 import { NoticeCard } from "./NoticeCard";
+import { StatusDot } from "./StatusDot";
 import { Welcome } from "./Welcome";
 import { theme } from "../theme";
 import { markdownStyle } from "../markdown-style";
@@ -20,18 +21,19 @@ import {
   type Block,
   type GroupedBlock,
 } from "../util/blocks";
-import { useBlinkFrame } from "../util/spinner";
 
 export function Transcript({
   session,
   notices,
-  expandedDelegations,
-  latestDelegationId,
+  selectedToolId,
+  expandedTools,
+  onToolActivate,
 }: {
   session: Session | null;
   notices: Notice[];
-  expandedDelegations: Set<string>;
-  latestDelegationId: string | null;
+  selectedToolId: string | null;
+  expandedTools: Set<string>;
+  onToolActivate?: (toolId: string) => void;
 }) {
   if (!session) {
     return <Welcome />;
@@ -99,8 +101,18 @@ export function Transcript({
           <Message
             key={e.message.id}
             message={e.message}
-            expandedDelegations={expandedDelegations}
-            latestDelegationId={latestDelegationId}
+            // Only the last assistant message can legitimately host a still-
+            // running peer group. Earlier messages are settled; any trailing
+            // peer events with no anchor on those represent runs that were
+            // killed mid-call (server crashed, app closed, /clear races).
+            // groupDelegations uses this to decide whether to synthesize the
+            // "working…" pending header or just render the peer events plain.
+            messageStreaming={
+              session.streaming && e.message.id === lastMsg?.id
+            }
+            selectedToolId={selectedToolId}
+            expandedTools={expandedTools}
+            onToolActivate={onToolActivate}
           />
         ) : (
           <NoticeCard key={e.notice.id} notice={e.notice} />
@@ -112,19 +124,25 @@ export function Transcript({
 
 function Message({
   message,
-  expandedDelegations,
-  latestDelegationId,
+  messageStreaming,
+  selectedToolId,
+  expandedTools,
+  onToolActivate,
 }: {
   message: SessionMessage;
-  expandedDelegations: Set<string>;
-  latestDelegationId: string | null;
+  messageStreaming: boolean;
+  selectedToolId: string | null;
+  expandedTools: Set<string>;
+  onToolActivate?: (toolId: string) => void;
 }) {
   if (message.role === "user") return <UserMessage message={message} />;
   return (
     <AssistantMessage
       message={message}
-      expandedDelegations={expandedDelegations}
-      latestDelegationId={latestDelegationId}
+      messageStreaming={messageStreaming}
+      selectedToolId={selectedToolId}
+      expandedTools={expandedTools}
+      onToolActivate={onToolActivate}
     />
   );
 }
@@ -148,15 +166,19 @@ function UserMessage({ message }: { message: SessionMessage }) {
 
 function AssistantMessage({
   message,
-  expandedDelegations,
-  latestDelegationId,
+  messageStreaming,
+  selectedToolId,
+  expandedTools,
+  onToolActivate,
 }: {
   message: SessionMessage;
-  expandedDelegations: Set<string>;
-  latestDelegationId: string | null;
+  messageStreaming: boolean;
+  selectedToolId: string | null;
+  expandedTools: Set<string>;
+  onToolActivate?: (toolId: string) => void;
 }) {
   const blocks = blocksFromEvents(message.events);
-  const grouped = groupDelegations(blocks, message.id);
+  const grouped = groupDelegations(blocks, message.id, messageStreaming);
 
   if (grouped.length === 0) {
     return (
@@ -174,20 +196,41 @@ function AssistantMessage({
     <box flexDirection="column" marginTop={1}>
       {grouped.map((g, gi) => {
         if (g.kind === "delegation_group") {
+          const isSelected = g.id === selectedToolId;
+          const isExpanded = expandedTools.has(g.id);
+          const hint = isSelected
+            ? isExpanded
+              ? "click or ctrl+e to collapse"
+              : "click or ctrl+e to expand"
+            : null;
           return (
             <DelegationGroup
               key={`g-${g.id}`}
               group={g}
-              expanded={expandedDelegations.has(g.id)}
-              isLatest={g.id === latestDelegationId}
+              selected={isSelected}
+              expanded={isExpanded}
+              hint={hint}
+              onActivate={onToolActivate ? () => onToolActivate(g.id) : undefined}
             />
           );
         }
+        const toolId = `${message.id}:${g.index}`;
+        const isToolSelected =
+          g.block.kind === "tool" && toolId === selectedToolId;
+        const isToolExpanded =
+          g.block.kind === "tool" && expandedTools.has(toolId);
         return (
           <BlockRow
             key={`b-${g.index}`}
             block={g.block}
             firstInMessage={gi === 0}
+            toolSelected={isToolSelected}
+            toolExpanded={isToolExpanded}
+            onToolActivate={
+              g.block.kind === "tool" && onToolActivate
+                ? () => onToolActivate(toolId)
+                : undefined
+            }
           />
         );
       })}
@@ -202,14 +245,33 @@ function AssistantMessage({
 function BlockRow({
   block,
   firstInMessage,
+  toolSelected = false,
+  toolExpanded = false,
+  onToolActivate,
 }: {
   block: Block;
   firstInMessage: boolean;
+  toolSelected?: boolean;
+  toolExpanded?: boolean;
+  onToolActivate?: () => void;
 }) {
   if (block.kind === "tool") {
     const bare = stripMcpPrefix(stripPeerPrefix(block.log.name).rest);
     if (bare === "task") return <TaskCard log={block.log} />;
-    return <ToolCard log={block.log} />;
+    const hint = toolSelected
+      ? toolExpanded
+        ? "click or ctrl+e to collapse"
+        : "click or ctrl+e to expand"
+      : null;
+    return (
+      <ToolCard
+        log={block.log}
+        selected={toolSelected}
+        expanded={toolExpanded}
+        hint={hint}
+        onActivate={onToolActivate}
+      />
+    );
   }
   if (block.kind === "error") {
     return (
@@ -275,14 +337,22 @@ function BlockRow({
 // Pending mode lets the group materialize the moment the first peer event
 // arrives so the transcript doesn't reshuffle when the delegate_run anchor
 // finally lands at the end of the MCP body.
+//
+// Mirrors ToolCard's selected/expanded/hint/onActivate API so delegations
+// participate in the same shift+up/down navigation, click-to-expand, and
+// border highlight as regular tool cards.
 function DelegationGroup({
   group,
+  selected,
   expanded,
-  isLatest,
+  hint,
+  onActivate,
 }: {
   group: Extract<GroupedBlock, { kind: "delegation_group" }>;
+  selected: boolean;
   expanded: boolean;
-  isLatest: boolean;
+  hint: string | null;
+  onActivate?: () => void;
 }) {
   const isPending = group.header === null;
   const stats = childStats(group.children);
@@ -297,15 +367,17 @@ function DelegationGroup({
     !isPending && group.tag === "validate"
       ? extractVerdict(group.header)
       : null;
-  // Same "ctrl+x to <action>" hint style as the prompt footer chips.
-  const hint = isLatest
-    ? expanded
-      ? "ctrl+e to collapse"
-      : "ctrl+e to expand"
-    : null;
 
   return (
-    <box flexDirection="column">
+    <box
+      flexDirection="column"
+      paddingLeft={selected ? 0 : 1}
+      marginTop={1}
+      border={selected ? ["left"] : undefined}
+      borderStyle={selected ? "single" : undefined}
+      borderColor={selected ? theme.borderFocused : undefined}
+      onMouseDown={onActivate ? () => onActivate() : undefined}
+    >
       {isPending ? (
         <PendingHeader
           tag={group.tag}
@@ -315,7 +387,7 @@ function DelegationGroup({
           replyChars={stats.replyChars}
         />
       ) : (
-        <ToolCard log={group.header!} />
+        <ToolCard log={group.header!} nested />
       )}
       {hasChildren && !expanded && !isPending && (
         <box flexDirection="column" paddingLeft={3} paddingRight={1}>
@@ -338,13 +410,7 @@ function DelegationGroup({
           )}
           <box flexDirection="row">
             <text fg={theme.textFaint}>{collapsedSummary(toolCount, stats.replyChars)}</text>
-            {hint && <text fg={theme.textFaint}>{`  ·  ${hint}`}</text>}
           </box>
-        </box>
-      )}
-      {hasChildren && !expanded && isPending && hint && (
-        <box flexDirection="row" paddingLeft={3}>
-          <text fg={theme.textFaint}>{hint}</text>
         </box>
       )}
       {hasChildren && expanded && (
@@ -352,11 +418,12 @@ function DelegationGroup({
           {group.children.map((b, i) => (
             <BlockRow key={`gc-${group.id}-${i}`} block={b} firstInMessage={false} />
           ))}
-          {hint && (
-            <box flexDirection="row" paddingLeft={1}>
-              <text fg={theme.textFaint}>{`  ${hint}`}</text>
-            </box>
-          )}
+        </box>
+      )}
+      {selected && hint && (
+        <box flexDirection="row">
+          <text fg={theme.textFaint}>{"  "}</text>
+          <text fg={theme.textFaint}>{hint}</text>
         </box>
       )}
     </box>
@@ -364,9 +431,10 @@ function DelegationGroup({
 }
 
 // Synthetic header used while the MCP body hasn't returned yet. Drawn in the
-// same `• [runner] verb` shape as a ToolCard so the visual rhythm matches the
-// completed-group rendering — only the trailing meta swaps in live counters
-// and an animated braille frame.
+// same `<StatusDot> [runner] verb` shape as a ToolCard so the visual rhythm
+// matches the completed-group rendering — only the trailing meta swaps in live
+// counters. The blinking dot is the leading StatusDot itself (status=running)
+// so the activity indicator sits in the same column as every other tool card.
 function PendingHeader({
   tag,
   runner,
@@ -380,23 +448,21 @@ function PendingHeader({
   lastSummary: string | null;
   replyChars: number;
 }) {
-  const blink = useBlinkFrame(true);
   const peer = runner ?? "peer";
   const meta: string[] = [];
   meta.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
   if (replyChars > 0) meta.push(`${formatChars(replyChars)} reply`);
   const label = tag === "validate" ? "validate" : "delegate";
-  const verb = tag === "validate" ? "  validating…" : "  working…";
+  const verb = tag === "validate" ? " validating…" : " working…";
   // Sage for validate so it reads as review/safety; mauve toolTask for delegate work.
   const accent = tag === "validate" ? theme.toolEdit : theme.toolTask;
   return (
-    <box flexDirection="column" paddingLeft={1} paddingRight={1} marginTop={1}>
+    <box flexDirection="column" paddingRight={1}>
       <box flexDirection="row">
-        <text fg={theme.textMuted}>{"• "}</text>
+        <StatusDot status="running" />
+        <text fg={theme.text}>{" "}</text>
         <text fg={peerColor(peer)} attributes={TextAttributes.BOLD}>{`[${peer}] `}</text>
         <text fg={accent} attributes={TextAttributes.BOLD}>{label}</text>
-        <text fg={theme.textFaint}>{"  "}</text>
-        <text fg={peerColor(peer)}>{blink}</text>
         <text fg={theme.textMuted}>{verb}</text>
       </box>
       <box flexDirection="row">
@@ -509,6 +575,7 @@ function PeerReply({
 function peerColor(runner: string): string {
   if (runner === "claude") return theme.runnerClaude;
   if (runner === "codex") return theme.runnerCodex;
+  if (runner === "vercel") return theme.runnerVercel;
   return theme.textMuted;
 }
 

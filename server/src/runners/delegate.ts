@@ -26,12 +26,14 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import type {
+  ClaudePermissionMode,
   DelegationStats,
   RunEvent,
   RunnerKind,
 } from "../../../shared/events.js";
 import { runClaude } from "./claude.js";
 import { runCodex } from "./codex.js";
+import { runVercel } from "./vercel.js";
 import { executeValidate } from "./validate.js";
 import {
   awaitTask,
@@ -153,7 +155,18 @@ export type DelegateContext = {
 };
 
 function startRun(
-  args: { runner: RunnerKind; prompt: string; sessionId?: string },
+  args: {
+    runner: RunnerKind;
+    prompt: string;
+    sessionId?: string;
+    claudePermissionMode?: ClaudePermissionMode | "dontAsk";
+    // Per-call turn budgets. Forwarded to the underlying runner when set.
+    // Used by /consensus rounds to cap exploration; ignored for free-form
+    // peer runs from delegate_run / validate_run.
+    claudeMaxTurns?: number;
+    claudeAllowedTools?: string[];
+    vercelMaxSteps?: number;
+  },
   ctx: DelegateContext,
 ): DelegateRunRecord {
   const abort = new AbortController();
@@ -186,12 +199,15 @@ function startRun(
           cwd: ctx.parentCwd,
           resumeId: args.sessionId,
           abortController: abort,
+          permissionMode: args.claudePermissionMode,
+          maxTurns: args.claudeMaxTurns,
+          allowedTools: args.claudeAllowedTools,
           onEvent,
           onResumeId: (id) => {
             if (id) record.sessionId = id;
           },
         });
-      } else {
+      } else if (args.runner === "codex") {
         await runCodex({
           prompt: args.prompt,
           cwd: ctx.parentCwd,
@@ -200,6 +216,28 @@ function startRun(
           onEvent,
           onThreadId: (id) => {
             if (id) record.sessionId = id;
+          },
+        });
+      } else {
+        // Vercel peers: no session resume (streamText is stateless and we
+        // don't carry per-peer message state across delegate_run boundaries),
+        // no PermissionStore (peer parent already gated). The peer runs in
+        // its own ephemeral conversation.
+        await runVercel({
+          prompt: args.prompt,
+          cwd: ctx.parentCwd,
+          priorMessages: [],
+          signal: abort.signal,
+          sessionId: ctx.parentSessionId,
+          permissionMode: "bypassPermissions",
+          maxSteps: args.vercelMaxSteps,
+          // Mark as peer-spawned so the runner skips orchestrator tools +
+          // user MCP — peers can't fan out further or talk to user MCP
+          // servers, matches the gate Claude uses for its peer runs.
+          depth: Math.max(1, ctx.depth + 1),
+          onEvent,
+          onMessages: () => {
+            // Discarded — peer messages don't outlive the run.
           },
         });
       }
@@ -354,6 +392,19 @@ export type StartSubtaskRunArgs = {
   parentSessionId: string;
   parentCwd: string;
   depth: number;
+  // Forwarded to runClaude. Ignored when runner !== "claude". /consensus
+  // uses "dontAsk" together with claudeAllowedTools to lock peers down to
+  // read-only exploration; free-form delegations leave it unset.
+  claudePermissionMode?: ClaudePermissionMode | "dontAsk";
+  // Per-call turn budget for claude peers. /consensus sets a tight cap
+  // (e.g. 5) so a peer can't burn 80 tool calls on one round.
+  claudeMaxTurns?: number;
+  // Whitelist of tool names the claude peer is allowed to invoke. Combined
+  // with claudePermissionMode="dontAsk", anything else is silently denied.
+  claudeAllowedTools?: string[];
+  // Per-call step budget for vercel peers. Overrides the runtime's
+  // VERCEL_MAX_STEPS default when set.
+  vercelMaxSteps?: number;
   onPeerEvent?: (record: DelegateRunRecord, event: RunEvent) => void;
   onStatsChange?: (stats: DelegationStats) => void;
 };
@@ -369,6 +420,10 @@ export function startSubtaskRun(
       runner: args.runner,
       prompt: args.prompt,
       sessionId: args.sessionId,
+      claudePermissionMode: args.claudePermissionMode,
+      claudeMaxTurns: args.claudeMaxTurns,
+      claudeAllowedTools: args.claudeAllowedTools,
+      vercelMaxSteps: args.vercelMaxSteps,
     },
     {
       parentRunner: args.parentRunner,
@@ -464,7 +519,7 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
           "Set wait=false to return immediately with a runId you can poll via get_run.",
         {
           profileName: z
-            .enum(["claude", "codex"])
+            .enum(["claude", "codex", "vercel"])
             .describe("Which peer agent to spawn (the other one — cannot delegate to self)"),
           prompt: z.string().min(1).describe("Natural-language task for the peer agent"),
           sessionId: z
@@ -524,7 +579,7 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
           "needs_changes as work to do.",
         {
           peer: z
-            .enum(["claude", "codex"])
+            .enum(["claude", "codex", "vercel"])
             .optional()
             .describe(
               "Which peer to use as the reviewer. Defaults to the other runner (the cross-pair). " +
@@ -612,7 +667,7 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
             .array(
               z.object({
                 runner: z
-                  .enum(["claude", "codex"])
+                  .enum(["claude", "codex", "vercel"])
                   .describe("Which peer agent runs this SubTask"),
                 prompt: z.string().min(1).describe("Natural-language task for the peer"),
                 sessionId: z

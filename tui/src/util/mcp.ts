@@ -38,19 +38,32 @@ function runCli(binary: string, args: string[]): CliOutcome {
   };
 }
 
-function binaryFor(runner: RunnerKind): string {
-  return runner === "claude" ? "claude" : "codex";
+function binaryFor(runner: RunnerKind): string | null {
+  if (runner === "claude") return "claude";
+  if (runner === "codex") return "codex";
+  return null;
 }
 
+const VERCEL_UNSUPPORTED: CliOutcome = {
+  ok: false,
+  stdout: "",
+  stderr: "",
+  errorReason: "the vercel runner has no MCP CLI — switch to /claude or /codex for /mcp",
+};
+
 export function listMcp(runner: RunnerKind): CliOutcome {
-  return runCli(binaryFor(runner), ["mcp", "list"]);
+  const bin = binaryFor(runner);
+  if (!bin) return VERCEL_UNSUPPORTED;
+  return runCli(bin, ["mcp", "list"]);
 }
 
 export function removeMcp(runner: RunnerKind, name: string): CliOutcome {
+  const bin = binaryFor(runner);
+  if (!bin) return VERCEL_UNSUPPORTED;
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     return { ok: false, stdout: "", stderr: "", errorReason: `invalid name: ${name}` };
   }
-  return runCli(binaryFor(runner), ["mcp", "remove", name]);
+  return runCli(bin, ["mcp", "remove", name]);
 }
 
 // Add a stdio MCP server. Both CLIs accept `<name> -- <cmd> [args...]`.
@@ -62,6 +75,8 @@ export function addMcp(
   command: string,
   args: string[],
 ): CliOutcome {
+  const bin = binaryFor(runner);
+  if (!bin) return VERCEL_UNSUPPORTED;
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     return { ok: false, stdout: "", stderr: "", errorReason: `invalid name: ${name}` };
   }
@@ -72,10 +87,12 @@ export function addMcp(
 }
 
 export function getMcp(runner: RunnerKind, name: string): CliOutcome {
+  const bin = binaryFor(runner);
+  if (!bin) return VERCEL_UNSUPPORTED;
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     return { ok: false, stdout: "", stderr: "", errorReason: `invalid name: ${name}` };
   }
-  return runCli(binaryFor(runner), ["mcp", "get", name]);
+  return runCli(bin, ["mcp", "get", name]);
 }
 
 export type McpTestResult = {

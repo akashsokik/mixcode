@@ -38,7 +38,11 @@ export function prettyModelLabel(
   modelId: string | undefined,
   runner: RunnerKind,
 ): string {
-  if (!modelId) return runner === "claude" ? "Claude (default)" : "Codex (default)";
+  if (!modelId) {
+    if (runner === "claude") return "Claude (default)";
+    if (runner === "codex") return "Codex (default)";
+    return "Vercel (gpt-4o)";
+  }
   const id = modelId.toLowerCase();
 
   if (id.startsWith("claude-")) {
@@ -61,6 +65,8 @@ export function prettyModelLabel(
     if (id === "gpt-5-codex") return "GPT-5 Codex";
     if (id === "gpt-5-mini") return "GPT-5 Mini";
     if (id === "gpt-5") return "GPT-5";
+    if (id === "gpt-4o") return "GPT-4o";
+    if (id === "gpt-4o-mini") return "GPT-4o Mini";
     return modelId;
   }
 
@@ -74,9 +80,17 @@ export function contextLimit(
   runner: RunnerKind,
 ): number {
   const id = (modelId ?? "").toLowerCase();
-  if (id.includes("1m") || id.includes("[1m]")) return 1_000_000;
+  // The [1m] context-window selector is a Claude SDK feature — only the
+  // claude runner actually enables 1M context for it. Vercel and codex
+  // sessions reading the same id get the base 200K window.
+  if ((id.includes("1m") || id.includes("[1m]")) && runner === "claude") {
+    return 1_000_000;
+  }
   if (id.startsWith("gpt-5")) return 400_000;
+  if (id.startsWith("gpt-4o")) return 128_000;
+  if (id.startsWith("claude-")) return 200_000;
   if (runner === "claude") return 200_000;
+  if (runner === "vercel") return 128_000;
   return 200_000;
 }
 

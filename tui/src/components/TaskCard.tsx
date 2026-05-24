@@ -134,6 +134,7 @@ function colorForTaskStatus(s: string): string {
 function runnerColor(runner: string): string {
   if (runner === "claude") return theme.runnerClaude;
   if (runner === "codex") return theme.runnerCodex;
+  if (runner === "vercel") return theme.runnerVercel;
   return theme.textMuted;
 }
 

@@ -49,6 +49,10 @@ export const theme = {
   runnerClaudeIdle: "#506b48",
   runnerCodex: "#e0b878",
   runnerCodexIdle: "#6b5638",
+  // Vercel AI SDK runner — teal sits between the green/amber pair without
+  // colliding with the slate/mauve already used for tool accents.
+  runnerVercel: "#7ac8c8",
+  runnerVercelIdle: "#3e6868",
 
   // Dirty-worktree marker. Distinct enough from both runner hues that it
   // doesn't get confused with the codex amber on a codex session.

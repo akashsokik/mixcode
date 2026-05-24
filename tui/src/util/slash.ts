@@ -56,12 +56,20 @@ export type McpAction =
 export type SlashCommand =
   | { type: "claude"; rest: string }
   | { type: "codex"; rest: string }
+  | { type: "vercel"; rest: string }
   | { type: "switch"; rest: string }
   | { type: "clear"; rest: string }
   | { type: "help"; rest: string }
   | { type: "context"; rest: string }
   | { type: "sessions"; rest: string }
   | { type: "tree"; rest: string }
+  | {
+      type: "consensus";
+      task: string;
+      maxTurnsPerPeer?: number;
+      maxRounds?: number;
+      producer?: RunnerKind;
+    }
   | { type: "permissions"; action: PermissionsAction }
   | { type: "model"; action: ModelAction }
   | { type: "plan"; action: PlanAction }
@@ -86,6 +94,8 @@ export function parseSlash(text: string): SlashCommand | null {
       return { type: "claude", rest };
     case "codex":
       return { type: "codex", rest };
+    case "vercel":
+      return { type: "vercel", rest };
     case "switch":
       return { type: "switch", rest };
     case "clear":
@@ -102,6 +112,9 @@ export function parseSlash(text: string): SlashCommand | null {
     case "tree":
     case "ls":
       return { type: "tree", rest };
+    case "consensus":
+    case "adversarial":
+      return parseConsensus(rest);
     case "permissions":
     case "perms":
       return { type: "permissions", action: parsePermissionsAction(rest) };
@@ -195,7 +208,7 @@ function parseModelAction(rest: string): ModelAction {
   if (first === "reset" || first === "clear") {
     return { kind: "reset" };
   }
-  if (first === "claude" || first === "codex") {
+  if (first === "claude" || first === "codex" || first === "vercel") {
     const tail = tokens.slice(1).join(" ").trim();
     if (!tail || tail.toLowerCase() === "reset" || tail.toLowerCase() === "clear") {
       return { kind: "resetRunner", runner: first };
@@ -203,6 +216,52 @@ function parseModelAction(rest: string): ModelAction {
     return { kind: "setRunner", runner: first, model: tail };
   }
   return { kind: "set", model: rest.trim() };
+}
+
+// /consensus grammar:
+//   /consensus <task>
+//   /consensus [max=N] [rounds=N] [producer=claude|codex] <task>
+// Flags are space-separated, appear in any order, must come before the
+// task text. Unknown / malformed flags are silently dropped (the bare task
+// form still works).
+const CONSENSUS_FLAG = /^(max|rounds|producer)=([\w-]+)\s+/i;
+
+function parseConsensus(rest: string): {
+  type: "consensus";
+  task: string;
+  maxTurnsPerPeer?: number;
+  maxRounds?: number;
+  producer?: RunnerKind;
+} {
+  let remaining = rest;
+  let maxTurnsPerPeer: number | undefined;
+  let maxRounds: number | undefined;
+  let producer: RunnerKind | undefined;
+
+  while (true) {
+    const m = remaining.match(CONSENSUS_FLAG);
+    if (!m) break;
+    const key = m[1].toLowerCase();
+    const val = m[2];
+    if (key === "max") {
+      const n = Number.parseInt(val, 10);
+      if (Number.isFinite(n) && n > 0) maxTurnsPerPeer = n;
+    } else if (key === "rounds") {
+      const n = Number.parseInt(val, 10);
+      if (Number.isFinite(n) && n > 0) maxRounds = n;
+    } else if (key === "producer") {
+      const v = val.toLowerCase();
+      if (v === "claude" || v === "codex") producer = v;
+    }
+    remaining = remaining.slice(m[0].length);
+  }
+  return {
+    type: "consensus",
+    task: remaining.trim(),
+    maxTurnsPerPeer,
+    maxRounds,
+    producer,
+  };
 }
 
 function parsePermissionsAction(rest: string): PermissionsAction {
@@ -225,19 +284,26 @@ function parsePermissionsAction(rest: string): PermissionsAction {
   }
 }
 
+// Three-way cycle: claude → codex → vercel → claude. Used by /switch and the
+// runner-toggle keybinding so users can rotate through every harness without
+// memorising the explicit /claude /codex /vercel forms.
 export function toggleRunner(current: RunnerKind): RunnerKind {
-  return current === "claude" ? "codex" : "claude";
+  if (current === "claude") return "codex";
+  if (current === "codex") return "vercel";
+  return "claude";
 }
 
 export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/claude [text]", help: "switch active runner to Claude (and optionally send)" },
   { name: "/codex [text]", help: "switch active runner to Codex (and optionally send)" },
-  { name: "/switch [text]", help: "toggle between Claude and Codex" },
+  { name: "/vercel [text]", help: "switch active runner to Vercel AI SDK (and optionally send)" },
+  { name: "/switch [text]", help: "cycle runner: claude → codex → vercel" },
   { name: "/clear", help: "start a fresh session and drop the current one" },
   { name: "/help", help: "show this help" },
   { name: "/context", help: "show session info: runner, cwd, tokens, messages" },
   { name: "/sessions", help: "list all sessions with runner, cwd, message count" },
   { name: "/tree [depth]", help: "show project tree of the session's cwd (default depth 3)" },
+  { name: "/consensus <task>", help: "actor/critic loop (claude↔codex); /consensus with no args for flags" },
   { name: "/permissions [add|remove|clear]", help: "manage Claude tool-permission rules (Claude only)" },
   { name: "/model [show | <name> | <runner> <name> | reset]", help: "open model picker for active runner; show prints status; <name> sets directly" },
   { name: "/plan [on|off]", help: "plan-only mode — model proposes a plan, no tools run (Claude only)" },

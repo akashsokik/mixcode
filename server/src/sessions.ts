@@ -19,6 +19,16 @@ import { TranscriptLogger } from "./transcript.js";
 type SessionRuntime = {
   claudeSessionId?: string;
   codexThreadId?: string;
+  // Vercel AI SDK has no server-side thread/session resume — we store the
+  // running ModelMessage[] here so the next turn can pass them back to
+  // streamText. Plain unknown[] to avoid coupling the persistence shape to
+  // the SDK's type; the vercel runner narrows when reading.
+  vercelMessages?: unknown[];
+  // Provider of the last vercel turn ("openai" | "anthropic"). Used to
+  // reset the message history when the user switches between provider
+  // families mid-session — the on-wire tool-call shapes differ enough
+  // that a cross-provider replay rejects on the next call.
+  vercelLastProvider?: string;
 };
 
 type Stored = Session & { runtime: SessionRuntime };
@@ -233,11 +243,15 @@ export class SessionManager {
   // Called from index.ts when a runner emits a raw SDK message. Kept separate
   // from RunEvents so the audit log captures detail we drop on the way to the
   // wire protocol (system init, raw tool_use ids, result subtype, etc).
-  logRaw(sessionId: string, messageId: string, runner: "claude" | "codex", raw: unknown): void {
+  logRaw(sessionId: string, messageId: string, runner: RunnerKind, raw: unknown): void {
     this.transcript.log({ kind: "raw_sdk", sessionId, messageId, runner, raw });
   }
 
-  logRuntime(sessionId: string, field: "claudeSessionId" | "codexThreadId", value: string | null): void {
+  logRuntime(
+    sessionId: string,
+    field: "claudeSessionId" | "codexThreadId" | "vercelMessages",
+    value: string | number | null,
+  ): void {
     this.transcript.log({ kind: "runtime", sessionId, field, value });
   }
 

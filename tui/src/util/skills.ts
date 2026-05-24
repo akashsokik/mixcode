@@ -20,17 +20,20 @@ export type SkillFrontmatter = {
   extra: Record<string, string>;
 };
 
-function skillsDir(runner: RunnerKind): string {
-  return path.join(homedir(), runner === "claude" ? ".claude" : ".codex", "skills");
+// Map a runner to the on-disk skills root. Returns null for runners that
+// don't participate in the user-installed skills ecosystem (e.g. vercel,
+// which uses the Vercel AI SDK's bring-your-own-tools model). All callers
+// gracefully degrade — they treat null as "no skills available".
+function skillsDirOrNull(runner: RunnerKind): string | null {
+  if (runner === "claude") return path.join(homedir(), ".claude", "skills");
+  if (runner === "codex") return path.join(homedir(), ".codex", "skills");
+  return null;
 }
 
-function pluginsCacheDir(runner: RunnerKind): string {
-  return path.join(
-    homedir(),
-    runner === "claude" ? ".claude" : ".codex",
-    "plugins",
-    "cache",
-  );
+function pluginsCacheDir(runner: RunnerKind): string | null {
+  if (runner === "claude") return path.join(homedir(), ".claude", "plugins", "cache");
+  if (runner === "codex") return path.join(homedir(), ".codex", "plugins", "cache");
+  return null;
 }
 
 // Walk `~/.<runner>/plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>`
@@ -39,6 +42,7 @@ function pluginsCacheDir(runner: RunnerKind): string {
 // /skills remove — `isSymlink: false` correctly hides the d action.
 function listPluginSkills(runner: RunnerKind): SkillEntry[] {
   const root = pluginsCacheDir(runner);
+  if (!root) return [];
   const out: SkillEntry[] = [];
   const marketplaces = safeReaddir(root);
   for (const market of marketplaces) {
@@ -95,7 +99,8 @@ function expandHome(p: string): string {
 // but it's the only source we have for Codex and for the pre-first-turn
 // bootstrap. Built-in CLI skills don't live on disk and aren't included here.
 export function listSkills(runner: RunnerKind): SkillEntry[] {
-  const dir = skillsDir(runner);
+  const dir = skillsDirOrNull(runner);
+  if (!dir) return [];
   const out: SkillEntry[] = [];
   for (const e of safeReaddir(dir)) {
     if (e.name.startsWith(".")) continue;
@@ -234,7 +239,10 @@ export function addSkill(runner: RunnerKind, rawPath: string, opts?: { nameOverr
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     return { ok: false, error: `invalid skill name: ${name}` };
   }
-  const dir = skillsDir(runner);
+  const dir = skillsDirOrNull(runner);
+  if (!dir) {
+    return { ok: false, error: `the ${runner} runner has no on-disk skills directory` };
+  }
   try {
     mkdirSync(dir, { recursive: true });
   } catch (err) {
@@ -260,7 +268,11 @@ export function removeSkill(runner: RunnerKind, name: string): RemoveSkillResult
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     return { ok: false, error: `invalid skill name: ${name}` };
   }
-  const target = path.join(skillsDir(runner), name);
+  const dir = skillsDirOrNull(runner);
+  if (!dir) {
+    return { ok: false, error: `the ${runner} runner has no on-disk skills directory` };
+  }
+  const target = path.join(dir, name);
   let stat;
   try {
     stat = lstatSync(target);

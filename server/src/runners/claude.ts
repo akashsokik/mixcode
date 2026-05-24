@@ -28,12 +28,21 @@ type ClaudeRunArgs = {
   systemPrompt?: string;
   model?: string;
   allowRules?: string[];
-  permissionMode?: ClaudePermissionMode;
+  // Wire-level union plus the SDK-only "dontAsk" mode for peers that have no
+  // user UI to gate tool calls. The TUI never sets "dontAsk"; consensus
+  // rounds use it to silently deny anything outside `allowedTools`.
+  permissionMode?: ClaudePermissionMode | "dontAsk";
   canUseTool?: CanUseToolBridge;
   abortController?: AbortController;
   // In-process MCP servers (e.g. the orchestrator's delegate_run tool).
   // Forwarded verbatim to the SDK's mcpServers option.
   mcpServers?: Record<string, unknown>;
+  // Hard cap on agent turns. Consensus rounds set this to keep peer Claude
+  // from making 80+ tool calls before producing a plan.
+  maxTurns?: number;
+  // Whitelist of tool names the SDK exposes to the model. Use together with
+  // `permissionMode: "dontAsk"` to lock a peer down to read-only tools.
+  allowedTools?: string[];
   onEvent: (ev: RunEvent) => void;
   onResumeId: (id: string | null) => void;
   // Fires once per turn from the SDK's `system init` message with the actual
@@ -63,6 +72,8 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     canUseTool,
     abortController,
     mcpServers,
+    maxTurns,
+    allowedTools,
     onEvent,
     onResumeId,
     onSkillInfo,
@@ -101,6 +112,14 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     if (permissionMode === "bypassPermissions") {
       options.allowDangerouslySkipPermissions = true;
     }
+  }
+  if (typeof maxTurns === "number" && maxTurns > 0) {
+    options.maxTurns = maxTurns;
+  }
+  if (allowedTools !== undefined) {
+    // Empty array intentionally locks the agent to text-only output —
+    // useful for synthesis rounds that should not touch the repo at all.
+    options.allowedTools = allowedTools;
   }
 
   if (canUseTool) {
@@ -247,6 +266,20 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
           const m = message as any;
           if (m.subtype === "success") {
             if (m.usage) onEvent({ type: "usage", ...normalizeUsage(m.usage) });
+          } else if (m.subtype === "error_max_turns") {
+            // Soft cap. The session is still valid (resumeId stays good), the
+            // partial text the agent produced before exhausting turns is what
+            // it is. Emit a notice instead of a red error row so callers that
+            // opt into maxTurns (e.g. /consensus rounds) can use the partial
+            // output without the transcript treating it as a crash.
+            if (m.usage) onEvent({ type: "usage", ...normalizeUsage(m.usage) });
+            onEvent({
+              type: "tool_log",
+              log: {
+                name: "maxTurns",
+                output: `Hit per-call turn cap. Partial output kept; session still resumable.`,
+              },
+            });
           } else {
             onResumeId(null);
             onEvent({
