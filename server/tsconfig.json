@@ -16,5 +16,5 @@
     "verbatimModuleSyntax": false
   },
   "include": ["src/**/*", "../shared/**/*"],
-  "exclude": ["src/smoke-*.ts"]
+  "exclude": ["src/smoke-*.ts", "src/example-*.ts"]
 }

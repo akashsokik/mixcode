@@ -36,6 +36,7 @@ import {
   unregisterParentCallbacks,
 } from "./runners/delegate.js";
 import { executeValidate } from "./runners/validate.js";
+import { getCollectivesMcpServer } from "./collectives/index.js";
 import {
   awaitTask,
   cancelTask,
@@ -71,7 +72,14 @@ const ADVERSARIA_SYSTEM_PROMPT_APPEND =
   "Before you declare a task complete, call `validate_run` with a concise " +
   "`claim` describing what you did. The peer agent will adversarially review " +
   "your work and return a verdict (pass / needs_changes / fail). Treat " +
-  "needs_changes and fail as work to do; pass means you can stop.";
+  "needs_changes and fail as work to do; pass means you can stop.\n\n" +
+  "For high-fan-out work (summarizing many files, classifying many items, " +
+  "extracting structure from a long list), prefer the collectives tools: " +
+  "`scatter_map` for parallel per-item completions, `map_reduce` for fan-out " +
+  "then consolidate, `all_reduce` for ensemble/consensus, `tree_reduce` when " +
+  "the fan-in is too big for one reducer. These are lightweight Haiku workers " +
+  "with a global concurrency cap — use them instead of looping or spawning " +
+  "peer agents when each subtask is a single-shot completion.";
 
 const sessions = new SessionManager();
 const permissions = new PermissionStore();
@@ -616,6 +624,10 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         onPeerEvent: forwardPeerEvent,
         onStatsChange,
       });
+      // Fan-out tools (scatter_map, map_reduce, all_reduce, tree_reduce) live
+      // in a process-wide server so the concurrency cap is shared across all
+      // sessions — see collectives/runtime.ts.
+      const collectives = getCollectivesMcpServer();
       await runClaude({
         prompt: text,
         cwd: session.cwd,
@@ -624,7 +636,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         allowRules: permissions.list(),
         permissionMode: session.claudeMode,
         abortController: abort,
-        mcpServers: { orchestrator },
+        mcpServers: { orchestrator, collectives },
         systemPrompt: ADVERSARIA_SYSTEM_PROMPT_APPEND,
         canUseTool: async (toolName, input, ctx) => {
           // The SDK routes every tool call through canUseTool when it's set
