@@ -27,6 +27,7 @@
               "concepts/architecture",
               "concepts/sessions",
               "concepts/runners",
+              "concepts/collectives",
               "concepts/websocket-protocol"
             ]
           },
