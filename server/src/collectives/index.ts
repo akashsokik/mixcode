@@ -39,3 +39,5 @@ export {
   createCollectivesMcpServer,
   type CollectivesMcpOptions,
 } from "./mcp.js";
+
+export { getCollectivesMcpServer, COLLECTIVES_ALLOWED_TOOLS } from "./runtime.js";
