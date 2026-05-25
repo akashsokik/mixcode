@@ -1,5 +1,29 @@
 import { Codex } from "@openai/codex-sdk";
-import type { RunEvent, RunnerKind } from "../../../shared/events.js";
+import type {
+  ContextUsage,
+  RunEvent,
+  RunnerKind,
+  TurnUsage,
+} from "../../../shared/events.js";
+
+// Codex SDK does not expose a per-model context window. Static reference
+// table sourced from each model's published documentation — used only as the
+// denominator for the rail's "Ctx %" display. Add entries as new models ship.
+const CODEX_CONTEXT_WINDOWS: Record<string, number> = {
+  "gpt-5-codex": 400_000,
+  "gpt-5": 400_000,
+  "gpt-5-mini": 400_000,
+  "gpt-4o": 128_000,
+  "gpt-4o-mini": 128_000,
+};
+
+function codexWindowFor(model: string | undefined): number | null {
+  if (!model) return null;
+  if (CODEX_CONTEXT_WINDOWS[model] != null) return CODEX_CONTEXT_WINDOWS[model];
+  if (model.startsWith("gpt-5")) return 400_000;
+  if (model.startsWith("gpt-4o")) return 128_000;
+  return null;
+}
 
 // Configuration for the per-session orchestrator MCP child. When provided,
 // codex.ts wires an `mcp_servers.orchestrator` stdio entry into the Codex
@@ -24,6 +48,10 @@ type CodexRunArgs = {
   model?: string;
   signal?: AbortSignal;
   onEvent: (ev: RunEvent) => void;
+  // Fires once on `turn.completed`. Sourced verbatim from the SDK's Usage
+  // record — see TurnCompletedEvent in @openai/codex-sdk.
+  onTurnUsage?: (usage: TurnUsage) => void;
+  onContextUsage?: (ctx: ContextUsage | null) => void;
   onThreadId: (id: string | null) => void;
   // Audit hook — fires for every raw SDK stream event before translation.
   // See claude.ts for rationale.
@@ -72,6 +100,8 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
     model,
     signal,
     onEvent,
+    onTurnUsage,
+    onContextUsage,
     onThreadId,
     onRaw,
     orchestrator,
@@ -227,13 +257,27 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
           // promoting.
           pendingAgentMsg = null;
           if (ev.usage) {
-            onEvent({
-              type: "usage",
+            const usage: TurnUsage = {
               input: ev.usage.input_tokens ?? 0,
               output: ev.usage.output_tokens ?? 0,
               cacheRead: ev.usage.cached_input_tokens ?? 0,
               cacheWrite: 0,
-            });
+              reasoningOutput: ev.usage.reasoning_output_tokens ?? 0,
+              model,
+            };
+            onTurnUsage?.(usage);
+            const window = codexWindowFor(model);
+            if (window && onContextUsage) {
+              const loaded = usage.input + usage.cacheRead;
+              const pct = (loaded / window) * 100;
+              onContextUsage({
+                totalTokens: loaded,
+                maxTokens: window,
+                percentage: Math.round(Math.min(100, pct) * 10) / 10,
+              });
+            } else if (onContextUsage) {
+              onContextUsage(null);
+            }
           }
           break;
 

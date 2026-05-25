@@ -176,18 +176,20 @@ function UserMessage({
   onActivate?: () => void;
 }) {
   return (
-    <ChatItem id={`msg:${message.id}`} selected={selected} onActivate={onActivate}>
-      <box
-        flexDirection="row"
-        backgroundColor={theme.bgPanel}
-        paddingLeft={1}
-        paddingRight={1}
-      >
-        <text fg={theme.textMuted}>{"› "}</text>
-        <text fg={theme.text}>{message.text}</text>
-      </box>
+    <>
+      <ChatItem id={`msg:${message.id}`} selected={selected} onActivate={onActivate}>
+        <box
+          flexDirection="row"
+          backgroundColor={theme.bgPanel}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <text fg={theme.textMuted}>{"› "}</text>
+          <text fg={theme.text}>{message.text}</text>
+        </box>
+      </ChatItem>
       <Rule />
-    </ChatItem>
+    </>
   );
 }
 

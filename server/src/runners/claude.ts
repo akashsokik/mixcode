@@ -2,7 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { RunEvent } from "../../../shared/events.js";
+import type { ContextUsage, RunEvent, TurnUsage } from "../../../shared/events.js";
 
 // Pull just the plugin-related keys out of the user's ~/.claude/settings.json
 // without enabling the rest of the file (hooks, permissions, etc.). The runner
@@ -89,6 +89,15 @@ type ClaudeRunArgs = {
   // `permissionMode: "dontAsk"` to lock a peer down to read-only tools.
   allowedTools?: string[];
   onEvent: (ev: RunEvent) => void;
+  // Fires exactly once per turn from `result.usage` (the SDK's canonical
+  // final-aggregate). The runner does not emit per-assistant-message usage
+  // anymore — see the comment near the `result` case below.
+  onTurnUsage?: (usage: TurnUsage) => void;
+  // Fires once per turn, derived from `result.modelUsage[<model>].contextWindow`
+  // (authoritative SDK-reported window for the model that produced the turn)
+  // and the same result's `usage` totals. Null on result subtypes that don't
+  // carry usage (anything outside success / error_max_turns).
+  onContextUsage?: (ctx: ContextUsage | null) => void;
   onResumeId: (id: string | null) => void;
   // Fires once per turn from the SDK's `system init` message with the actual
   // skill names and plugin metadata loaded into this session. Names are bare
@@ -120,6 +129,8 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     maxTurns,
     allowedTools,
     onEvent,
+    onTurnUsage,
+    onContextUsage,
     onResumeId,
     onSkillInfo,
     onRaw,
@@ -317,8 +328,13 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
               pendingTool.set(b.id ?? "", { name: b.name ?? "", input: b.input ?? {} });
             }
           }
-          const mu = (message as any).message?.usage;
-          if (mu) onEvent({ type: "usage", ...normalizeUsage(mu) });
+          // We intentionally do NOT emit usage from the per-assistant-message
+          // record. Multi-tool-call turns produce several `assistant` messages
+          // and each carries the SDK's running totals for its own API call;
+          // taking them as truth either double-counts or requires max-merging
+          // against the eventual `result.usage`. The `result` message below is
+          // the SDK's canonical per-turn aggregate — that's the only source of
+          // truth we forward.
           thinkingBlockStart.clear();
           break;
         }
@@ -348,14 +364,14 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
           const m = message as any;
           if (m.subtype === "success") {
             sawSuccessResult = true;
-            if (m.usage) onEvent({ type: "usage", ...normalizeUsage(m.usage) });
+            forwardClaudeResultUsage(m, onTurnUsage, onContextUsage);
           } else if (m.subtype === "error_max_turns") {
             // Soft cap. The session is still valid (resumeId stays good), the
             // partial text the agent produced before exhausting turns is what
             // it is. Emit a notice instead of a red error row so callers that
             // opt into maxTurns (e.g. /consensus rounds) can use the partial
             // output without the transcript treating it as a crash.
-            if (m.usage) onEvent({ type: "usage", ...normalizeUsage(m.usage) });
+            forwardClaudeResultUsage(m, onTurnUsage, onContextUsage);
             onEvent({
               type: "tool_log",
               log: {
@@ -411,18 +427,69 @@ function isAbortError(err: unknown): boolean {
   return name === "AbortError";
 }
 
-function normalizeUsage(u: any): {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-} {
+// Map the SDK's snake_case usage record to our internal TurnUsage shape.
+// Pure projection — no field merging, no summing across events.
+function normalizeUsage(u: any): TurnUsage {
   return {
     input: u.input_tokens ?? 0,
     output: u.output_tokens ?? 0,
     cacheRead: u.cache_read_input_tokens ?? 0,
     cacheWrite: u.cache_creation_input_tokens ?? 0,
   };
+}
+
+// Forward a result message's usage record as a TurnUsage and derive the
+// context-window snapshot from the same SDK payload. Both signals come from
+// one event, so they're consistent by construction.
+//
+// `result.modelUsage` is keyed by model id (e.g. "claude-opus-4-7") and the
+// entry's `contextWindow` is the authoritative window size for that model.
+// In a single-model turn there's one entry; in a multi-model turn (e.g.
+// orchestrator + worker) we pick the first matching the result's primary
+// model when available, otherwise the entry with the largest window so we
+// don't accidentally clip the displayed % against a smaller delegate model.
+function forwardClaudeResultUsage(
+  m: any,
+  onTurnUsage?: (u: TurnUsage) => void,
+  onContextUsage?: (c: ContextUsage | null) => void,
+): void {
+  const raw = m?.usage;
+  if (!raw) {
+    onContextUsage?.(null);
+    return;
+  }
+  const usage = normalizeUsage(raw);
+  if (typeof m.total_cost_usd === "number") usage.costUsd = m.total_cost_usd;
+  onTurnUsage?.(usage);
+
+  if (!onContextUsage) return;
+  const modelUsage = m?.modelUsage;
+  const window = pickPrimaryContextWindow(modelUsage);
+  if (!window) {
+    onContextUsage(null);
+    return;
+  }
+  const loaded = usage.input + usage.cacheRead + usage.cacheWrite;
+  const pct = window > 0 ? Math.min(100, (loaded / window) * 100) : 0;
+  onContextUsage({
+    totalTokens: loaded,
+    maxTokens: window,
+    percentage: Math.round(pct * 10) / 10,
+  });
+}
+
+function pickPrimaryContextWindow(
+  modelUsage: Record<string, { contextWindow?: number }> | undefined,
+): number | null {
+  if (!modelUsage || typeof modelUsage !== "object") return null;
+  let best: number | null = null;
+  for (const entry of Object.values(modelUsage)) {
+    const w = entry?.contextWindow;
+    if (typeof w === "number" && w > 0 && (best == null || w > best)) {
+      best = w;
+    }
+  }
+  return best;
 }
 
 // Flatten the SDK's PermissionUpdate suggestions into the wire-format rule

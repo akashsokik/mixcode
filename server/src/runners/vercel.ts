@@ -29,8 +29,10 @@ import { z } from "zod";
 
 import type {
   ClaudePermissionMode,
+  ContextUsage,
   RunEvent,
   RunnerKind,
+  TurnUsage,
 } from "../../../shared/events.js";
 import type { PermissionStore, PermissionResolution } from "../permissions.js";
 import {
@@ -84,9 +86,14 @@ function buildBaseSystemPrompt(cwd: string, isTopLevel: boolean): string {
     "Coding tools (always available):",
     "  - Bash         run shell commands (build, git, anything short)",
     "  - Read         read a file (absolute path)",
-    "  - Write        create or overwrite a file (absolute path)",
-    "  - Edit         exact-string find/replace in a file",
-    "  - MultiEdit    sequence of exact-string edits applied atomically",
+    "  - Edit         exact-string find/replace in an EXISTING file (preferred",
+    "                 for any modification — cheaper and reviewable)",
+    "  - MultiEdit    sequence of exact-string edits applied atomically to one",
+    "                 EXISTING file (preferred when several changes hit the",
+    "                 same file)",
+    "  - Write        create a NEW file or do a deliberate full rewrite. Do",
+    "                 NOT use Write to make a small change to an existing file",
+    "                 — use Edit/MultiEdit instead.",
     "  - Grep         ripgrep across files (regex + glob filter)",
     "  - Glob         list files matching a glob pattern",
     "  - TodoWrite    maintain a running todo list (renders as one card)",
@@ -119,6 +126,13 @@ function buildBaseSystemPrompt(cwd: string, isTopLevel: boolean): string {
     "  - Keep iterating until the task is done. After a tool result, decide",
     "    what to do next: another tool call, or a final answer. Do NOT stop",
     "    after one tool call unless the answer is genuinely complete.",
+    "  - To modify an existing file, ALWAYS prefer Edit (or MultiEdit for",
+    "    several changes in the same file). Reserve Write for creating a new",
+    "    file or a deliberate full rewrite. Rewriting an existing file with",
+    "    Write when a small Edit would do is wasteful — it risks clobbering",
+    "    unrelated content and produces huge unreviewable diffs. If Edit's",
+    "    old_string isn't matched, Read the file first to get exact text",
+    "    (including whitespace) and retry — do NOT fall back to Write.",
     "  - Prefer Grep (ripgrep) for searching; Glob for path discovery.",
     "  - If you can't make progress (missing info, ambiguous request), say so",
     "    clearly instead of going silent.",
@@ -157,9 +171,35 @@ export type VercelRunArgs = {
   // orchestrator MCP).
   depth?: number;
   onEvent: (ev: RunEvent) => void;
+  // Fires once on the SDK's `finish` part, sourced from `part.totalUsage`
+  // (the cumulative-across-steps aggregate — `part.usage` in v5 is final-step
+  // only and would undercount multi-step turns).
+  onTurnUsage?: (usage: TurnUsage) => void;
+  onContextUsage?: (ctx: ContextUsage | null) => void;
   onMessages: (messages: ModelMessage[]) => void;
   onRaw?: (msg: unknown) => void;
 };
+
+// Vercel AI SDK doesn't surface a per-model context window. Map the two
+// providers we route to (openai + anthropic) to their published window sizes
+// so the rail can show a Ctx %.
+const VERCEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "gpt-4o": 128_000,
+  "gpt-4o-mini": 128_000,
+  "gpt-5": 400_000,
+  "gpt-5-mini": 400_000,
+  "claude-opus-4-7": 200_000,
+  "claude-sonnet-4-6": 200_000,
+  "claude-haiku-4-5-20251001": 200_000,
+};
+
+function vercelWindowFor(model: string): number | null {
+  if (VERCEL_CONTEXT_WINDOWS[model] != null) return VERCEL_CONTEXT_WINDOWS[model];
+  if (model.startsWith("gpt-5")) return 400_000;
+  if (model.startsWith("gpt-4o")) return 128_000;
+  if (model.startsWith("claude-")) return 200_000;
+  return null;
+}
 
 export async function runVercel(args: VercelRunArgs): Promise<void> {
   const {
@@ -176,6 +216,8 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
     maxSteps,
     depth,
     onEvent,
+    onTurnUsage,
+    onContextUsage,
     onMessages,
     onRaw,
   } = args;
@@ -378,13 +420,26 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
           sawFinish = true;
           const usage = part.totalUsage;
           if (usage) {
-            onEvent({
-              type: "usage",
+            const turnUsage: TurnUsage = {
               input: usage.inputTokens ?? 0,
               output: usage.outputTokens ?? 0,
               cacheRead: usage.cachedInputTokens ?? 0,
               cacheWrite: 0,
-            });
+              model: modelId,
+            };
+            onTurnUsage?.(turnUsage);
+            const window = vercelWindowFor(modelId);
+            if (window && onContextUsage) {
+              const loaded = turnUsage.input + turnUsage.cacheRead;
+              const pct = (loaded / window) * 100;
+              onContextUsage({
+                totalTokens: loaded,
+                maxTokens: window,
+                percentage: Math.round(Math.min(100, pct) * 10) / 10,
+              });
+            } else if (onContextUsage) {
+              onContextUsage(null);
+            }
           }
           // Bare "stop" is the happy path and stays silent. Anything else
           // ("length", "content-filter", "error", "tool-calls" without a
@@ -583,7 +638,7 @@ function buildCodingTools(deps: ToolDeps) {
 
     Write: tool({
       description:
-        "Write content to a file, creating parent directories if needed. Overwrites existing files. Use absolute paths.",
+        "Create a NEW file (or do a deliberate full rewrite) at an absolute path, creating parent directories if needed. Overwrites if the file exists. DO NOT use Write to make a small change to an existing file — use Edit or MultiEdit instead, which are cheaper and produce reviewable diffs.",
       inputSchema: z.object({
         file_path: z.string().min(1).describe("Absolute path to write"),
         content: z.string().describe("Full file contents"),
@@ -620,7 +675,7 @@ function buildCodingTools(deps: ToolDeps) {
 
     Edit: tool({
       description:
-        "Replace the first occurrence (or all occurrences) of an exact string in a file. Returns an error if the search string isn't found. Use absolute paths.",
+        "PREFERRED tool for modifying an existing file. Replaces the first occurrence (or all occurrences with replace_all=true) of an exact string. Returns an error if old_string isn't found — when that happens, Read the file to get the exact text (including whitespace/indentation) and retry; do NOT fall back to Write. Cheaper than Write and produces a reviewable diff. Use absolute paths.",
       inputSchema: z.object({
         file_path: z.string().min(1).describe("Absolute path to the file to edit"),
         old_string: z.string().min(1).describe("Exact text to find — must match verbatim"),
@@ -673,7 +728,7 @@ function buildCodingTools(deps: ToolDeps) {
 
     MultiEdit: tool({
       description:
-        "Apply a sequence of exact-string edits to one file atomically — if any edit fails to match, no changes are written. Edits apply in order.",
+        "PREFERRED tool when you need several edits to the same existing file. Applies a sequence of exact-string edits atomically — if any edit fails to match, no changes are written. Edits apply in order. Use this instead of multiple Edit calls or a full Write rewrite.",
       inputSchema: z.object({
         file_path: z.string().min(1).describe("Absolute path to the file"),
         edits: z

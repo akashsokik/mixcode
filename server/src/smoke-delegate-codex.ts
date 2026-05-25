@@ -101,8 +101,6 @@ ws.on("message", (raw) => {
           input: JSON.stringify(ev.log?.input ?? null).slice(0, 200),
           output: out,
         });
-      } else if (ev.type === "usage") {
-        log("usage", { in: ev.input, out: ev.output, cR: ev.cacheRead, cW: ev.cacheWrite });
       } else if (ev.type === "error") {
         log("ERROR event", { message: ev.message });
       } else {

@@ -30,6 +30,7 @@ type PromptProps = {
   streaming?: boolean;
   onInterrupt?: () => void;
   runner?: RunnerKind | null;
+  onCycleRunner?: () => void;
   claudeMode?: ClaudePermissionMode;
   onCycleClaudeMode?: () => void;
   modelLabel?: string | null;
@@ -41,7 +42,15 @@ type PromptProps = {
   // Dynamic slash suggestions appended below the static SLASH_COMMANDS list —
   // typically the active session's skills surfaced as `/skill-name` entries.
   slashExtras?: SlashSuggestion[];
+  // Generic key/value strip rendered above the prompt box, right-aligned.
+  // Caller decides what to surface (last-turn tokens, model lineup, etc).
+  // Capped at META_PAIR_LIMIT so the row stays single-line on narrow terminals.
+  metaPairs?: MetaPair[];
 };
+
+export type MetaPair = { label: string; value: string };
+
+const META_PAIR_LIMIT = 3;
 
 export function Prompt({
   focused,
@@ -51,6 +60,7 @@ export function Prompt({
   streaming,
   onInterrupt,
   runner,
+  onCycleRunner,
   claudeMode,
   onCycleClaudeMode,
   modelLabel,
@@ -60,6 +70,7 @@ export function Prompt({
   delegations,
   sessionPill,
   slashExtras,
+  metaPairs,
 }: PromptProps) {
   const [text, setText] = useState("");
   const [inputFocused, setInputFocused] = useState(focused && !locked);
@@ -122,6 +133,14 @@ export function Prompt({
       if (!slash.active && !completions.active && onCycleClaudeMode) {
         onCycleClaudeMode();
       }
+      return;
+    }
+
+    // plain tab (no menu open) cycles the active runner: claude → codex →
+    // vercel → claude. When a slash/completion menu is open the branches
+    // below claim tab for applying the selection instead.
+    if (key.name === "tab" && !slash.active && !completions.active) {
+      if (onCycleRunner) onCycleRunner();
       return;
     }
 
@@ -220,10 +239,11 @@ export function Prompt({
 
   return (
     <box flexDirection="column" flexShrink={0}>
+      <MetaRow pairs={metaPairs} />
       {slash.active && slash.matches.length > 0 && (
         <box
           flexDirection="column"
-          borderStyle="single"
+          borderStyle="rounded"
           borderColor={theme.border}
           backgroundColor={theme.bgPanel}
           paddingLeft={1}
@@ -251,7 +271,7 @@ export function Prompt({
       {!slash.active && completions.active && completions.matches.length > 0 && (
         <box
           flexDirection="column"
-          borderStyle="single"
+          borderStyle="rounded"
           borderColor={theme.border}
           backgroundColor={theme.bgPanel}
           paddingLeft={1}
@@ -271,7 +291,7 @@ export function Prompt({
       )}
       <box
         flexDirection="column"
-        borderStyle="single"
+        borderStyle="rounded"
         borderColor={visualFocused ? theme.borderFocused : theme.border}
         backgroundColor={theme.bgPanel}
         paddingLeft={1}
@@ -329,6 +349,26 @@ type PromptRailState = {
   segments: RailSegment[];
   keys: string[];
 };
+
+// Generic key-value strip rendered above the prompt box, right-aligned.
+// Hidden when no pairs are supplied. Caps at META_PAIR_LIMIT so the row stays
+// a single line even on narrow terminals.
+function MetaRow({ pairs }: { pairs: MetaPair[] | undefined }) {
+  if (!pairs || pairs.length === 0) return null;
+  const limited = pairs.slice(0, META_PAIR_LIMIT);
+  return (
+    <box flexDirection="row" height={1}>
+      <box flexGrow={1} />
+      {limited.map((pair, i) => (
+        <box key={`${pair.label}-${i}`} flexDirection="row" flexShrink={0}>
+          {i > 0 && <Dot />}
+          <text fg={theme.textFaint}>{`${pair.label}: `}</text>
+          <text fg={theme.textMuted}>{pair.value}</text>
+        </box>
+      ))}
+    </box>
+  );
+}
 
 function PromptRail({ rail }: { rail: PromptRailState }) {
   return (
@@ -488,7 +528,7 @@ function buildPromptRail({
     segments.push({ value: runner ?? "ready", color: runnerColor(runner), bold: !!runner });
   }
 
-  const keys = ["↵ send"];
+  const keys = ["↵ send", "tab runner"];
   if (streaming) keys.push("esc stop");
   if (runner === "claude") keys.push("⇧tab mode");
   else keys.push("/ commands", "@ files");

@@ -151,13 +151,6 @@ ws.on("message", (raw) => {
             log("validate_run anchor lacked parseable verdict", { parsed });
           }
         }
-      } else if (ev.type === "usage") {
-        log("usage", {
-          in: ev.input,
-          out: ev.output,
-          cR: ev.cacheRead,
-          cW: ev.cacheWrite,
-        });
       } else if (ev.type === "error") {
         log("ERROR event", { message: ev.message });
       } else {

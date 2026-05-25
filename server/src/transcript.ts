@@ -28,6 +28,7 @@ export type TranscriptLine =
   | { kind: "message_started"; sessionId: string; messageId: string; role: "user" | "assistant"; text: string }
   | { kind: "message_done"; sessionId: string; messageId: string }
   | { kind: "event"; sessionId: string; messageId: string; event: unknown }
+  | { kind: "turn_usage"; sessionId: string; messageId: string; usage: unknown }
   | { kind: "raw_sdk"; sessionId: string; messageId: string; runner: "claude" | "codex" | "vercel"; raw: unknown }
   | {
       kind: "runtime";
