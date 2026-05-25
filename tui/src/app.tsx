@@ -39,7 +39,7 @@ import {
 import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
 import { theme } from "./theme";
 import { basename } from "./util/path";
-import { collectToolIds, latestDelegationId } from "./util/blocks";
+import { collectChatItemIds, latestDelegationId } from "./util/blocks";
 import {
   contextLimit,
   latestContextTokens,
@@ -64,12 +64,12 @@ export function App() {
   const [paletteMode, setPaletteMode] = useState<
     "sessions" | "skills" | "mcp" | "global" | null
   >(null);
-  // Per-session card selection + expansion. Selection navigates with
-  // shift+up/shift+down; ctrl+e toggles expansion of whichever card is
+  // Per-session chat-item selection + expansion. Selection navigates with
+  // shift+up/shift+down; ctrl+e toggles expansion of whichever item is
   // selected (falling back to the latest delegation when nothing is selected).
-  // The same set covers both tool cards and delegation groups — their ids
-  // share the `${messageId}:${blockIndex}` scheme from util/blocks.
-  const [selectedToolBySession, setSelectedToolBySession] = useState<
+  // The id space includes user messages, notices, assistant blocks, tool
+  // cards, and delegation groups — see collectChatItemIds.
+  const [selectedItemBySession, setSelectedItemBySession] = useState<
     Record<string, string | null>
   >({});
   const [expandedTools, setExpandedTools] = useState<
@@ -111,7 +111,7 @@ export function App() {
       }
       return changed ? next : prev;
     });
-    setSelectedToolBySession((prev) => {
+    setSelectedItemBySession((prev) => {
       const alive = new Set(api.sessions.map((s) => s.id));
       let changed = false;
       const next: Record<string, string | null> = {};
@@ -160,55 +160,55 @@ export function App() {
     [notices, api.activeId],
   );
 
-  const activeToolIds = useMemo(
-    () => collectToolIds(api.active ?? null),
-    [api.active],
+  const activeItemIds = useMemo(
+    () => collectChatItemIds(api.active ?? null, activeNotices),
+    [api.active, activeNotices],
   );
 
-  const activeSelectedToolId = useMemo(() => {
+  const activeSelectedItemId = useMemo(() => {
     if (!api.activeId) return null;
-    const id = selectedToolBySession[api.activeId] ?? null;
+    const id = selectedItemBySession[api.activeId] ?? null;
     // Drop a stale selection if the message that owned it has been
     // truncated (e.g. /clear) or the tool block index no longer exists.
-    if (id && !activeToolIds.includes(id)) return null;
+    if (id && !activeItemIds.includes(id)) return null;
     return id;
-  }, [selectedToolBySession, api.activeId, activeToolIds]);
+  }, [selectedItemBySession, api.activeId, activeItemIds]);
 
-  const activeExpandedTools = useMemo(
+  const activeExpandedItems = useMemo(
     () =>
       api.activeId ? expandedTools[api.activeId] ?? EMPTY_SET : EMPTY_SET,
     [expandedTools, api.activeId],
   );
 
-  const moveToolSelection = useCallback(
+  const moveItemSelection = useCallback(
     (direction: "prev" | "next") => {
       const sid = api.activeId;
       if (!sid) return;
-      if (activeToolIds.length === 0) return;
-      const current = selectedToolBySession[sid] ?? null;
-      const currentIdx = current ? activeToolIds.indexOf(current) : -1;
+      if (activeItemIds.length === 0) return;
+      const current = selectedItemBySession[sid] ?? null;
+      const currentIdx = current ? activeItemIds.indexOf(current) : -1;
       let nextIdx: number;
       if (currentIdx === -1) {
         // First press picks the most recent card (newest end of the list)
         // so the user lands on the card they're most likely to inspect.
-        nextIdx = direction === "prev" ? activeToolIds.length - 1 : 0;
+        nextIdx = direction === "prev" ? activeItemIds.length - 1 : 0;
       } else if (direction === "prev") {
-        nextIdx = currentIdx === 0 ? activeToolIds.length - 1 : currentIdx - 1;
+        nextIdx = currentIdx === 0 ? activeItemIds.length - 1 : currentIdx - 1;
       } else {
-        nextIdx = currentIdx === activeToolIds.length - 1 ? 0 : currentIdx + 1;
+        nextIdx = currentIdx === activeItemIds.length - 1 ? 0 : currentIdx + 1;
       }
-      setSelectedToolBySession((prev) => ({
+      setSelectedItemBySession((prev) => ({
         ...prev,
-        [sid]: activeToolIds[nextIdx],
+        [sid]: activeItemIds[nextIdx],
       }));
     },
-    [api.activeId, activeToolIds, selectedToolBySession],
+    [api.activeId, activeItemIds, selectedItemBySession],
   );
 
-  const toggleSelectedToolExpansion = useCallback(() => {
+  const toggleSelectedItemExpansion = useCallback(() => {
     const sid = api.activeId;
     if (!sid) return false;
-    const id = selectedToolBySession[sid] ?? null;
+    const id = selectedItemBySession[sid] ?? null;
     if (!id) return false;
     setExpandedTools((prev) => {
       const cur = prev[sid] ?? new Set<string>();
@@ -218,16 +218,16 @@ export function App() {
       return { ...prev, [sid]: next };
     });
     return true;
-  }, [api.activeId, selectedToolBySession]);
+  }, [api.activeId, selectedItemBySession]);
 
-  // Mouse activation: first click selects the card; clicking the same already
-  // selected card toggles its expansion. This makes the cards behave like
+  // Mouse activation: first click selects the item; clicking the same already
+  // selected item toggles its expansion. This makes the items behave like
   // disclosure widgets without adding a separate "expand" target.
-  const handleToolActivate = useCallback(
+  const handleItemActivate = useCallback(
     (toolId: string) => {
       const sid = api.activeId;
       if (!sid) return;
-      const current = selectedToolBySession[sid] ?? null;
+      const current = selectedItemBySession[sid] ?? null;
       if (current === toolId) {
         setExpandedTools((prev) => {
           const cur = prev[sid] ?? new Set<string>();
@@ -238,9 +238,9 @@ export function App() {
         });
         return;
       }
-      setSelectedToolBySession((prev) => ({ ...prev, [sid]: toolId }));
+      setSelectedItemBySession((prev) => ({ ...prev, [sid]: toolId }));
     },
-    [api.activeId, selectedToolBySession],
+    [api.activeId, selectedItemBySession],
   );
 
   const toggleLatestDelegation = useCallback(() => {
@@ -531,21 +531,21 @@ export function App() {
       setPaletteMode((m) => (m === "global" ? null : "global"));
       return;
     }
-    // shift+up / shift+down navigate the tool-card selection. The Prompt
+    // shift+up / shift+down navigate the chat-item selection. The Prompt
     // input only binds plain up/down (without shift) for history, so this
     // chord is unambiguous while typing.
     if (key.shift && key.name === "up") {
-      moveToolSelection("prev");
+      moveItemSelection("prev");
       return;
     }
     if (key.shift && key.name === "down") {
-      moveToolSelection("next");
+      moveItemSelection("next");
       return;
     }
-    // ctrl+e: prefer expanding the selected tool card when one is selected;
+    // ctrl+e: prefer expanding the selected chat item when one is selected;
     // otherwise fall back to the delegation-group toggle behavior.
     if (key.ctrl && key.name === "e") {
-      if (!toggleSelectedToolExpansion()) toggleLatestDelegation();
+      if (!toggleSelectedItemExpansion()) toggleLatestDelegation();
       return;
     }
   });
@@ -1008,9 +1008,9 @@ export function App() {
       <Transcript
         session={api.active}
         notices={activeNotices}
-        selectedItemId={activeSelectedToolId}
-        expandedItems={activeExpandedTools}
-        onItemActivate={handleToolActivate}
+        selectedItemId={activeSelectedItemId}
+        expandedItems={activeExpandedItems}
+        onItemActivate={handleItemActivate}
       />
       <Spinner active={api.active} />
       {api.pendingPermissions.length > 0 && (

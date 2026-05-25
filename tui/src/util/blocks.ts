@@ -242,31 +242,6 @@ export function latestDelegationId(session: Session | null): string | null {
   return null;
 }
 
-// Tool-card ids the user can navigate to with shift+up / shift+down. Includes
-// top-level tool blocks AND delegation groups (so the user can shift+nav onto
-// a delegate/validate card and ctrl+e to expand it, same as a regular tool).
-// Children of a delegation group stay out — those only render when the group
-// is already expanded. Ids share the `${messageId}:${blockIndex}` scheme that
-// groupDelegations uses for its own ids; a tool index and a delegation anchor
-// index can never collide because each block has a unique position.
-export function collectToolIds(session: Session | null): string[] {
-  if (!session) return [];
-  const out: string[] = [];
-  for (const m of session.messages) {
-    if (m.role !== "assistant") continue;
-    const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
-    for (const g of grouped) {
-      if (g.kind === "delegation_group") {
-        out.push(g.id);
-        continue;
-      }
-      if (g.block.kind !== "tool") continue;
-      out.push(`${m.id}:${g.index}`);
-    }
-  }
-  return out;
-}
-
 // Returns the navigation order for shift+up / shift+down in the chat area:
 // one id per visually-distinct row (user message, notice, assistant block,
 // delegation group, tool card, task card). Order matches Transcript's render
