@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { collectChatItemIds } from "./blocks";
+import { collectChatItemIds, pendingDelegations } from "./blocks";
 import type { Session } from "../../../shared/events.ts";
 import type { Notice } from "./notice";
 
@@ -56,5 +56,51 @@ describe("collectChatItemIds", () => {
 
   test("returns [] for a null session", () => {
     expect(collectChatItemIds(null, [])).toEqual([]);
+  });
+});
+
+describe("pendingDelegations", () => {
+  test("returns empty list when session is null", () => {
+    expect(pendingDelegations(null, null)).toEqual([]);
+  });
+
+  test("returns empty list when no delegate_run started", () => {
+    const session = makeSession();
+    expect(pendingDelegations(session, session.messages.at(-1)!.id)).toEqual([]);
+  });
+
+  test("returns pending group when peer is in-flight on the streaming message", () => {
+    const session: Session = {
+      ...makeSession(),
+      streaming: true,
+      messages: [
+        {
+          id: "m1",
+          role: "assistant",
+          text: "",
+          createdAt: "2026-05-25T10:00:00.000Z",
+          events: [
+            // delegate_run anchor not yet emitted; only a peer reply
+            // tool_log has arrived — groupDelegations synthesises a
+            // pending group.
+            {
+              type: "tool_log",
+              log: { name: "[claude] reply", input: {}, output: "drafting" },
+            },
+          ],
+        },
+      ],
+    };
+    const out = pendingDelegations(session, "m1");
+    expect(out.length).toBe(1);
+    expect(out[0].kind).toBe("delegation_group");
+    expect(out[0].header).toBeNull();
+    expect(out[0].pendingRunner).toBe("claude");
+  });
+
+  test("ignores pending groups on a non-streaming message", () => {
+    const session = makeSession();
+    // streamingMessageId points to a different / older id
+    expect(pendingDelegations(session, "msg-that-isnt-streaming")).toEqual([]);
   });
 });
