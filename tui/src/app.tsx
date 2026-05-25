@@ -49,6 +49,16 @@ import {
 
 const EMPTY_SET: Set<string> = new Set();
 
+// User messages and notices have no expanded view; second-click on them must
+// not write phantom entries into expandedItems. Tool / assistant block /
+// delegation group ids use the `${messageId}:${index}` or `${messageId}:d:${i}`
+// shapes and are eligible (the renderer simply ignores `expanded` for atomic
+// assistant blocks that have no expandedContent, so the Set stays bounded by
+// the number of blocks in the active session).
+function isExpandableItemId(id: string): boolean {
+  return !id.startsWith("msg:") && !id.startsWith("notice:");
+}
+
 function dedupe<T>(xs: T[]): T[] {
   return Array.from(new Set(xs));
 }
@@ -72,7 +82,7 @@ export function App() {
   const [selectedItemBySession, setSelectedItemBySession] = useState<
     Record<string, string | null>
   >({});
-  const [expandedTools, setExpandedTools] = useState<
+  const [expandedItems, setExpandedItems] = useState<
     Record<string, Set<string>>
   >({});
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
@@ -101,7 +111,7 @@ export function App() {
       }
       return changed ? next : prev;
     });
-    setExpandedTools((prev) => {
+    setExpandedItems((prev) => {
       const alive = new Set(api.sessions.map((s) => s.id));
       let changed = false;
       const next: Record<string, Set<string>> = {};
@@ -176,8 +186,8 @@ export function App() {
 
   const activeExpandedItems = useMemo(
     () =>
-      api.activeId ? expandedTools[api.activeId] ?? EMPTY_SET : EMPTY_SET,
-    [expandedTools, api.activeId],
+      api.activeId ? expandedItems[api.activeId] ?? EMPTY_SET : EMPTY_SET,
+    [expandedItems, api.activeId],
   );
 
   const moveItemSelection = useCallback(
@@ -210,7 +220,7 @@ export function App() {
     if (!sid) return false;
     const id = selectedItemBySession[sid] ?? null;
     if (!id) return false;
-    setExpandedTools((prev) => {
+    setExpandedItems((prev) => {
       const cur = prev[sid] ?? new Set<string>();
       const next = new Set(cur);
       if (next.has(id)) next.delete(id);
@@ -221,24 +231,27 @@ export function App() {
   }, [api.activeId, selectedItemBySession]);
 
   // Mouse activation: first click selects the item; clicking the same already
-  // selected item toggles its expansion. This makes the items behave like
-  // disclosure widgets without adding a separate "expand" target.
+  // selected item toggles its expansion (for expandable rows only — user
+  // messages and notices have no expanded view, so second-click is a no-op).
+  // This makes items behave like disclosure widgets without adding a separate
+  // "expand" target.
   const handleItemActivate = useCallback(
-    (toolId: string) => {
+    (itemId: string) => {
       const sid = api.activeId;
       if (!sid) return;
       const current = selectedItemBySession[sid] ?? null;
-      if (current === toolId) {
-        setExpandedTools((prev) => {
+      if (current === itemId) {
+        if (!isExpandableItemId(itemId)) return;
+        setExpandedItems((prev) => {
           const cur = prev[sid] ?? new Set<string>();
           const next = new Set(cur);
-          if (next.has(toolId)) next.delete(toolId);
-          else next.add(toolId);
+          if (next.has(itemId)) next.delete(itemId);
+          else next.add(itemId);
           return { ...prev, [sid]: next };
         });
         return;
       }
-      setSelectedItemBySession((prev) => ({ ...prev, [sid]: toolId }));
+      setSelectedItemBySession((prev) => ({ ...prev, [sid]: itemId }));
     },
     [api.activeId, selectedItemBySession],
   );
@@ -248,7 +261,7 @@ export function App() {
     if (!sid) return;
     const groupId = latestDelegationId(api.active ?? null);
     if (!groupId) return;
-    setExpandedTools((prev) => {
+    setExpandedItems((prev) => {
       const cur = prev[sid] ?? new Set<string>();
       const next = new Set(cur);
       if (next.has(groupId)) next.delete(groupId);

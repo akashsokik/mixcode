@@ -51,7 +51,7 @@ describe("ChatItem", () => {
     }
   });
 
-  test("hides expanded panel and hint when not selected", async () => {
+  test("hides hint when not selected but keeps the expanded panel", async () => {
     const setup = await testRender(
       <ChatItem
         id="x"
@@ -69,8 +69,9 @@ describe("ChatItem", () => {
       await act(async () => { await setup.renderOnce(); });
       const screen = frameText(setup);
       expect(screen).toContain("summary");
-      // Hint is selection-gated; expanded panel still renders because
-      // expansion state is independent of selection.
+      // Hint is selection-gated; expanded panel renders independently of
+      // selection so we assert both.
+      expect(screen).toContain("DETAIL");
       expect(screen).not.toContain("click or ctrl+e to collapse");
     } finally {
       await act(async () => { setup.renderer.destroy(); });
