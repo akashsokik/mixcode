@@ -87,3 +87,25 @@ describe("PeersPanel (single peer)", () => {
     }
   });
 });
+
+describe("PeersPanel (elapsed)", () => {
+  test("shows elapsed seconds next to the verb", async () => {
+    const session = streamingClaudeSession();
+    const setup = await testRender(
+      <PeersPanel
+        session={session}
+        width={28}
+        streamingMessageId="m1"
+        nowMs={Date.parse("2026-05-25T10:00:23.000Z")}
+      />,
+      { width: 32, height: 16, exitOnCtrlC: false },
+    );
+    try {
+      await act(async () => { await setup.renderOnce(); });
+      const out = frameText(setup);
+      expect(out).toMatch(/working…\s+23s/);
+    } finally {
+      await act(async () => { setup.renderer.destroy(); });
+    }
+  });
+});

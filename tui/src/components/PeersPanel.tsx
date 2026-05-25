@@ -1,7 +1,9 @@
 import type { Session } from "../../../shared/events.ts";
 import { TextAttributes } from "@opentui/core";
+import { useEffect, useState } from "react";
 import { pendingDelegations } from "../util/blocks";
 import { theme } from "../theme";
+import { formatElapsed } from "../util/elapsed";
 import { StatusDot } from "./StatusDot";
 import type { GroupedBlock } from "../util/blocks";
 
@@ -11,11 +13,29 @@ export type PeersPanelProps = {
   session: Session | null;
   width: number;
   streamingMessageId: string | null;
+  // Test seam — production callers omit this and the panel reads Date.now().
+  nowMs?: number;
 };
 
-export function PeersPanel({ session, width, streamingMessageId }: PeersPanelProps) {
+export function PeersPanel({ session, width, streamingMessageId, nowMs }: PeersPanelProps) {
   const pending = pendingDelegations(session, streamingMessageId);
+  // Hooks must run unconditionally on every render (rules-of-hooks). Declare
+  // them before the empty-state early return so React sees a stable hook order.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (pending.length === 0) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [pending.length]);
+  // Force React to treat `tick` as read so re-renders fire on each interval.
+  void tick;
+
   if (pending.length === 0) return null;
+
+  const now = nowMs ?? Date.now();
+  const startedAt =
+    session && streamingMessageId ? peerStartedAt(session, streamingMessageId) : now;
+  const elapsedMs = now - startedAt;
 
   return (
     <box
@@ -32,13 +52,18 @@ export function PeersPanel({ session, width, streamingMessageId }: PeersPanelPro
         <text fg={theme.textFaint}>{`   ${pending.length}`}</text>
       </box>
       {pending.map((g) => (
-        <PeerBlock key={g.id} group={g} />
+        <PeerBlock key={g.id} group={g} elapsedMs={elapsedMs} />
       ))}
     </box>
   );
 }
 
-function PeerBlock({ group }: { group: PeerGroup }) {
+function peerStartedAt(session: Session, messageId: string): number {
+  const msg = session.messages.find((m) => m.id === messageId);
+  return msg ? Date.parse(msg.createdAt) : Date.now();
+}
+
+function PeerBlock({ group, elapsedMs }: { group: PeerGroup; elapsedMs: number }) {
   const stats = childStats(group);
   const accent =
     group.tag === "validate"
@@ -63,7 +88,7 @@ function PeerBlock({ group }: { group: PeerGroup }) {
       </box>
       <box flexDirection="row">
         <text fg={theme.textFaint}>{"  "}</text>
-        <text fg={theme.textMuted}>{verb}</text>
+        <text fg={theme.textMuted}>{`${verb}   ${formatElapsed(elapsedMs)}`}</text>
       </box>
       <box flexDirection="row" marginTop={0}>
         <text fg={theme.textFaint}>{"  "}</text>
