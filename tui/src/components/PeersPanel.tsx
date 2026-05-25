@@ -16,6 +16,11 @@ type PeerGroup = Extract<GroupedBlock, { kind: "delegation_group" }>;
 type CompletedEntry = {
   group: PeerGroup;
   finishedAt: number;
+  // Wall-clock ms at which the peer began streaming — used to keep multiple
+  // stacked rail blocks in chronological order (oldest at top) after a
+  // pending entry transitions to completed. Captured at the moment of the
+  // diff so we don't depend on the source message still being addressable.
+  startedAt: number;
   summary: string;
 };
 
@@ -70,6 +75,7 @@ export function PeersPanel({
           [id]: {
             group,
             finishedAt: now,
+            startedAt: peerStartedAtFromId(session, id) ?? now,
             summary: extractCompletionSummary(session, group, id),
           },
         };
@@ -97,12 +103,30 @@ export function PeersPanel({
   // the completion glance never appears.
   if (pending.length === 0 && Object.keys(completed).length === 0) return null;
 
-  const startedAt =
+  const pendingStartedAt =
     session && streamingMessageId ? peerStartedAt(session, streamingMessageId) : now;
-  const elapsedMs = now - startedAt;
+  const elapsedMs = now - pendingStartedAt;
 
-  const completedList = Object.entries(completed);
-  const totalCount = pending.length + completedList.length;
+  // Merge pending and completed into a single chronologically-ordered list so
+  // the rail renders oldest-at-top regardless of which set an entry currently
+  // lives in. Each row's sortKey is the wall-clock ms at which its peer began
+  // streaming (the owning message's createdAt).
+  type RailRow =
+    | { kind: "pending"; sortKey: number; group: PeerGroup }
+    | { kind: "completed"; sortKey: number; id: string; entry: CompletedEntry };
+  const rows: RailRow[] = [
+    ...pending.map<RailRow>((g) => ({
+      kind: "pending",
+      sortKey: pendingStartedAt,
+      group: g,
+    })),
+    ...Object.entries(completed).map<RailRow>(([id, entry]) => ({
+      kind: "completed",
+      sortKey: entry.startedAt,
+      id,
+      entry,
+    })),
+  ].sort((a, b) => a.sortKey - b.sortKey);
 
   return (
     <box
@@ -116,19 +140,27 @@ export function PeersPanel({
     >
       <box flexDirection="row" marginBottom={1}>
         <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>peer activity</text>
-        <text fg={theme.textFaint}>{`   ${totalCount}`}</text>
+        <text fg={theme.textFaint}>{`   ${rows.length}`}</text>
       </box>
-      {pending.map((g) => (
-        <PeerBlock key={g.id} group={g} elapsedMs={elapsedMs} />
-      ))}
-      {completedList.map(([id, entry]) => (
-        <PeerBlock
-          key={`done:${id}`}
-          group={entry.group}
-          elapsedMs={elapsedMs}
-          completedSummary={entry.summary}
-        />
-      ))}
+      {/*
+        Scrollbox keeps the header pinned and lets the stacked peer blocks
+        overflow when more peers are active than fit vertically. Empty-state
+        early return above ensures we never mount this with zero rows.
+      */}
+      <scrollbox flexGrow={1} scrollbarOptions={{ showArrows: false }}>
+        {rows.map((row) =>
+          row.kind === "pending" ? (
+            <PeerBlock key={row.group.id} group={row.group} elapsedMs={elapsedMs} />
+          ) : (
+            <PeerBlock
+              key={`done:${row.id}`}
+              group={row.entry.group}
+              elapsedMs={elapsedMs}
+              completedSummary={row.entry.summary}
+            />
+          ),
+        )}
+      </scrollbox>
     </box>
   );
 }
@@ -192,6 +224,24 @@ function closedRunner(g: PeerGroup): string | null {
 function peerStartedAt(session: Session, messageId: string): number {
   const msg = session.messages.find((m) => m.id === messageId);
   return msg ? Date.parse(msg.createdAt) : Date.now();
+}
+
+// Recover the wall-clock startedAt for a pending group from its id at the
+// instant it transitions to completed. Pending ids have shape
+// `${messageId}:pending`; we look up the owning message's createdAt so the
+// row keeps its chronological sort key in the rail even after it leaves the
+// `pending` set. Returns null if the message can't be located (caller falls
+// back to the current `now`).
+function peerStartedAtFromId(
+  session: Session | null,
+  pendingId: string,
+): number | null {
+  if (!session) return null;
+  const suffix = ":pending";
+  if (!pendingId.endsWith(suffix)) return null;
+  const messageId = pendingId.slice(0, -suffix.length);
+  const msg = session.messages.find((m) => m.id === messageId);
+  return msg ? Date.parse(msg.createdAt) : null;
 }
 
 function PeerBlock({

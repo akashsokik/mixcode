@@ -110,6 +110,117 @@ describe("PeersPanel (elapsed)", () => {
   });
 });
 
+describe("PeersPanel (multiple)", () => {
+  // Plan v1 asked for "two concurrent pending peers in one message", but
+  // groupDelegations folds all trailing peer events into a single pending
+  // group (one inferred runner) and pendingDelegations operates on a single
+  // streaming message — so the literal scenario is structurally impossible.
+  //
+  // The honest "stack multiple peer blocks" invariant the rail actually
+  // supports is mixed: one pending peer alongside one freshly-completed peer
+  // from a previous (now-settled) assistant message. The two render as
+  // stacked blocks with the older (completed) one above the newer (pending)
+  // one — insertion order matches when each entered the rail.
+  test("stacks a completed glance above a fresh pending peer", async () => {
+    const initial: Session = {
+      ...emptySession(),
+      streaming: true,
+      messages: [
+        {
+          id: "m1",
+          role: "assistant",
+          text: "",
+          createdAt: "2026-05-25T10:00:00.000Z",
+          events: [
+            {
+              type: "tool_log",
+              log: { name: "[claude] reply", input: {}, output: "drafting" },
+            },
+          ],
+        },
+      ],
+    };
+    // After the first peer settles its delegate_run anchor lands on m1 and a
+    // new assistant message m2 begins streaming with a codex peer.
+    const next: Session = {
+      ...initial,
+      messages: [
+        {
+          ...initial.messages[0],
+          events: [
+            ...initial.messages[0].events,
+            {
+              type: "tool_log",
+              log: {
+                name: "mcp__delegate__delegate_run",
+                input: { runner: "claude" },
+                output: JSON.stringify({ ok: true, summary: "patched" }),
+              },
+            },
+          ],
+        },
+        {
+          id: "m2",
+          role: "assistant",
+          text: "",
+          createdAt: "2026-05-25T10:00:05.000Z",
+          events: [
+            {
+              type: "tool_log",
+              log: { name: "[codex] reply", input: {}, output: "reviewing" },
+            },
+          ],
+        },
+      ],
+    };
+
+    let setSession: ((s: Session) => void) | null = null;
+    let setStreamingId: ((id: string) => void) | null = null;
+    function Wrapper() {
+      const [s, setS] = useState<Session>(initial);
+      const [sid, setSid] = useState<string>("m1");
+      setSession = setS;
+      setStreamingId = setSid;
+      return (
+        <PeersPanel
+          session={s}
+          width={28}
+          streamingMessageId={sid}
+          completionMs={6000}
+        />
+      );
+    }
+
+    const setup = await testRender(<Wrapper />, {
+      width: 32,
+      height: 24,
+      exitOnCtrlC: false,
+    });
+    try {
+      await act(async () => { await setup.renderOnce(); });
+      // Initial frame: only claude pending.
+      expect(frameText(setup)).toContain("[claude]");
+
+      await act(async () => {
+        setSession!(next);
+        setStreamingId!("m2");
+      });
+      await act(async () => { await setup.renderOnce(); });
+
+      const out = frameText(setup);
+      // Both peers visible: claude as the lingering completion glance,
+      // codex as the new pending block. Completion glance appears first
+      // because it entered the rail before the pending swap.
+      const claudeIdx = out.indexOf("[claude]");
+      const codexIdx = out.indexOf("[codex]");
+      expect(claudeIdx).toBeGreaterThanOrEqual(0);
+      expect(codexIdx).toBeGreaterThan(claudeIdx);
+    } finally {
+      await act(async () => { setup.renderer.destroy(); });
+    }
+  });
+});
+
 describe("PeersPanel (completion)", () => {
   test("keeps a completed block visible briefly with verdict", async () => {
     const running = streamingClaudeSession();
