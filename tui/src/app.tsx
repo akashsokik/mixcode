@@ -89,6 +89,7 @@ export function App() {
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
   const [mcpServerNames, setMcpServerNames] = useState<string[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
+  const [railToggle, setRailToggle] = useState<"auto" | "shown" | "hidden">("auto");
 
   // Gate on `helloReceived`, not `status === "open"`. The WS opens a beat
   // before `hello` arrives, and during that window sessions.length is still
@@ -302,9 +303,12 @@ export function App() {
   }, [api.active]);
 
   const peersWidth = useMemo(() => {
+    if (railToggle === "hidden") return 0;
+    if (railToggle === "shown") return Math.min(32, Math.max(20, Math.round(width * 0.22)));
+    // auto
     if (width < 90) return 0;
     return Math.min(32, Math.max(22, Math.round(width * 0.22)));
-  }, [width]);
+  }, [width, railToggle]);
 
   const sessionPill = useMemo(
     () =>
@@ -555,6 +559,10 @@ export function App() {
   useKeyboard((key) => {
     if (key.ctrl && key.name === "k") {
       setPaletteMode((m) => (m === "global" ? null : "global"));
+      return;
+    }
+    if (key.ctrl && key.name === "b") {
+      setRailToggle((m) => (m === "auto" ? "hidden" : m === "hidden" ? "shown" : "auto"));
       return;
     }
     // shift+up / shift+down navigate the chat-item selection. The Prompt
