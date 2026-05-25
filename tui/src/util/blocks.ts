@@ -4,6 +4,7 @@ import type {
   ToolLog,
 } from "../../../shared/events.ts";
 import { stripMcpPrefix, stripPeerPrefix } from "./format";
+import type { Notice } from "./notice";
 
 // Per-message render units extracted from the raw event stream. The transcript
 // renders one of these per row (modulo grouping below); keeping the shape
@@ -260,6 +261,46 @@ export function collectToolIds(session: Session | null): string[] {
         continue;
       }
       if (g.block.kind !== "tool") continue;
+      out.push(`${m.id}:${g.index}`);
+    }
+  }
+  return out;
+}
+
+// Returns the navigation order for shift+up / shift+down in the chat area:
+// one id per visually-distinct row (user message, notice, assistant block,
+// delegation group, tool card, task card). Order matches Transcript's render
+// order (chronological by `createdAt`, ties broken by user msg before notice).
+export function collectChatItemIds(
+  session: Session | null,
+  notices: Notice[],
+): string[] {
+  if (!session) return [];
+  type Entry =
+    | { kind: "message"; at: string; message: SessionMessage }
+    | { kind: "notice"; at: string; notice: Notice };
+  const entries: Entry[] = [
+    ...session.messages.map((m) => ({ kind: "message" as const, at: m.createdAt, message: m })),
+    ...notices.map((n) => ({ kind: "notice" as const, at: n.createdAt, notice: n })),
+  ].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+
+  const out: string[] = [];
+  for (const e of entries) {
+    if (e.kind === "notice") {
+      out.push(`notice:${e.notice.id}`);
+      continue;
+    }
+    const m = e.message;
+    if (m.role === "user") {
+      out.push(`msg:${m.id}`);
+      continue;
+    }
+    const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
+    for (const g of grouped) {
+      if (g.kind === "delegation_group") {
+        out.push(g.id);
+        continue;
+      }
       out.push(`${m.id}:${g.index}`);
     }
   }
