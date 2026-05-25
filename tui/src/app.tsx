@@ -7,6 +7,7 @@ import { PermissionPanel } from "./components/PermissionPanel";
 import { ConsensusModal } from "./components/ConsensusModal";
 import { ModelPicker } from "./components/ModelPicker";
 import { Palette, type PaletteItem } from "./components/Palette";
+import { PeersPanel } from "./components/PeersPanel";
 import type { ClaudePermissionMode, RunnerKind, SessionSkillEntry } from "../../shared/events.ts";
 import { useSessions } from "./state/sessions";
 import { parseSlash, SLASH_COMMANDS, toggleRunner } from "./util/slash";
@@ -291,6 +292,13 @@ export function App() {
         : null;
     const delegations = s.delegations ?? null;
     return { modelLabel, contextPercent, projectLabel, branch, delegations };
+  }, [api.active]);
+
+  const streamingMessageId = useMemo(() => {
+    const s = api.active;
+    if (!s || !s.streaming) return null;
+    const last = s.messages[s.messages.length - 1];
+    return last && last.role === "assistant" ? last.id : null;
   }, [api.active]);
 
   const sessionPill = useMemo(
@@ -1009,7 +1017,7 @@ export function App() {
 
   return (
     <box
-      flexDirection="column"
+      flexDirection="row"
       width={width}
       height={height}
       backgroundColor={theme.bg}
@@ -1018,6 +1026,7 @@ export function App() {
       paddingLeft={2}
       paddingRight={2}
     >
+      <box flexDirection="column" flexGrow={1}>
       <Transcript
         session={api.active}
         notices={activeNotices}
@@ -1124,6 +1133,12 @@ export function App() {
         delegations={promptMeta?.delegations ?? null}
         sessionPill={sessionPill}
         slashExtras={skillSlashSuggestions}
+      />
+      </box>
+      <PeersPanel
+        session={api.active}
+        width={26}
+        streamingMessageId={streamingMessageId}
       />
     </box>
   );
