@@ -2,6 +2,7 @@ import { TextAttributes } from "@opentui/core";
 import type { ToolLog } from "../../../shared/events.ts";
 import { theme } from "../theme";
 import { shortId } from "../util/format";
+import { ChatItem } from "./ChatItem";
 import { StatusDot } from "./StatusDot";
 
 type Snapshot = {
@@ -39,15 +40,27 @@ const MAX_RESULT_CHARS = 80;
 // Rich rendering for the live `task` tool_log stream. The server emits the
 // snapshot object directly on log.output (no MCP envelope, no JSON.stringify),
 // so we read it as a structured object.
-export function TaskCard({ log }: { log: ToolLog }) {
+export function TaskCard({
+  id,
+  log,
+  selected,
+  onActivate,
+}: {
+  id: string;
+  log: ToolLog;
+  selected: boolean;
+  onActivate?: () => void;
+}) {
   const snap = coerceSnapshot(log.output);
   if (!snap) {
     return (
-      <box flexDirection="row" paddingLeft={1} paddingRight={1} marginTop={1}>
-        <text fg={theme.textMuted}>{"○ "}</text>
-        <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>task</text>
-        <text fg={theme.textMuted}>{"  (no data)"}</text>
-      </box>
+      <ChatItem id={id} selected={selected} onActivate={onActivate}>
+        <box flexDirection="row">
+          <text fg={theme.textMuted}>{"○ "}</text>
+          <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>task</text>
+          <text fg={theme.textMuted}>{"  (no data)"}</text>
+        </box>
+      </ChatItem>
     );
   }
 
@@ -71,7 +84,7 @@ export function TaskCard({ log }: { log: ToolLog }) {
   const idShort = shortId(snap.taskId);
 
   return (
-    <box flexDirection="column" paddingLeft={1} paddingRight={1} marginTop={1}>
+    <ChatItem id={id} selected={selected} onActivate={onActivate}>
       <box flexDirection="row">
         <StatusDot status={snap.status} />
         <text fg={theme.text}>{" "}</text>
@@ -93,7 +106,7 @@ export function TaskCard({ log }: { log: ToolLog }) {
           <text fg={theme.textMuted}>{truncate(snap.summary, 200)}</text>
         </box>
       )}
-    </box>
+    </ChatItem>
   );
 }
 

@@ -1008,9 +1008,9 @@ export function App() {
       <Transcript
         session={api.active}
         notices={activeNotices}
-        selectedToolId={activeSelectedToolId}
-        expandedTools={activeExpandedTools}
-        onToolActivate={handleToolActivate}
+        selectedItemId={activeSelectedToolId}
+        expandedItems={activeExpandedTools}
+        onItemActivate={handleToolActivate}
       />
       <Spinner active={api.active} />
       {api.pendingPermissions.length > 0 && (

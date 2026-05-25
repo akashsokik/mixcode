@@ -26,15 +26,15 @@ import {
 export function Transcript({
   session,
   notices,
-  selectedToolId,
-  expandedTools,
-  onToolActivate,
+  selectedItemId,
+  expandedItems,
+  onItemActivate,
 }: {
   session: Session | null;
   notices: Notice[];
-  selectedToolId: string | null;
-  expandedTools: Set<string>;
-  onToolActivate?: (toolId: string) => void;
+  selectedItemId: string | null;
+  expandedItems: Set<string>;
+  onItemActivate?: (itemId: string) => void;
 }) {
   if (!session) {
     return <Welcome />;
@@ -111,12 +111,21 @@ export function Transcript({
             messageStreaming={
               session.streaming && e.message.id === lastMsg?.id
             }
-            selectedToolId={selectedToolId}
-            expandedTools={expandedTools}
-            onToolActivate={onToolActivate}
+            selectedItemId={selectedItemId}
+            expandedItems={expandedItems}
+            onItemActivate={onItemActivate}
           />
         ) : (
-          <NoticeCard key={e.notice.id} notice={e.notice} />
+          <NoticeCard
+            key={e.notice.id}
+            notice={e.notice}
+            selected={`notice:${e.notice.id}` === selectedItemId}
+            onActivate={
+              onItemActivate
+                ? () => onItemActivate(`notice:${e.notice.id}`)
+                : undefined
+            }
+          />
         ),
       )}
     </scrollbox>
@@ -126,31 +135,48 @@ export function Transcript({
 function Message({
   message,
   messageStreaming,
-  selectedToolId,
-  expandedTools,
-  onToolActivate,
+  selectedItemId,
+  expandedItems,
+  onItemActivate,
 }: {
   message: SessionMessage;
   messageStreaming: boolean;
-  selectedToolId: string | null;
-  expandedTools: Set<string>;
-  onToolActivate?: (toolId: string) => void;
+  selectedItemId: string | null;
+  expandedItems: Set<string>;
+  onItemActivate?: (itemId: string) => void;
 }) {
-  if (message.role === "user") return <UserMessage message={message} />;
+  if (message.role === "user") {
+    const id = `msg:${message.id}`;
+    return (
+      <UserMessage
+        message={message}
+        selected={id === selectedItemId}
+        onActivate={onItemActivate ? () => onItemActivate(id) : undefined}
+      />
+    );
+  }
   return (
     <AssistantMessage
       message={message}
       messageStreaming={messageStreaming}
-      selectedToolId={selectedToolId}
-      expandedTools={expandedTools}
-      onToolActivate={onToolActivate}
+      selectedItemId={selectedItemId}
+      expandedItems={expandedItems}
+      onItemActivate={onItemActivate}
     />
   );
 }
 
-function UserMessage({ message }: { message: SessionMessage }) {
+function UserMessage({
+  message,
+  selected,
+  onActivate,
+}: {
+  message: SessionMessage;
+  selected: boolean;
+  onActivate?: () => void;
+}) {
   return (
-    <box flexDirection="column" marginTop={1}>
+    <ChatItem id={`msg:${message.id}`} selected={selected} onActivate={onActivate}>
       <box
         flexDirection="row"
         backgroundColor={theme.bgPanel}
@@ -161,22 +187,22 @@ function UserMessage({ message }: { message: SessionMessage }) {
         <text fg={theme.text}>{message.text}</text>
       </box>
       <Rule />
-    </box>
+    </ChatItem>
   );
 }
 
 function AssistantMessage({
   message,
   messageStreaming,
-  selectedToolId,
-  expandedTools,
-  onToolActivate,
+  selectedItemId,
+  expandedItems,
+  onItemActivate,
 }: {
   message: SessionMessage;
   messageStreaming: boolean;
-  selectedToolId: string | null;
-  expandedTools: Set<string>;
-  onToolActivate?: (toolId: string) => void;
+  selectedItemId: string | null;
+  expandedItems: Set<string>;
+  onItemActivate?: (itemId: string) => void;
 }) {
   const blocks = blocksFromEvents(message.events);
   const grouped = groupDelegations(blocks, message.id, messageStreaming);
@@ -197,8 +223,8 @@ function AssistantMessage({
     <box flexDirection="column" marginTop={1}>
       {grouped.map((g, gi) => {
         if (g.kind === "delegation_group") {
-          const isSelected = g.id === selectedToolId;
-          const isExpanded = expandedTools.has(g.id);
+          const isSelected = g.id === selectedItemId;
+          const isExpanded = expandedItems.has(g.id);
           const hint = isSelected
             ? isExpanded
               ? "click or ctrl+e to collapse"
@@ -211,28 +237,30 @@ function AssistantMessage({
               selected={isSelected}
               expanded={isExpanded}
               hint={hint}
-              onActivate={onToolActivate ? () => onToolActivate(g.id) : undefined}
+              onActivate={onItemActivate ? () => onItemActivate(g.id) : undefined}
             />
           );
         }
-        const toolId = `${message.id}:${g.index}`;
+        const itemId = `${message.id}:${g.index}`;
         const isToolSelected =
-          g.block.kind === "tool" && toolId === selectedToolId;
+          g.block.kind === "tool" && itemId === selectedItemId;
         const isToolExpanded =
-          g.block.kind === "tool" && expandedTools.has(toolId);
+          g.block.kind === "tool" && expandedItems.has(itemId);
         return (
           <BlockRow
             key={`b-${g.index}`}
-            id={toolId}
+            id={itemId}
             block={g.block}
             firstInMessage={gi === 0}
             toolSelected={isToolSelected}
             toolExpanded={isToolExpanded}
             onToolActivate={
-              g.block.kind === "tool" && onToolActivate
-                ? () => onToolActivate(toolId)
+              g.block.kind === "tool" && onItemActivate
+                ? () => onItemActivate(itemId)
                 : undefined
             }
+            selectedItemId={selectedItemId}
+            onItemActivate={onItemActivate}
           />
         );
       })}
@@ -251,6 +279,8 @@ function BlockRow({
   toolSelected = false,
   toolExpanded = false,
   onToolActivate,
+  selectedItemId,
+  onItemActivate,
 }: {
   id: string;
   block: Block;
@@ -258,10 +288,24 @@ function BlockRow({
   toolSelected?: boolean;
   toolExpanded?: boolean;
   onToolActivate?: () => void;
+  selectedItemId: string | null;
+  onItemActivate?: (itemId: string) => void;
 }) {
+  const isSelected = id === selectedItemId;
+  const activate = onItemActivate ? () => onItemActivate(id) : undefined;
+  const rowMarginTop = firstInMessage ? 0 : 1;
   if (block.kind === "tool") {
     const bare = stripMcpPrefix(stripPeerPrefix(block.log.name).rest);
-    if (bare === "task") return <TaskCard log={block.log} />;
+    if (bare === "task") {
+      return (
+        <TaskCard
+          id={id}
+          log={block.log}
+          selected={isSelected}
+          onActivate={activate}
+        />
+      );
+    }
     const hint = toolSelected
       ? toolExpanded
         ? "click or ctrl+e to collapse"
@@ -280,42 +324,47 @@ function BlockRow({
   }
   if (block.kind === "error") {
     return (
-      <box flexDirection="row" paddingLeft={1} paddingRight={1}>
-        <text fg={theme.textMuted}>{"• "}</text>
-        <text fg={theme.toolError} attributes={TextAttributes.BOLD}>
-          {`error: ${block.message}`}
-        </text>
-      </box>
+      <ChatItem id={id} selected={isSelected} onActivate={activate} marginTop={rowMarginTop}>
+        <box flexDirection="row">
+          <text fg={theme.textMuted}>{"• "}</text>
+          <text fg={theme.toolError} attributes={TextAttributes.BOLD}>
+            {`error: ${block.message}`}
+          </text>
+        </box>
+      </ChatItem>
     );
   }
   if (block.kind === "thinking") {
     return (
-      <box
-        flexDirection="row"
-        paddingLeft={1}
-        paddingRight={1}
-        marginTop={firstInMessage ? 0 : 1}
-      >
-        <text fg={theme.textFaint}>{"> "}</text>
-        <text fg={theme.textSubtle}>{`Thought (${block.seconds}s)`}</text>
-      </box>
+      <ChatItem id={id} selected={isSelected} onActivate={activate} marginTop={rowMarginTop}>
+        <box flexDirection="row">
+          <text fg={theme.textFaint}>{"> "}</text>
+          <text fg={theme.textSubtle}>{`Thought (${block.seconds}s)`}</text>
+        </box>
+      </ChatItem>
     );
   }
   if (block.kind === "peer_reply") {
-    return <PeerReply runner={block.runner} text={block.text} indent={!firstInMessage} />;
+    return (
+      <PeerReply
+        id={id}
+        runner={block.runner}
+        text={block.text}
+        indent={!firstInMessage}
+        selected={isSelected}
+        onActivate={activate}
+      />
+    );
   }
   if (block.kind === "peer_thinking") {
     return (
-      <box
-        flexDirection="row"
-        paddingLeft={1}
-        paddingRight={1}
-        marginTop={firstInMessage ? 0 : 1}
-      >
-        <text fg={theme.textFaint}>{"> "}</text>
-        <text fg={peerColor(block.runner)} attributes={TextAttributes.BOLD}>{`[${block.runner}] `}</text>
-        <text fg={theme.textSubtle}>{cleanModelText(block.text) || "thinking"}</text>
-      </box>
+      <ChatItem id={id} selected={isSelected} onActivate={activate} marginTop={rowMarginTop}>
+        <box flexDirection="row">
+          <text fg={theme.textFaint}>{"> "}</text>
+          <text fg={peerColor(block.runner)} attributes={TextAttributes.BOLD}>{`[${block.runner}] `}</text>
+          <text fg={theme.textSubtle}>{cleanModelText(block.text) || "thinking"}</text>
+        </box>
+      </ChatItem>
     );
   }
   // Assistant prose — no leading bullet. The markdown element is block-level
@@ -323,14 +372,9 @@ function BlockRow({
   // space gets eaten and subsequent paragraph lines wrap flush-left over the
   // bullet column. Drop the marker; let the markdown content stand on its own.
   return (
-    <box
-      flexDirection="column"
-      paddingLeft={1}
-      paddingRight={1}
-      marginTop={firstInMessage ? 0 : 1}
-    >
+    <ChatItem id={id} selected={isSelected} onActivate={activate} marginTop={rowMarginTop}>
       <markdown content={cleanModelText(block.text)} syntaxStyle={markdownStyle} fg={theme.text} />
-    </box>
+    </ChatItem>
   );
 }
 
@@ -419,6 +463,7 @@ function DelegationGroup({
           id={`${group.id}:${i}`}
           block={b}
           firstInMessage={false}
+          selectedItemId={null}
         />
       ))}
     </box>
@@ -618,16 +663,22 @@ function tailLines(text: string, maxLines: number, maxChars: number): string {
 }
 
 function PeerReply({
+  id,
   runner,
   text,
   indent,
+  selected,
+  onActivate,
 }: {
+  id: string;
   runner: string;
   text: string;
   indent: boolean;
+  selected: boolean;
+  onActivate?: () => void;
 }) {
   return (
-    <box flexDirection="column" paddingLeft={1} paddingRight={1} marginTop={indent ? 1 : 0}>
+    <ChatItem id={id} selected={selected} onActivate={onActivate} marginTop={indent ? 1 : 0}>
       <box flexDirection="row">
         <text fg={theme.textMuted}>{"• "}</text>
         <text fg={peerColor(runner)} attributes={TextAttributes.BOLD}>{`[${runner}] reply`}</text>
@@ -637,7 +688,7 @@ function PeerReply({
           <markdown content={cleanModelText(text) || " "} syntaxStyle={markdownStyle} fg={theme.text} />
         </box>
       </box>
-    </box>
+    </ChatItem>
   );
 }
 
