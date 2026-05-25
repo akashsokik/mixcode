@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useKeyboard, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
 import { Transcript } from "./components/Transcript";
 import { Prompt } from "./components/Prompt";
 import { Spinner } from "./components/Spinner";
+import { Notifications } from "./components/Notifications";
 import { PermissionPanel } from "./components/PermissionPanel";
 import { ConsensusModal } from "./components/ConsensusModal";
 import { ModelPicker } from "./components/ModelPicker";
@@ -17,6 +18,7 @@ import {
   mcpActionLines,
   mcpListLines,
   mcpTestLines,
+  lastTurnUsage,
   modelLines,
   permissionsLines,
   planLines,
@@ -25,6 +27,11 @@ import {
   skillsLines,
   type Notice,
 } from "./util/notice";
+import {
+  makeNotification,
+  type Notification,
+  type NotificationKind,
+} from "./util/notification";
 import { treeLines } from "./util/tree";
 import { normalizeRule } from "./util/permission-rule";
 import {
@@ -39,13 +46,14 @@ import {
 import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
 import { theme } from "./theme";
 import { basename } from "./util/path";
-import { collectChatItemIds, latestDelegationId } from "./util/blocks";
+import { collectChatItemIds, latestDelegationId, resolveItemContent } from "./util/blocks";
+import { writeClipboard } from "./util/clipboard";
 import {
-  contextLimit,
-  latestContextTokens,
+  formatTokens,
   prettyModelLabel,
   projectName,
 } from "./util/status";
+import type { MetaPair } from "./components/Prompt";
 
 const EMPTY_SET: Set<string> = new Set();
 
@@ -74,6 +82,13 @@ export function App() {
   const [paletteMode, setPaletteMode] = useState<
     "sessions" | "skills" | "mcp" | "global" | null
   >(null);
+  // Toast-style transient notifications. Independent of `notices` (which are
+  // per-session command output) — these are global, auto-dismissing, and
+  // float over the layout for events like "copied to clipboard".
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  // Live mouse text selection from opentui's selection system. Captured here
+  // so cmd+c can prefer the dragged text over the chat-item content.
+  const dragSelectionRef = useRef<string>("");
   // Per-session chat-item selection + expansion. Selection navigates with
   // shift+up/shift+down; ctrl+e toggles expansion of whichever item is
   // selected (falling back to the latest delegation when nothing is selected).
@@ -280,17 +295,41 @@ export function App() {
           ? s.models.codex
           : s.models.vercel;
     const modelLabel = prettyModelLabel(modelId, s.activeRunner);
-    const limit = contextLimit(modelId, s.activeRunner);
-    const used = latestContextTokens(s);
-    const contextPercent =
-      limit > 0 ? Math.round(Math.min(1, used / limit) * 100) : null;
     const projectLabel = projectName(s.cwd);
     const branch =
       s.git && s.git.branch
         ? { name: s.git.branch, dirty: s.git.dirty }
         : null;
     const delegations = s.delegations ?? null;
-    return { modelLabel, contextPercent, projectLabel, branch, delegations };
+
+    // Per-turn metrics: pull straight from the most recent SDK-reported
+    // turnUsage on the session. Session-level "lifetime" totals are also
+    // available via sessionTotals() if we want to surface them on /context,
+    // but the rail is meant to reflect the *current* turn (matches what the
+    // user just sent).
+    //
+    // contextUsage is cleared by the server when the runner is swapped, so we
+    // gate the historical In/Cache/Out pairs on it too — otherwise they'd
+    // stay stuck on the previous runner's numbers after a tab-cycle until the
+    // new runner emits its first turn.
+    const ctx = s.contextUsage ?? null;
+    const last = ctx ? lastTurnUsage(s) : null;
+    const metaPairs: MetaPair[] = [];
+    if (last) {
+      metaPairs.push({ label: "In", value: formatTokens(last.input) });
+      if (last.cacheRead > 0) {
+        metaPairs.push({ label: "Cache", value: formatTokens(last.cacheRead) });
+      }
+      metaPairs.push({ label: "Out", value: formatTokens(last.output) });
+    }
+    if (ctx) {
+      // One decimal so the % visibly moves turn-to-turn (rounding to int
+      // makes 11.3 → "11" and 11.7 → "12" look static when the underlying
+      // window load grew by a few hundred tokens).
+      metaPairs.push({ label: "Ctx", value: `${ctx.percentage.toFixed(1)}%` });
+    }
+    const contextPercent = ctx ? Math.round(ctx.percentage) : null;
+    return { modelLabel, contextPercent, projectLabel, branch, delegations, metaPairs };
   }, [api.active]);
 
   const sessionPill = useMemo(
@@ -539,6 +578,76 @@ export function App() {
     [],
   );
 
+  const addNotification = useCallback(
+    (message: string, kind: NotificationKind = "info", durationMs?: number) => {
+      setNotifications((prev) => [
+        ...prev,
+        makeNotification(message, kind, durationMs),
+      ]);
+    },
+    [],
+  );
+
+  // Drop expired notifications. Re-scheduled whenever the list changes so the
+  // next earliest expiry drives the timer.
+  useEffect(() => {
+    if (notifications.length === 0) return;
+    const now = Date.now();
+    const earliest = Math.min(...notifications.map((n) => n.expiresAt));
+    const delay = Math.max(50, earliest - now);
+    const t = setTimeout(() => {
+      const cutoff = Date.now();
+      setNotifications((prev) => prev.filter((n) => n.expiresAt > cutoff));
+    }, delay);
+    return () => clearTimeout(t);
+  }, [notifications]);
+
+  useSelectionHandler((selection) => {
+    dragSelectionRef.current = selection.getSelectedText() ?? "";
+  });
+
+  // Copy the active payload to the clipboard with toast feedback.
+  // Cascades:
+  //   1. live mouse-drag selection → copy that
+  //   2. selected chat item → copy its resolved content
+  //   3. otherwise → "nothing to copy" toast so the user knows the keybind fired
+  const copyActive = useCallback(() => {
+    const dragged = dragSelectionRef.current.trim();
+    if (dragged) {
+      void writeClipboard(dragged).then((ok) => {
+        const len = dragged.length;
+        addNotification(
+          ok
+            ? `copied ${len} char${len === 1 ? "" : "s"} from selection`
+            : "clipboard write failed",
+          ok ? "success" : "error",
+          4000,
+        );
+      });
+      return;
+    }
+    const id = activeSelectedItemId;
+    if (!id) {
+      addNotification("nothing to copy", "info", 2500);
+      return;
+    }
+    const text = resolveItemContent(api.active ?? null, activeNotices, id);
+    if (!text) {
+      addNotification("nothing to copy", "info", 2500);
+      return;
+    }
+    void writeClipboard(text).then((ok) => {
+      const len = text.length;
+      addNotification(
+        ok
+          ? `copied ${len} char${len === 1 ? "" : "s"}`
+          : "clipboard write failed",
+        ok ? "success" : "error",
+        4000,
+      );
+    });
+  }, [activeSelectedItemId, api.active, activeNotices, addNotification]);
+
   useKeyboard((key) => {
     if (key.ctrl && key.name === "k") {
       setPaletteMode((m) => (m === "global" ? null : "global"));
@@ -559,6 +668,16 @@ export function App() {
     // otherwise fall back to the delegation-group toggle behavior.
     if (key.ctrl && key.name === "e") {
       if (!toggleSelectedItemExpansion()) toggleLatestDelegation();
+      return;
+    }
+    // Copy bindings — two are wired so at least one survives terminal chord
+    // interception:
+    //   cmd+c (meta+c): macOS-native; iTerm2/WezTerm pass it through when
+    //     "send modifier keys" is on, but Terminal.app swallows it.
+    //   ctrl+y: portable fallback. Not bound by any other handler here, not
+    //     a SIGINT, and most terminals pass it straight through.
+    if ((key.meta && key.name === "c") || (key.ctrl && key.name === "y")) {
+      copyActive();
       return;
     }
   });
@@ -1007,6 +1126,13 @@ export function App() {
     api.setClaudeMode(next);
   }, [api.active, api.setClaudeMode]);
 
+  // tab from the prompt rotates the active runner through claude → codex →
+  // vercel → claude. Mirrors /switch but without leaving the input.
+  const cycleRunner = useCallback(() => {
+    if (!api.active) return;
+    api.setRunner(toggleRunner(api.active.activeRunner));
+  }, [api.active, api.setRunner]);
+
   return (
     <box
       flexDirection="column"
@@ -1025,6 +1151,7 @@ export function App() {
         expandedItems={activeExpandedItems}
         onItemActivate={handleItemActivate}
       />
+      <Notifications items={notifications} />
       <Spinner active={api.active} />
       {api.pendingPermissions.length > 0 && (
         <PermissionPanel
@@ -1115,6 +1242,7 @@ export function App() {
         streaming={api.active?.streaming ?? false}
         onInterrupt={api.interrupt}
         runner={api.active?.activeRunner ?? null}
+        onCycleRunner={cycleRunner}
         claudeMode={api.active?.claudeMode ?? "default"}
         onCycleClaudeMode={cycleClaudeMode}
         modelLabel={promptMeta?.modelLabel ?? null}
@@ -1124,6 +1252,7 @@ export function App() {
         delegations={promptMeta?.delegations ?? null}
         sessionPill={sessionPill}
         slashExtras={skillSlashSuggestions}
+        metaPairs={promptMeta?.metaPairs}
       />
     </box>
   );

@@ -26,24 +26,63 @@ export type ToolLog = {
 //   - atomic mode (text present) — the thought is delivered in one event;
 //     no prior text_delta belongs to it. Used in non-streaming fallback
 //     paths where event ordering can't carry a preceding-text contract.
+//
+// Token usage is intentionally NOT a RunEvent. Each SDK reports usage exactly
+// once per turn (Claude `result.usage`, Codex `turn.completed.usage`, Vercel
+// `finish.totalUsage`). The server forwards that single record as the
+// assistant message's `turnUsage` field — see `TurnUsage` below.
 export type RunEvent =
   | { type: "text_delta"; delta: string }
   | { type: "tool_log"; log: ToolLog }
   | { type: "thinking"; seconds: number; text?: string }
-  | {
-      type: "usage";
-      input: number;
-      output: number;
-      cacheRead: number;
-      cacheWrite: number;
-    }
   | { type: "error"; message: string };
+
+// Final per-turn token accounting, sourced verbatim from each SDK's terminal
+// usage record. No client-side summing or max-merging — exactly one of these
+// per assistant turn.
+//   - Claude:  SDKResultSuccess.usage (input_tokens, output_tokens,
+//              cache_read_input_tokens, cache_creation_input_tokens)
+//   - Codex:   TurnCompletedEvent.usage (input_tokens, cached_input_tokens,
+//              output_tokens, reasoning_output_tokens)
+//   - Vercel:  finish.totalUsage (inputTokens, outputTokens, cachedInputTokens)
+export type TurnUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  // Codex-only. The SDK reports reasoning tokens separately from
+  // `output_tokens`; we keep both so totals add up.
+  reasoningOutput?: number;
+  // Claude reports total_cost_usd on each result; the other SDKs don't.
+  costUsd?: number;
+  // The model that produced this turn. Used when the runner can swap models
+  // mid-session (Vercel) or for multi-model orchestration accounting.
+  model?: string;
+};
+
+// SDK-reported context-window snapshot. Claude derives this directly from the
+// SDK's `result.modelUsage[<model>].contextWindow` and the same result's
+// usage totals — i.e. the authoritative window size per model plus the
+// prompt-size measurement the SDK just returned. Codex and Vercel SDKs don't
+// expose window size, so for those runners `contextUsage` is computed from a
+// minimal static model→window table in the runner.
+export type ContextUsage = {
+  totalTokens: number;
+  maxTokens: number;
+  // Pre-rounded percentage so the wire format is the single source of truth
+  // for the rail display. 0..100.
+  percentage: number;
+};
 
 export type SessionMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
   events: RunEvent[];
+  // Populated exactly once, when the SDK closes the turn. Absent on
+  // in-flight messages and on turns the SDK terminated before reporting
+  // usage (e.g. user-aborted streams).
+  turnUsage?: TurnUsage;
   createdAt: string;
 };
 
@@ -102,6 +141,10 @@ export type Session = {
   claudeMode: ClaudePermissionMode;
   git: GitInfo | null;
   delegations?: DelegationStats;
+  // Most recent SDK-reported context-window snapshot for the active model.
+  // Cleared on /clear and when the runner is swapped. Null when the active
+  // runner hasn't reported usage yet.
+  contextUsage?: ContextUsage | null;
 };
 
 // One skill as exposed to a runner session. SDK-sourced entries come from the
@@ -256,6 +299,24 @@ export type ServerMsg =
       event: RunEvent;
     }
   | { type: "message_done"; sessionId: string; messageId: string }
+  // Final per-turn usage record, broadcast once per assistant message after
+  // the SDK closes the turn. The client merges this into the message's
+  // `turnUsage` field. Separate from `event` because it isn't part of the
+  // streaming event log — there's exactly one per turn.
+  | {
+      type: "turn_usage";
+      sessionId: string;
+      messageId: string;
+      usage: TurnUsage;
+    }
+  // SDK-reported context-window snapshot for the session's active model.
+  // Broadcast right after `turn_usage` (or independently when the runner
+  // re-probes context — currently only at turn end).
+  | {
+      type: "context_usage";
+      sessionId: string;
+      contextUsage: ContextUsage | null;
+    }
   | { type: "permission_request"; request: PermissionRequest }
   | { type: "permission_resolved"; requestId: string }
   | { type: "permissions"; rules: string[] }

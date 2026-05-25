@@ -16,6 +16,12 @@ export const theme = {
   border: "#1f1f1f",
   borderFocused: "#888888",
 
+  // Mouse-drag text selection. Subtle gray bg so the highlight reads as a
+  // gentle wash instead of the default fg/bg inversion (which looks like a
+  // glaring white block on this dark palette).
+  selectionBg: "#2a2a2a",
+  selectionFg: "#e5e5e5",
+
   accent: "#ffffff",
   accentDim: "#bbbbbb",
 

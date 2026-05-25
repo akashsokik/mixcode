@@ -5,6 +5,7 @@ import path from "node:path";
 import type { WSContext } from "hono/ws";
 import type {
   ClaudePermissionMode,
+  ContextUsage,
   DelegationStats,
   GitInfo,
   ModelOverrides,
@@ -13,6 +14,7 @@ import type {
   ServerMsg,
   Session,
   SessionMessage,
+  TurnUsage,
 } from "../../shared/events.js";
 import { TranscriptLogger } from "./transcript.js";
 
@@ -118,6 +120,7 @@ export class SessionManager {
     s.streaming = false;
     s.updatedAt = new Date().toISOString();
     s.runtime = {};
+    delete s.contextUsage;
     this.transcript.log({ kind: "session_cleared", sessionId: id });
     this.broadcast({ type: "session_updated", session: toWire(s) });
     this.markDirty();
@@ -127,9 +130,15 @@ export class SessionManager {
   setRunner(id: string, runner: RunnerKind): Stored | null {
     const s = this.get(id);
     if (!s) return null;
+    if (s.activeRunner === runner) return s;
     s.activeRunner = runner;
+    // contextUsage is per-runner (window size + recent usage); it goes stale
+    // the moment the active runner changes. Clear it so the rail's Ctx %
+    // disappears until the new runner reports a fresh snapshot.
+    delete s.contextUsage;
     s.updatedAt = new Date().toISOString();
     this.broadcast({ type: "session_updated", session: toWire(s) });
+    this.broadcast({ type: "context_usage", sessionId: id, contextUsage: null });
     this.markDirty();
     return s;
   }
@@ -227,6 +236,29 @@ export class SessionManager {
     s.updatedAt = new Date().toISOString();
     this.transcript.log({ kind: "event", sessionId, messageId, event });
     this.broadcast({ type: "event", sessionId, messageId, event });
+    this.markDirty();
+  }
+
+  setTurnUsage(sessionId: string, messageId: string, usage: TurnUsage): void {
+    const s = this.get(sessionId);
+    if (!s) return;
+    const m = s.messages.find((m) => m.id === messageId);
+    if (!m) return;
+    m.turnUsage = usage;
+    s.updatedAt = new Date().toISOString();
+    this.transcript.log({ kind: "turn_usage", sessionId, messageId, usage });
+    this.broadcast({ type: "turn_usage", sessionId, messageId, usage });
+    this.markDirty();
+  }
+
+  setContextUsage(sessionId: string, ctx: ContextUsage | null): void {
+    const s = this.get(sessionId);
+    if (!s) return;
+    if (ctx == null) delete s.contextUsage;
+    else s.contextUsage = ctx;
+    // Don't bump updatedAt — context-usage updates are a side effect of the
+    // turn, not user activity that should re-order the sidebar.
+    this.broadcast({ type: "context_usage", sessionId, contextUsage: ctx });
     this.markDirty();
   }
 
@@ -342,6 +374,7 @@ export class SessionManager {
     for (const s of loaded) {
       s.streaming = false;
       if (!s.runtime) s.runtime = {};
+      migrateLegacyUsage(s);
     }
     this.sessions = loaded;
   }
@@ -360,4 +393,81 @@ export class SessionManager {
 function toWire(s: Stored): Session {
   const { runtime: _runtime, ...wire } = s;
   return { ...wire };
+}
+
+// One-shot migration for sessions persisted before the usage-pipeline rewrite:
+// those messages carry `{type:"usage", ...}` entries inside `events[]` instead
+// of a `turnUsage` field. We take the per-field max across the message's usage
+// events (recovering the SDK's canonical-cumulative-per-turn value, since
+// later events strictly grew within the turn) and write it back to `turnUsage`
+// so the new rail/Spinner code has data to render. The legacy events are then
+// stripped from `events[]` to keep the store from carrying two copies forward.
+function migrateLegacyUsage(s: Stored): void {
+  let anyContextSnapshot: { input: number; cacheRead: number; cacheWrite: number } | null = null;
+  for (const m of s.messages) {
+    if (m.turnUsage) continue;
+    const events = m.events as Array<Record<string, unknown>>;
+    let input = 0;
+    let output = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    let saw = false;
+    for (const ev of events) {
+      if (!ev || ev.type !== "usage") continue;
+      saw = true;
+      const eIn = numericField(ev.input);
+      const eOut = numericField(ev.output);
+      const eCR = numericField(ev.cacheRead);
+      const eCW = numericField(ev.cacheWrite);
+      if (eIn > input) input = eIn;
+      if (eOut > output) output = eOut;
+      if (eCR > cacheRead) cacheRead = eCR;
+      if (eCW > cacheWrite) cacheWrite = eCW;
+    }
+    if (!saw) continue;
+    m.turnUsage = { input, output, cacheRead, cacheWrite };
+    m.events = events.filter((ev) => ev?.type !== "usage") as typeof m.events;
+    anyContextSnapshot = { input, cacheRead, cacheWrite };
+  }
+  // Best-effort context-usage backfill: use the most recent legacy usage as
+  // the "loaded tokens" against a coarse window guess. This is purely so the
+  // Ctx % shows up immediately on next render — fresh turns will overwrite
+  // with SDK-canonical values.
+  if (!s.contextUsage && anyContextSnapshot) {
+    const window = legacyWindowFor(s);
+    if (window) {
+      const loaded = anyContextSnapshot.input + anyContextSnapshot.cacheRead + anyContextSnapshot.cacheWrite;
+      const pct = Math.min(100, (loaded / window) * 100);
+      s.contextUsage = {
+        totalTokens: loaded,
+        maxTokens: window,
+        percentage: Math.round(pct * 10) / 10,
+      };
+    }
+  }
+}
+
+function numericField(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
+// Coarse legacy fallback for migrating contextUsage on sessions that pre-date
+// the SDK-sourced contextWindow path. Only used for one-time backfill; fresh
+// turns supply authoritative values.
+function legacyWindowFor(s: Stored): number | null {
+  const id = (() => {
+    if (s.activeRunner === "claude") return s.models.claude;
+    if (s.activeRunner === "codex") return s.models.codex;
+    return s.models.vercel;
+  })()?.toLowerCase();
+  if (!id) {
+    if (s.activeRunner === "claude") return 200_000;
+    if (s.activeRunner === "codex") return 400_000;
+    return 128_000;
+  }
+  if ((id.includes("1m") || id.includes("[1m]")) && s.activeRunner === "claude") return 1_000_000;
+  if (id.startsWith("gpt-5")) return 400_000;
+  if (id.startsWith("gpt-4o")) return 128_000;
+  if (id.startsWith("claude-")) return 200_000;
+  return 200_000;
 }

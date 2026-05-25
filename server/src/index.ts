@@ -16,11 +16,13 @@ let boundPort = 0;
 import type {
   ClientMsg,
   ConsensusReady,
+  ContextUsage,
   DelegationStats,
   RunEvent,
   RunnerKind,
   ServerMsg,
   SessionSkillEntry,
+  TurnUsage,
 } from "../../shared/events.js";
 import { SessionManager } from "./sessions.js";
 import { runClaude } from "./runners/claude.js";
@@ -540,6 +542,14 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   const onEvent = (event: RunEvent): void => {
     sessions.appendEvent(sessionId, asst.id, event);
   };
+  // Single-source-of-truth usage signals — set once per turn by the runner
+  // from the SDK's final aggregate. No client-side summing or max-merging.
+  const onTurnUsage = (usage: TurnUsage): void => {
+    sessions.setTurnUsage(sessionId, asst.id, usage);
+  };
+  const onContextUsage = (ctx: ContextUsage | null): void => {
+    sessions.setContextUsage(sessionId, ctx);
+  };
 
   const abort = new AbortController();
   turnAborts.get(sessionId)?.abort();
@@ -648,6 +658,8 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           };
         },
         onEvent,
+        onTurnUsage,
+        onContextUsage,
         onRaw: (raw) => sessions.logRaw(sessionId, asst.id, "claude", raw),
         onResumeId: (id) => {
           if (id) runtime.claudeSessionId = id;
@@ -671,6 +683,8 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         model: session.models.codex,
         signal: abort.signal,
         onEvent,
+        onTurnUsage,
+        onContextUsage,
         onRaw: (raw) => sessions.logRaw(sessionId, asst.id, "codex", raw),
         onThreadId: (id) => {
           if (id) runtime.codexThreadId = id;
@@ -736,6 +750,8 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         allowRules: permissions.list(),
         depth: 0,
         onEvent,
+        onTurnUsage,
+        onContextUsage,
         onRaw: (raw) => sessions.logRaw(sessionId, asst.id, "vercel", raw),
         onMessages: (msgs) => {
           runtime.vercelMessages = msgs;

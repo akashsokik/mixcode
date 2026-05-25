@@ -1,4 +1,9 @@
-import type { ClaudePermissionMode, RunnerKind, Session } from "../../../shared/events.ts";
+import type {
+  ClaudePermissionMode,
+  RunnerKind,
+  Session,
+  TurnUsage,
+} from "../../../shared/events.ts";
 import { SLASH_COMMANDS } from "./slash";
 import { basename, shortPath } from "./path";
 import type { SkillEntry, SkillFrontmatter } from "./skills";
@@ -91,10 +96,14 @@ function clip(s: string, n: number): string {
 export function contextLines(session: Session | null): string[] {
   if (!session) return ["no active session"];
 
-  const usage = sumUsage(session);
+  const totals = sessionTotals(session);
   const turns = session.messages.length;
   const userTurns = session.messages.filter((m) => m.role === "user").length;
   const created = new Date(session.createdAt).toLocaleString();
+  const ctx = session.contextUsage ?? null;
+  const ctxLine = ctx
+    ? `context     ${formatNumber(ctx.totalTokens)} / ${formatNumber(ctx.maxTokens)} (${ctx.percentage.toFixed(1)}%)`
+    : `context     —`;
 
   return [
     `title       ${session.title}`,
@@ -102,50 +111,47 @@ export function contextLines(session: Session | null): string[] {
     `runner      ${session.activeRunner}`,
     `cwd         ${shortPath(session.cwd)}`,
     `messages    ${turns} (${userTurns} user / ${turns - userTurns} assistant)`,
-    `tokens in   ${formatNumber(usage.input)}`,
-    `tokens out  ${formatNumber(usage.output)}`,
-    `cache read  ${formatNumber(usage.cacheRead)}`,
-    `cache write ${formatNumber(usage.cacheWrite)}`,
+    `tokens in   ${formatNumber(totals.input)}`,
+    `tokens out  ${formatNumber(totals.output)}`,
+    `cache read  ${formatNumber(totals.cacheRead)}`,
+    `cache write ${formatNumber(totals.cacheWrite)}`,
+    ctxLine,
     `created     ${created}`,
     `streaming   ${session.streaming ? "yes" : "no"}`,
   ];
 }
 
-function sumUsage(session: Session): {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-} {
-  // The Anthropic SDK emits several usage events per assistant turn: a
-  // message_start with real input_tokens but placeholder output_tokens=1,
-  // streaming partials, and a final result event. Each later event reports
-  // cumulative-within-the-turn counts (often with input_tokens=0 on the
-  // tail). Summing them all triple-counts; take the per-field max within
-  // each message, then sum across messages.
+// Straight per-field summation of the SDK-reported `turnUsage` on each
+// assistant message. No event scanning, no max-merging — every record was
+// already the SDK's canonical per-turn aggregate when it was written.
+export function sessionTotals(session: Session): TurnUsage {
   let input = 0;
   let output = 0;
   let cacheRead = 0;
   let cacheWrite = 0;
+  let reasoningOutput = 0;
+  let costUsd = 0;
   for (const m of session.messages) {
-    let mIn = 0;
-    let mOut = 0;
-    let mCacheR = 0;
-    let mCacheW = 0;
-    for (const ev of m.events) {
-      if (ev.type === "usage") {
-        if (ev.input > mIn) mIn = ev.input;
-        if (ev.output > mOut) mOut = ev.output;
-        if (ev.cacheRead > mCacheR) mCacheR = ev.cacheRead;
-        if (ev.cacheWrite > mCacheW) mCacheW = ev.cacheWrite;
-      }
-    }
-    input += mIn;
-    output += mOut;
-    cacheRead += mCacheR;
-    cacheWrite += mCacheW;
+    const u = m.turnUsage;
+    if (!u) continue;
+    input += u.input;
+    output += u.output;
+    cacheRead += u.cacheRead;
+    cacheWrite += u.cacheWrite;
+    if (u.reasoningOutput) reasoningOutput += u.reasoningOutput;
+    if (u.costUsd) costUsd += u.costUsd;
   }
-  return { input, output, cacheRead, cacheWrite };
+  return { input, output, cacheRead, cacheWrite, reasoningOutput, costUsd };
+}
+
+// Most recent assistant message's per-turn usage, if any. Used by the rail
+// when "current turn" rather than "session total" makes more sense.
+export function lastTurnUsage(session: Session): TurnUsage | null {
+  for (let i = session.messages.length - 1; i >= 0; i--) {
+    const u = session.messages[i].turnUsage;
+    if (u) return u;
+  }
+  return null;
 }
 
 function formatNumber(n: number): string {

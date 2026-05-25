@@ -154,6 +154,33 @@ function reduce(state: State, msg: ServerMsg): State {
       return { ...state, sessions };
     }
 
+    case "turn_usage": {
+      // Per-turn SDK-canonical usage. Lands once per assistant message after
+      // the runner closes the turn — replaces any prior value with the new
+      // record (later identical broadcasts from a turn re-emit are idempotent).
+      if (process.env.MIXCODE_DEBUG_USAGE) {
+        console.error("[usage] turn_usage", msg.sessionId.slice(0, 6), msg.messageId.slice(0, 6), msg.usage);
+      }
+      const sessions = state.sessions.map((s) => {
+        if (s.id !== msg.sessionId) return s;
+        const messages = s.messages.map((m) =>
+          m.id === msg.messageId ? { ...m, turnUsage: msg.usage } : m,
+        );
+        return { ...s, messages };
+      });
+      return { ...state, sessions };
+    }
+
+    case "context_usage": {
+      if (process.env.MIXCODE_DEBUG_USAGE) {
+        console.error("[usage] context_usage", msg.sessionId.slice(0, 6), msg.contextUsage);
+      }
+      const sessions = state.sessions.map((s) =>
+        s.id === msg.sessionId ? { ...s, contextUsage: msg.contextUsage } : s,
+      );
+      return { ...state, sessions };
+    }
+
     case "permission_request": {
       if (state.pendingPermissions.some((p) => p.requestId === msg.request.requestId)) {
         return state;

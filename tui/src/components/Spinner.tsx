@@ -67,25 +67,15 @@ function useStreamingStats(active: Session | null): Stats | null {
     ? Math.max(0, Math.floor((startedRef.current.firstTokenAt - startedRef.current.at) / 1000))
     : null;
 
-  // The Anthropic streaming protocol emits multiple usage events per turn:
-  // message_start carries the real input_tokens with output_tokens=1 (a
-  // placeholder), and later message_delta/result events carry the real
-  // output_tokens but may report input_tokens as 0. Taking the per-field max
-  // recovers the latest accurate counts regardless of arrival order.
-  let input = 0;
-  let output = 0;
-  let cacheRead = 0;
-  let cacheWrite = 0;
-  for (const e of last.events) {
-    if (e.type === "usage") {
-      if (e.input > input) input = e.input;
-      if (e.output > output) output = e.output;
-      if (e.cacheRead > cacheRead) cacheRead = e.cacheRead;
-      if (e.cacheWrite > cacheWrite) cacheWrite = e.cacheWrite;
-    }
-  }
-  const sent = input + cacheRead + cacheWrite;
-  const received = output;
+  // The streaming spinner intentionally has nothing to show for token counts
+  // until the SDK closes the turn — none of the three SDKs report usable
+  // mid-stream usage (Claude's message_start carries a placeholder
+  // output_tokens=1, Codex and Vercel only report at turn end). Once the
+  // turn finishes, `m.turnUsage` is set and the prompt-rail MetaRow displays
+  // the final, SDK-canonical numbers. Leaving `sent`/`received` at 0 here
+  // keeps the spinner row showing just the elapsed clock during streaming.
+  const sent = 0;
+  const received = 0;
 
   return { elapsed, thoughtFor, sent, received };
 }

@@ -3,7 +3,7 @@ import type {
   SessionMessage,
   ToolLog,
 } from "../../../shared/events.ts";
-import { stripMcpPrefix, stripPeerPrefix } from "./format";
+import { formatToolLog, stripMcpPrefix, stripPeerPrefix } from "./format";
 import type { Notice } from "./notice";
 
 // Per-message render units extracted from the raw event stream. The transcript
@@ -280,4 +280,76 @@ export function collectChatItemIds(
     }
   }
   return out;
+}
+
+// Resolve a chat-item id to a plain-text representation suitable for the
+// system clipboard. Mirrors the id schemes in collectChatItemIds.
+//   - msg:<id>           -> user message text
+//   - notice:<id>        -> notice command + lines
+//   - <msgId>:d:<i>      -> delegation group (anchor + all children)
+//   - <msgId>:<index>    -> single assistant block (text / tool / error / …)
+// Returns null when the id can't be matched (e.g. session has changed since
+// the selection was made).
+export function resolveItemContent(
+  session: Session | null,
+  notices: Notice[],
+  id: string,
+): string | null {
+  if (id.startsWith("msg:")) {
+    if (!session) return null;
+    const mid = id.slice(4);
+    const m = session.messages.find((x) => x.id === mid);
+    return m ? m.text : null;
+  }
+  if (id.startsWith("notice:")) {
+    const nid = id.slice(7);
+    const n = notices.find((x) => x.id === nid);
+    if (!n) return null;
+    return [n.command, ...n.lines].join("\n");
+  }
+  if (!session) return null;
+  // Assistant-block ids have shape `${messageId}:${index}` or
+  // `${messageId}:d:${anchorIndex}`. The message id itself can contain colons,
+  // so split from the right.
+  const lastColon = id.lastIndexOf(":");
+  if (lastColon === -1) return null;
+  const tailAfterLast = id.slice(lastColon + 1);
+  const tailIndex = Number.parseInt(tailAfterLast, 10);
+  if (!Number.isFinite(tailIndex)) return null;
+  const beforeLast = id.slice(0, lastColon);
+  const isGroup = beforeLast.endsWith(":d");
+  const messageId = isGroup ? beforeLast.slice(0, -2) : beforeLast;
+  const m = session.messages.find((x) => x.id === messageId);
+  if (!m) return null;
+  const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
+  if (isGroup) {
+    const g = grouped.find(
+      (x) => x.kind === "delegation_group" && x.anchorIndex === tailIndex,
+    );
+    if (!g || g.kind !== "delegation_group") return null;
+    const parts: string[] = [];
+    if (g.header) parts.push(renderToolLogPlain(g.header));
+    for (const child of g.children) parts.push(renderBlockPlain(child));
+    return parts.join("\n\n");
+  }
+  const g = grouped.find(
+    (x) => x.kind === "passthrough" && x.index === tailIndex,
+  );
+  if (!g || g.kind !== "passthrough") return null;
+  return renderBlockPlain(g.block);
+}
+
+function renderBlockPlain(b: Block): string {
+  if (b.kind === "text") return b.text;
+  if (b.kind === "tool") return renderToolLogPlain(b.log);
+  if (b.kind === "error") return `error: ${b.message}`;
+  if (b.kind === "thinking") return `[thinking ${b.seconds}s]\n${b.text}`;
+  if (b.kind === "peer_reply") return `[${b.runner} reply]\n${b.text}`;
+  if (b.kind === "peer_thinking") return `[${b.runner} thinking]\n${b.text}`;
+  return "";
+}
+
+function renderToolLogPlain(log: import("../../../shared/events.ts").ToolLog): string {
+  const { header, body } = formatToolLog(log, { expanded: true });
+  return body ? `${header}\n${body}` : header;
 }

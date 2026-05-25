@@ -12,22 +12,6 @@ export function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-// Tokens consumed by the most recent assistant turn — input + cache_read +
-// cache_write. This is what's loaded into Claude's context window for the
-// next turn, so it's the right denominator for a "context used" %.
-export function latestContextTokens(session: Session): number {
-  for (let i = session.messages.length - 1; i >= 0; i--) {
-    const m = session.messages[i];
-    for (let j = m.events.length - 1; j >= 0; j--) {
-      const ev = m.events[j];
-      if (ev.type === "usage") {
-        return ev.input + ev.cacheRead + ev.cacheWrite;
-      }
-    }
-  }
-  return 0;
-}
-
 export function assistantMessageCount(session: Session): number {
   return session.messages.filter((m) => m.role === "assistant").length;
 }
@@ -71,27 +55,6 @@ export function prettyModelLabel(
   }
 
   return modelId;
-}
-
-// Approximate context-window size for the model. Unknown IDs fall back to
-// 200k (Claude default, also a sane GPT lower bound).
-export function contextLimit(
-  modelId: string | undefined,
-  runner: RunnerKind,
-): number {
-  const id = (modelId ?? "").toLowerCase();
-  // The [1m] context-window selector is a Claude SDK feature — only the
-  // claude runner actually enables 1M context for it. Vercel and codex
-  // sessions reading the same id get the base 200K window.
-  if ((id.includes("1m") || id.includes("[1m]")) && runner === "claude") {
-    return 1_000_000;
-  }
-  if (id.startsWith("gpt-5")) return 400_000;
-  if (id.startsWith("gpt-4o")) return 128_000;
-  if (id.startsWith("claude-")) return 200_000;
-  if (runner === "claude") return 200_000;
-  if (runner === "vercel") return 128_000;
-  return 200_000;
 }
 
 // Render a fixed-width progress bar. width = total cells, ratio in [0, 1].

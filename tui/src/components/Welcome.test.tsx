@@ -11,7 +11,7 @@ function frameText(setup: Awaited<ReturnType<typeof testRender>>): string {
 }
 
 describe("Welcome", () => {
-  test("renders the boot sequence status copy", async () => {
+  test("renders the welcome layout with tip, hints, and runner status", async () => {
     const setup = await testRender(<Welcome />, {
       width: 90,
       height: 30,
@@ -24,8 +24,12 @@ describe("Welcome", () => {
       });
 
       const screen = frameText(setup);
-      expect(screen).toContain("boot:");
-      expect(screen).toContain("linking sessions");
+      expect(screen).toContain("TIP:");
+      expect(screen).toContain("/sessions");
+      expect(screen).toContain("ctrl+k");
+      expect(screen).toContain("Claude");
+      expect(screen).toContain("Codex");
+      expect(screen).toContain("Vercel");
     } finally {
       await act(async () => {
         setup.renderer.destroy();
