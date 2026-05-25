@@ -100,8 +100,9 @@ export function PeersPanel({
 
   // Empty-state guard must consider both pending AND lingering completed
   // entries, otherwise the panel unmounts the moment a peer settles and
-  // the completion glance never appears.
-  if (pending.length === 0 && Object.keys(completed).length === 0) return null;
+  // the completion glance never appears. Also short-circuits when width is
+  // clamped to 0 from app.tsx (narrow terminals below 90 cols hide the rail).
+  if (width <= 0 || (pending.length === 0 && Object.keys(completed).length === 0)) return null;
 
   const pendingStartedAt =
     session && streamingMessageId ? peerStartedAt(session, streamingMessageId) : now;

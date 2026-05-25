@@ -301,6 +301,11 @@ export function App() {
     return last && last.role === "assistant" ? last.id : null;
   }, [api.active]);
 
+  const peersWidth = useMemo(() => {
+    if (width < 90) return 0;
+    return Math.min(32, Math.max(22, Math.round(width * 0.22)));
+  }, [width]);
+
   const sessionPill = useMemo(
     () =>
       api.active
@@ -1137,7 +1142,7 @@ export function App() {
       </box>
       <PeersPanel
         session={api.active}
-        width={26}
+        width={peersWidth}
         streamingMessageId={streamingMessageId}
       />
     </box>

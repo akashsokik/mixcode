@@ -221,6 +221,21 @@ describe("PeersPanel (multiple)", () => {
   });
 });
 
+describe("PeersPanel (width threshold)", () => {
+  test("renders nothing when width is zero (narrow terminal)", async () => {
+    const setup = await testRender(
+      <PeersPanel session={streamingClaudeSession()} width={0} streamingMessageId="m1" />,
+      { width: 60, height: 10, exitOnCtrlC: false },
+    );
+    try {
+      await act(async () => { await setup.renderOnce(); });
+      expect(frameText(setup).trim()).toBe("");
+    } finally {
+      await act(async () => { setup.renderer.destroy(); });
+    }
+  });
+});
+
 describe("PeersPanel (completion)", () => {
   test("keeps a completed block visible briefly with verdict", async () => {
     const running = streamingClaudeSession();
