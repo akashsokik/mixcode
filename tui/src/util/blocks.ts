@@ -353,25 +353,3 @@ function renderToolLogPlain(log: import("../../../shared/events.ts").ToolLog): s
   const { header, body } = formatToolLog(log, { expanded: true });
   return body ? `${header}\n${body}` : header;
 }
-
-/**
- * Returns the pending delegation_group entries for the most recent assistant
- * message in `session`. A pending group has `header === null` and is only
- * eligible while its owner message is still streaming — matches the gating
- * the Transcript uses to decide whether to render a synthetic PendingHeader.
- *
- * Used by PeersPanel to drive the right-side rail. Empty list = no rail.
- */
-export function pendingDelegations(
-  session: Session | null,
-  streamingMessageId: string | null,
-): Extract<GroupedBlock, { kind: "delegation_group" }>[] {
-  if (!session || !streamingMessageId) return [];
-  const msg = session.messages.find((m) => m.id === streamingMessageId);
-  if (!msg || msg.role !== "assistant") return [];
-  const grouped = groupDelegations(blocksFromEvents(msg.events), msg.id, true);
-  return grouped.filter(
-    (g): g is Extract<GroupedBlock, { kind: "delegation_group" }> =>
-      g.kind === "delegation_group" && g.header === null,
-  );
-}

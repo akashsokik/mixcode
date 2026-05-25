@@ -8,7 +8,6 @@ import { PermissionPanel } from "./components/PermissionPanel";
 import { ConsensusModal } from "./components/ConsensusModal";
 import { ModelPicker } from "./components/ModelPicker";
 import { Palette, type PaletteItem } from "./components/Palette";
-import { PeersPanel } from "./components/PeersPanel";
 import type { ClaudePermissionMode, RunnerKind, SessionSkillEntry } from "../../shared/events.ts";
 import { useSessions } from "./state/sessions";
 import { parseSlash, SLASH_COMMANDS, toggleRunner } from "./util/slash";
@@ -104,7 +103,6 @@ export function App() {
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
   const [mcpServerNames, setMcpServerNames] = useState<string[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
-  const [railToggle, setRailToggle] = useState<"auto" | "shown" | "hidden">("auto");
 
   // Gate on `helloReceived`, not `status === "open"`. The WS opens a beat
   // before `hello` arrives, and during that window sessions.length is still
@@ -333,21 +331,6 @@ export function App() {
     const contextPercent = ctx ? Math.round(ctx.percentage) : null;
     return { modelLabel, contextPercent, projectLabel, branch, delegations, metaPairs };
   }, [api.active]);
-
-  const streamingMessageId = useMemo(() => {
-    const s = api.active;
-    if (!s || !s.streaming) return null;
-    const last = s.messages[s.messages.length - 1];
-    return last && last.role === "assistant" ? last.id : null;
-  }, [api.active]);
-
-  const peersWidth = useMemo(() => {
-    if (railToggle === "hidden") return 0;
-    if (railToggle === "shown") return Math.min(32, Math.max(20, Math.round(width * 0.22)));
-    // auto
-    if (width < 90) return 0;
-    return Math.min(32, Math.max(22, Math.round(width * 0.22)));
-  }, [width, railToggle]);
 
   const sessionPill = useMemo(
     () =>
@@ -668,10 +651,6 @@ export function App() {
   useKeyboard((key) => {
     if (key.ctrl && key.name === "k") {
       setPaletteMode((m) => (m === "global" ? null : "global"));
-      return;
-    }
-    if (key.ctrl && key.name === "b") {
-      setRailToggle((m) => (m === "auto" ? "hidden" : m === "hidden" ? "shown" : "auto"));
       return;
     }
     // shift+up / shift+down navigate the chat-item selection. The Prompt
@@ -1156,7 +1135,7 @@ export function App() {
 
   return (
     <box
-      flexDirection="row"
+      flexDirection="column"
       width={width}
       height={height}
       backgroundColor={theme.bg}
@@ -1165,7 +1144,6 @@ export function App() {
       paddingLeft={2}
       paddingRight={2}
     >
-      <box flexDirection="column" flexGrow={1}>
       <Transcript
         session={api.active}
         notices={activeNotices}
@@ -1275,12 +1253,6 @@ export function App() {
         sessionPill={sessionPill}
         slashExtras={skillSlashSuggestions}
         metaPairs={promptMeta?.metaPairs}
-      />
-      </box>
-      <PeersPanel
-        session={api.active}
-        width={peersWidth}
-        streamingMessageId={streamingMessageId}
       />
     </box>
   );
