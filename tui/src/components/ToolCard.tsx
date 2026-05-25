@@ -8,8 +8,10 @@ import {
 } from "../util/format";
 import { theme } from "../theme";
 import { StatusDot, toolLogStatus } from "./StatusDot";
+import { ChatItem } from "./ChatItem";
 
 export function ToolCard({
+  id,
   log,
   selected = false,
   expanded = false,
@@ -17,6 +19,7 @@ export function ToolCard({
   onActivate,
   nested = false,
 }: {
+  id: string;
   log: ToolLog;
   selected?: boolean;
   expanded?: boolean;
@@ -45,16 +48,21 @@ export function ToolCard({
   const prettyInput =
     expanded && category !== "edit" ? formatInputPretty(log.input) : "";
 
+  const expandedNode = expanded ? (
+    <ExpandedDetails prettyInput={prettyInput} body={body} edit={edit} />
+  ) : null;
+
   return (
-    <box
-      flexDirection="column"
-      paddingLeft={nested ? 0 : selected ? 0 : 1}
-      paddingRight={nested ? 0 : 1}
+    <ChatItem
+      id={id}
+      selected={selected}
+      expanded={expanded}
+      expandable={true}
+      hint={hint}
+      nested={nested}
+      onActivate={onActivate}
       marginTop={nested ? 0 : 1}
-      border={!nested && selected ? ["left"] : undefined}
-      borderStyle={!nested && selected ? "single" : undefined}
-      borderColor={!nested && selected ? theme.borderFocused : undefined}
-      onMouseDown={!nested && onActivate ? () => onActivate() : undefined}
+      expandedContent={expandedNode}
     >
       <box flexDirection="row">
         <StatusDot status={status} />
@@ -72,20 +80,7 @@ export function ToolCard({
           <text fg={theme.textMuted}>{body}</text>
         </box>
       )}
-      {expanded && (
-        <ExpandedDetails
-          prettyInput={prettyInput}
-          body={body}
-          edit={edit}
-        />
-      )}
-      {selected && hint && (
-        <box flexDirection="row">
-          <text fg={theme.textFaint}>{"  "}</text>
-          <text fg={theme.textFaint}>{hint}</text>
-        </box>
-      )}
-    </box>
+    </ChatItem>
   );
 }
 

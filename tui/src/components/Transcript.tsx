@@ -222,6 +222,7 @@ function AssistantMessage({
         return (
           <BlockRow
             key={`b-${g.index}`}
+            id={toolId}
             block={g.block}
             firstInMessage={gi === 0}
             toolSelected={isToolSelected}
@@ -243,12 +244,14 @@ function AssistantMessage({
 // for its children when expanded — keeps a single source of truth for how
 // each block kind looks.
 function BlockRow({
+  id,
   block,
   firstInMessage,
   toolSelected = false,
   toolExpanded = false,
   onToolActivate,
 }: {
+  id: string;
   block: Block;
   firstInMessage: boolean;
   toolSelected?: boolean;
@@ -265,6 +268,7 @@ function BlockRow({
       : null;
     return (
       <ToolCard
+        id={id}
         log={block.log}
         selected={toolSelected}
         expanded={toolExpanded}
@@ -388,7 +392,7 @@ function DelegationGroup({
           replyTail={stats.replyTail}
         />
       ) : (
-        <ToolCard log={group.header!} nested />
+        <ToolCard id={group.id} log={group.header!} nested />
       )}
       {hasChildren && !expanded && !isPending && (
         <box flexDirection="column" paddingLeft={3} paddingRight={1}>
@@ -417,7 +421,12 @@ function DelegationGroup({
       {hasChildren && expanded && (
         <box flexDirection="column" paddingLeft={2}>
           {group.children.map((b, i) => (
-            <BlockRow key={`gc-${group.id}-${i}`} block={b} firstInMessage={false} />
+            <BlockRow
+              key={`gc-${group.id}-${i}`}
+              id={`${group.id}:${i}`}
+              block={b}
+              firstInMessage={false}
+            />
           ))}
         </box>
       )}
