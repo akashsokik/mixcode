@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
-import { act } from "react";
+import { act, useState } from "react";
 import type { Session } from "../../../shared/events.ts";
 
 const { PeersPanel } = await import("./PeersPanel");
@@ -104,6 +104,68 @@ describe("PeersPanel (elapsed)", () => {
       await act(async () => { await setup.renderOnce(); });
       const out = frameText(setup);
       expect(out).toMatch(/working…\s+23s/);
+    } finally {
+      await act(async () => { setup.renderer.destroy(); });
+    }
+  });
+});
+
+describe("PeersPanel (completion)", () => {
+  test("keeps a completed block visible briefly with verdict", async () => {
+    const running = streamingClaudeSession();
+    const settled: Session = {
+      ...running,
+      streaming: false,
+      messages: [
+        {
+          ...running.messages[0],
+          events: [
+            ...running.messages[0].events,
+            // delegate_run anchor arrives → group is no longer pending.
+            {
+              type: "tool_log",
+              log: {
+                name: "mcp__delegate__delegate_run",
+                input: { runner: "claude" },
+                output: JSON.stringify({ ok: true, summary: "patched" }),
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    // testRender does not expose a `rerender`, so drive the swap via a
+    // stateful wrapper. The module-level setter is captured on first render
+    // and reused inside an act() block to push the settled session.
+    let setSession: ((s: Session) => void) | null = null;
+    function Wrapper({ initial }: { initial: Session }) {
+      const [s, setS] = useState(initial);
+      setSession = setS;
+      return (
+        <PeersPanel
+          session={s}
+          width={28}
+          streamingMessageId="m1"
+          completionMs={6000}
+        />
+      );
+    }
+
+    const setup = await testRender(<Wrapper initial={running} />, {
+      width: 32,
+      height: 16,
+      exitOnCtrlC: false,
+    });
+    try {
+      await act(async () => { await setup.renderOnce(); });
+      expect(frameText(setup)).toContain("working");
+      await act(async () => { setSession!(settled); });
+      await act(async () => { await setup.renderOnce(); });
+      // Still visible because we are inside the 6s window.
+      const after = frameText(setup);
+      expect(after).toContain("claude");
+      expect(after).toContain("patched");
     } finally {
       await act(async () => { setup.renderer.destroy(); });
     }
