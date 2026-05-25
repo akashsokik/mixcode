@@ -227,13 +227,15 @@ export function skillsLines(
   headline?: string,
 ): string[] {
   const header = headline ? [headline, ""] : [];
+  const other: RunnerKind = runner === "claude" ? "codex" : "claude";
   const usage = [
     "",
     "usage",
-    "  /skills                    list skills for the active runner",
-    "  /skills add <path>         symlink a skill directory into the runner's skills dir",
-    "  /skills remove <name>      remove an installed skill (symlinks only — refuses real dirs)",
-    "  /skills info <name>        show the skill's frontmatter",
+    "  /skills                              list skills for the active runner",
+    "  /skills add <path>                   symlink a skill directory into the runner's skills dir",
+    `  /skills import ${other.padEnd(7, " ")} [name]      copy a skill (or all skills) from the other runner`,
+    "  /skills remove <name>                remove an installed skill (symlinks only — refuses real dirs)",
+    "  /skills info <name>                  show the skill's frontmatter",
     "",
     `scope: ${runner} only. switch runners with /claude or /codex.`,
     `only user-installed skills under ~/.${runner}/skills are shown. plugin-bundled skills`,

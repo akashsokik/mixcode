@@ -68,16 +68,23 @@ export function blocksFromEvents(events: SessionMessage["events"]): Block[] {
   return out;
 }
 
-// A delegate_run / validate_run anchor is the parent's tool_log itself —
-// not a sub-delegation made by a peer (which still has a `[peer] ` prefix).
-// Returns the group kind for use as a visual tag; null if not an anchor.
-export function peerAnchorKind(b: Block): "delegate" | "validate" | null {
+// A delegate_run / validate_run / consensus_step anchor is the parent's
+// tool_log itself — not a sub-delegation made by a peer (which still has a
+// `[peer] ` prefix). Returns the group kind for use as a visual tag; null
+// if not an anchor.
+//
+// `consensus_step` is emitted by runConsensusTurn AFTER each iteration's
+// peer call settles, so the streaming peer events for that iteration
+// backward-fold into a labelled closed group (one card per producer/critic
+// turn) instead of one giant unlabelled run.
+export function peerAnchorKind(b: Block): "delegate" | "validate" | "consensus" | null {
   if (b.kind !== "tool") return null;
   const { peer, rest } = stripPeerPrefix(b.log.name);
   if (peer !== null) return null;
   const bare = stripMcpPrefix(rest);
   if (bare === "delegate_run") return "delegate";
   if (bare === "validate_run") return "validate";
+  if (bare === "consensus_step") return "consensus";
   return null;
 }
 
@@ -104,9 +111,10 @@ export type GroupedBlock =
       kind: "delegation_group";
       id: string;
       // Tag derived from the anchor tool name. Drives header verb ("working"
-      // vs "validating") and accent color. Pending groups (anchor not yet
-      // landed) default to "delegate" — they reclassify when the anchor lands.
-      tag: "delegate" | "validate";
+      // vs "validating" vs "consensus step") and accent color. Pending
+      // groups (anchor not yet landed) default to "delegate" — they
+      // reclassify when the anchor lands.
+      tag: "delegate" | "validate" | "consensus";
       anchorIndex: number;
       header: ToolLog | null;
       pendingRunner: string | null;
@@ -173,13 +181,19 @@ export function groupDelegations(
   const trailing = consumeTrailingPeers();
   if (trailing.length > 0) {
     if (messageStreaming) {
+      // Inherit "consensus" if the message already shows a closed consensus
+      // step — the next iteration is also consensus until proven otherwise.
+      // Without this the pending header says "delegate working…" while we
+      // are mid-actor/critic loop, which hides the user's actual context.
+      const inheritedTag: "delegate" | "validate" | "consensus" = items.some(
+        (g) => g.kind === "delegation_group" && g.tag === "consensus",
+      )
+        ? "consensus"
+        : "delegate";
       items.push({
         kind: "delegation_group",
         id: `${messageId}:pending`,
-        // Without the anchor yet we can't know — default to "delegate"; the
-        // group reclassifies the moment the anchor (delegate_run/validate_run)
-        // lands at the end of the message events.
-        tag: "delegate",
+        tag: inheritedTag,
         anchorIndex: -1,
         header: null,
         pendingRunner: inferRunner(trailing),

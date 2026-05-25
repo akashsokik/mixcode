@@ -30,14 +30,20 @@ export type PlanAction =
   | { kind: "status" };
 
 // /skills grammar:
-//   (no args) | list           — list installed skills for the active runner
-//   add <path>                  — symlink a skill directory into the runner's
-//                                 skills dir
-//   remove <name>               — unlink an installed skill (symlinks only)
-//   info <name>                 — print the skill's SKILL.md frontmatter
+//   (no args) | list                  — list installed skills for the active runner
+//   add <path>                         — symlink a skill directory into the runner's
+//                                        skills dir
+//   import <runner> [name]             — symlink a skill (or all skills) from
+//                                        another runner's skills dir into the
+//                                        active runner's. Source is one of
+//                                        claude | codex. Omitting <name>
+//                                        imports everything user-installable.
+//   remove <name>                      — unlink an installed skill (symlinks only)
+//   info <name>                        — print the skill's SKILL.md frontmatter
 export type SkillsAction =
   | { kind: "list" }
   | { kind: "add"; path: string }
+  | { kind: "import"; source: RunnerKind | null; name: string | null }
   | { kind: "remove"; name: string }
   | { kind: "info"; name: string };
 
@@ -67,7 +73,6 @@ export type SlashCommand =
       type: "consensus";
       task: string;
       maxTurnsPerPeer?: number;
-      maxRounds?: number;
       producer?: RunnerKind;
     }
   | { type: "permissions"; action: PermissionsAction }
@@ -146,6 +151,18 @@ function parseSkillsAction(rest: string): SkillsAction {
     case "install":
     case "link":
       return { kind: "add", path: value };
+    case "import":
+    case "copy":
+    case "from": {
+      const tokens = value.split(/\s+/).filter(Boolean);
+      const first = tokens[0]?.toLowerCase();
+      let src: RunnerKind | null = null;
+      if (first === "claude" || first === "codex" || first === "vercel") {
+        src = first;
+      }
+      const name = (src ? tokens.slice(1) : tokens).join(" ").trim();
+      return { kind: "import", source: src, name: name || null };
+    }
     case "remove":
     case "rm":
     case "delete":
@@ -220,22 +237,21 @@ function parseModelAction(rest: string): ModelAction {
 
 // /consensus grammar:
 //   /consensus <task>
-//   /consensus [max=N] [rounds=N] [producer=claude|codex] <task>
+//   /consensus [max=N] [producer=claude|codex] <task>
 // Flags are space-separated, appear in any order, must come before the
 // task text. Unknown / malformed flags are silently dropped (the bare task
-// form still works).
-const CONSENSUS_FLAG = /^(max|rounds|producer)=([\w-]+)\s+/i;
+// form still works). There is no rounds flag — /consensus is a single
+// actor/critic cycle (producer writes once, critic reviews once).
+const CONSENSUS_FLAG = /^(max|producer)=([\w-]+)\s+/i;
 
 function parseConsensus(rest: string): {
   type: "consensus";
   task: string;
   maxTurnsPerPeer?: number;
-  maxRounds?: number;
   producer?: RunnerKind;
 } {
   let remaining = rest;
   let maxTurnsPerPeer: number | undefined;
-  let maxRounds: number | undefined;
   let producer: RunnerKind | undefined;
 
   while (true) {
@@ -246,9 +262,6 @@ function parseConsensus(rest: string): {
     if (key === "max") {
       const n = Number.parseInt(val, 10);
       if (Number.isFinite(n) && n > 0) maxTurnsPerPeer = n;
-    } else if (key === "rounds") {
-      const n = Number.parseInt(val, 10);
-      if (Number.isFinite(n) && n > 0) maxRounds = n;
     } else if (key === "producer") {
       const v = val.toLowerCase();
       if (v === "claude" || v === "codex") producer = v;
@@ -259,7 +272,6 @@ function parseConsensus(rest: string): {
     type: "consensus",
     task: remaining.trim(),
     maxTurnsPerPeer,
-    maxRounds,
     producer,
   };
 }
@@ -303,10 +315,10 @@ export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/context", help: "show session info: runner, cwd, tokens, messages" },
   { name: "/sessions", help: "list all sessions with runner, cwd, message count" },
   { name: "/tree [depth]", help: "show project tree of the session's cwd (default depth 3)" },
-  { name: "/consensus <task>", help: "actor/critic loop (claude↔codex); /consensus with no args for flags" },
+  { name: "/consensus <task>", help: "single actor/critic cycle (claude↔codex); writes one draft, critic reviews once" },
   { name: "/permissions [add|remove|clear]", help: "manage Claude tool-permission rules (Claude only)" },
   { name: "/model [show | <name> | <runner> <name> | reset]", help: "open model picker for active runner; show prints status; <name> sets directly" },
   { name: "/plan [on|off]", help: "plan-only mode — model proposes a plan, no tools run (Claude only)" },
-  { name: "/skills [add|remove|info]", help: "manage skills for the active runner (~/.claude/skills or ~/.codex/skills)" },
+  { name: "/skills [add|import|remove|info]", help: "manage skills for the active runner (~/.claude/skills or ~/.codex/skills); `import <claude|codex> [name]` copies from the other runner" },
   { name: "/mcp [add|remove|test]", help: "manage MCP servers for the active runner via its CLI" },
 ];

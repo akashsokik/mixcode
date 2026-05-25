@@ -1,21 +1,21 @@
-// Actor/critic consensus decision modal.
+// Single-cycle actor/critic consensus decision modal.
 //
-// Mounted when a `consensus_ready` server msg arrives. The producer wrote a
-// draft, the critic reviewed it iteratively, and either they converged
-// (critic emitted AGREE) or hit the max-rounds cap. This modal shows the
-// final draft alongside the iteration thread so the user can read the
-// debate before picking an implementer.
+// Mounted when a `consensus_ready` server msg arrives. The producer wrote
+// one draft, the critic reviewed it once, and that's the cycle. This modal
+// shows the draft alongside the critic's verdict so the user can read both
+// before picking an implementer. No retry path — disagreement is surfaced
+// to the user, not used to drive another round.
 //
 // Key bindings:
 //   tab         toggle between "final" view (just the draft) and "thread"
-//               view (every producer/critic turn)
+//               view (producer draft + critic review side by side)
 //   c           implement with claude
 //   x           implement with codex
 //   esc / n     cancel (drop the proposal; nothing applied)
 //
 // On `implement`, the server triggers a normal turn on the chosen runner
-// with the final draft as the prompt; the chosen runner does the actual
-// work via the standard tool path.
+// with the draft as the prompt; the chosen runner does the actual work
+// via the standard tool path.
 
 import { useMemo, useState } from "react";
 import { TextAttributes } from "@opentui/core";
@@ -95,10 +95,19 @@ export function ConsensusModal({ ready, onAction }: ConsensusModalProps) {
     }
   });
 
-  const headerAccent = ready.converged ? theme.toolEdit : theme.toolBash;
-  const verdictLabel = ready.converged
-    ? `AGREED after ${ready.iterations.length} iteration${ready.iterations.length === 1 ? "" : "s"}`
-    : `MAX ROUNDS (${ready.iterations.length}) — critic still had concerns`;
+  const verdict = ready.iterations[0]?.verdict ?? "unknown";
+  const headerAccent =
+    verdict === "agree"
+      ? theme.toolEdit
+      : verdict === "revise"
+        ? theme.toolBash
+        : theme.textMuted;
+  const verdictLabel =
+    verdict === "agree"
+      ? "critic AGREED"
+      : verdict === "revise"
+        ? "critic flagged issues (verdict: REVISE)"
+        : "critic verdict unknown";
 
   return (
     <box

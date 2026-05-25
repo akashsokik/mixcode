@@ -19,7 +19,6 @@ const BOOT_STEPS: ReadonlyArray<readonly [string, string]> = [
 
 const LOGO = "MixCode";
 const LOGO_NOISE = "ZXCVBNMASDFGHJKL";
-const ORBIT = ["◜", "◝", "◞", "◟"];
 const SCAN_LINES = [
   "· · · · · · · · · · ·",
   "• · · · · · · · · · ·",
@@ -38,6 +37,7 @@ const SCAN_LINES = [
 export function Welcome() {
   const [frame, setFrame] = useState(0);
   const keyCol = Math.max(...SHORTCUTS.map(([k]) => k.length));
+  const labelCol = Math.max(...SHORTCUTS.map(([, l]) => l.length));
   const stepIndex = Math.min(BOOT_STEPS.length - 1, Math.floor(frame / 5));
   const [status, detail] = BOOT_STEPS[stepIndex];
   const ready = stepIndex === BOOT_STEPS.length - 1;
@@ -53,7 +53,6 @@ export function Welcome() {
     : frame < 10
       ? theme.textSubtle
       : theme.text;
-  const cursor = frame % 6 < 3 ? "▌" : " ";
 
   useEffect(() => {
     const tick = setInterval(() => setFrame((value) => value + 1), 120);
@@ -80,43 +79,40 @@ export function Welcome() {
         </box>
 
         <box marginTop={1} flexDirection="row">
-          <text fg={ready ? theme.toolEdit : theme.toolBash}>{ORBIT[frame % ORBIT.length]}</text>
-          <text fg={theme.textMuted}> boot: </text>
+          <text fg={theme.textMuted}>boot: </text>
           <text fg={ready ? theme.toolEdit : theme.textSubtle}>{status}</text>
-          <text fg={theme.textFaint}> {cursor}</text>
         </box>
 
-        <box flexDirection="column" marginTop={3}>
+        <box flexDirection="column" marginTop={3} alignItems="stretch">
           <box flexDirection="row" marginBottom={1}>
-            <text fg={theme.textFaint}>╭─ </text>
+            <text fg={theme.textFaint}>╭───── </text>
             <text fg={theme.textMuted}>{"> mixcode --wake"}</text>
-            <text fg={theme.textFaint}> ─╮</text>
+            <text fg={theme.textFaint}> ──────────╮</text>
           </box>
 
-          {SHORTCUTS.map(([key, label], index) => {
-            const visible = frame >= 8 + index * 2;
-            return (
-              <box key={key} flexDirection="row">
-                <text fg={visible ? theme.accentDim : theme.textFaint}>
-                  {visible ? "› " : "  "}
-                </text>
-                <text fg={visible ? theme.textMuted : theme.textFaint}>
-                  {visible ? key.padStart(keyCol, " ") : " ".repeat(keyCol)}
-                </text>
-                <text fg={theme.textSubtle}>{"   "}</text>
-                <text fg={visible ? theme.textSubtle : theme.textFaint}>
-                  {visible ? label : ""}
-                </text>
-              </box>
-            );
-          })}
+          <box flexDirection="column" alignSelf="center">
+            {SHORTCUTS.map(([key, label], index) => {
+              const visible = frame >= 8 + index * 2;
+              return (
+                <box key={key} flexDirection="row">
+                  <text fg={visible ? theme.text : theme.textFaint}>
+                    {visible ? key.padStart(keyCol, " ") : " ".repeat(keyCol)}
+                  </text>
+                  <text fg={theme.textFaint}>{"  →  "}</text>
+                  <text fg={visible ? theme.textSubtle : theme.textFaint}>
+                    {(visible ? label : "").padEnd(labelCol, " ")}
+                  </text>
+                </box>
+              );
+            })}
+          </box>
 
           <box flexDirection="row" marginTop={1}>
-            <text fg={theme.textFaint}>╰─ </text>
+            <text fg={theme.textFaint}>╰───── </text>
             <text fg={ready ? theme.textMuted : theme.textFaint}>
               {ready ? "commands unlocked" : "calibrating input"}
             </text>
-            <text fg={theme.textFaint}> ─╯</text>
+            <text fg={theme.textFaint}> ─────────╯</text>
           </box>
         </box>
       </box>

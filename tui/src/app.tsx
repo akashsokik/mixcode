@@ -27,7 +27,15 @@ import {
 } from "./util/notice";
 import { treeLines } from "./util/tree";
 import { normalizeRule } from "./util/permission-rule";
-import { addSkill, listSkills, readSkillFrontmatter, removeSkill, type SkillEntry } from "./util/skills";
+import {
+  addSkill,
+  importAllSkills,
+  importSkill,
+  listSkills,
+  readSkillFrontmatter,
+  removeSkill,
+  type SkillEntry,
+} from "./util/skills";
 import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
 import { theme } from "./theme";
 import { basename } from "./util/path";
@@ -323,35 +331,44 @@ export function App() {
         : runner === "codex"
           ? theme.runnerCodex
           : theme.runnerVercel;
-    // Prefer the SDK-sourced listing when the active session has one for the
-    // current runner — that's what the agent actually sees, including
-    // plugin-bundled and built-in CLI skills the FS walk can't enumerate.
-    // Falls back to the FS walk during the bootstrap window (no turn yet) and
-    // for Codex (no equivalent SDK stream).
+    // Union the SDK-sourced listing (when available for the current runner)
+    // with the FS walk. The Claude SDK's `system init` reports a `skills`
+    // array that often only includes skills loaded into the system prompt —
+    // plugin-bundled skills under ~/.claude/plugins/cache/* are sometimes
+    // missing from it. Earlier we treated SDK as a replacement for FS, which
+    // hid those skills as soon as a turn ran. Merging keeps them visible and
+    // still lets SDK metadata (pluginName, isFsRemovable) win on overlap.
     const sid = api.activeId;
     const snap = sid ? api.sessionSkills[sid] : null;
-    const useSdk = !!(snap && snap.runner === runner);
+    const sdkEntries = snap && snap.runner === runner ? snap.entries : [];
 
     type Row = {
       name: string;
       detail: string;
       isFsRemovable: boolean;
     };
-    const rows: Row[] = useSdk
-      ? snap!.entries.map((e) => ({
-          name: e.name,
-          detail: detailForSdkSkill(e),
-          isFsRemovable: e.isFsRemovable,
-        }))
-      : skillEntries.map((e) => ({
-          name: e.name,
-          detail: e.description
-            ? clipDetail(e.description, 60)
-            : e.isSymlink
-              ? "(symlink)"
-              : "(dir)",
-          isFsRemovable: e.isSymlink,
-        }));
+    const byName = new Map<string, Row>();
+    for (const e of skillEntries) {
+      byName.set(e.name, {
+        name: e.name,
+        detail: e.description
+          ? clipDetail(e.description, 60)
+          : e.isSymlink
+            ? "(symlink)"
+            : "(dir)",
+        isFsRemovable: e.isSymlink,
+      });
+    }
+    for (const e of sdkEntries) {
+      byName.set(e.name, {
+        name: e.name,
+        detail: detailForSdkSkill(e),
+        isFsRemovable: e.isFsRemovable,
+      });
+    }
+    const rows: Row[] = Array.from(byName.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
 
     return rows.map((row) => {
       const actions: NonNullable<PaletteItem["actions"]> = [];
@@ -404,17 +421,23 @@ export function App() {
     const runner = api.active.activeRunner;
     const sid = api.activeId;
     const snap = sid ? api.sessionSkills[sid] : null;
-    const useSdk = !!(snap && snap.runner === runner);
-    const names: { name: string; help: string }[] = useSdk
-      ? snap!.entries.map((e) => ({
-          name: `/${e.name}`,
-          help: e.pluginName ? `skill (plugin: ${e.pluginName})` : "skill",
-        }))
-      : skillEntries.map((e) => ({
-          name: `/${e.name}`,
-          help: e.description ? clipDetail(e.description, 60) : "skill",
-        }));
-    return names;
+    const sdkEntries = snap && snap.runner === runner ? snap.entries : [];
+    const byName = new Map<string, { name: string; help: string }>();
+    for (const e of skillEntries) {
+      byName.set(e.name, {
+        name: `/${e.name}`,
+        help: e.description ? clipDetail(e.description, 60) : "skill",
+      });
+    }
+    for (const e of sdkEntries) {
+      byName.set(e.name, {
+        name: `/${e.name}`,
+        help: e.pluginName ? `skill (plugin: ${e.pluginName})` : "skill",
+      });
+    }
+    return Array.from(byName.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
   }, [api.active?.activeRunner, api.activeId, api.sessionSkills, skillEntries]);
 
   // Set of slash-name strings (case-insensitive) the active session
@@ -534,7 +557,9 @@ export function App() {
       switch (slash.type) {
         case "switch":
           if (api.active) {
-            api.setRunner(toggleRunner(api.active.activeRunner));
+            const from = api.active.activeRunner;
+            const to = toggleRunner(from);
+            api.setRunner(to);
             if (slash.rest) api.send(slash.rest);
           }
           return;
@@ -581,11 +606,8 @@ export function App() {
           return;
         case "consensus": {
           if (!sid) return;
-          // /consensus is a claude↔codex pair protocol. Vercel doesn't carry
-          // priorMessages across delegate calls, so it can't continue its
-          // own conversation across iterations — the "talking to each other"
-          // premise breaks. Reject early with a clear message instead of
-          // silently swapping the active runner.
+          // /consensus is a claude↔codex pair protocol. Reject vercel-active
+          // sessions instead of silently swapping the runner.
           if (api.active?.activeRunner === "vercel") {
             addNotice(sid, "/consensus", [
               "/consensus is not available for the vercel runner.",
@@ -597,18 +619,17 @@ export function App() {
           const task = slash.task.trim();
           if (!task) {
             addNotice(sid, "/consensus", [
-              "usage: /consensus [max=N] [rounds=N] [producer=claude|codex] <task>",
-              "Actor/critic loop. The producer writes a concrete answer; the",
-              "critic reviews; the producer revises. Loop ends when the critic",
-              "emits AGREE or after `rounds` iterations (default 6).",
-              "max=N caps tool turns per call (default 8).",
-              "producer= picks who writes first (default: active runner).",
+              "usage: /consensus [max=N] [producer=claude|codex] <task>",
+              "Single actor/critic cycle: the producer writes one draft, the",
+              "critic reviews it once, then the user picks who implements.",
+              "No retries, no loop — total cost is exactly 2 LLM calls.",
+              "max=N caps tool turns per call (opt-in; unset = no cap).",
+              "producer= picks who writes (default: active runner).",
             ]);
             return;
           }
           api.startConsensus(task, {
             maxTurnsPerPeer: slash.maxTurnsPerPeer,
-            maxRounds: slash.maxRounds,
             producer: slash.producer,
           });
           return;
@@ -803,6 +824,54 @@ export function App() {
                 "/skills add",
                 skillsLines(runner, listSkills(runner), `added: ${res.name} → ${res.source}`),
               );
+              return;
+            }
+            case "import": {
+              const source = action.source;
+              if (!source) {
+                addNotice(sid, "/skills import", [
+                  "missing source runner. example: /skills import claude brainstorm",
+                  "                       or: /skills import codex   (imports all)",
+                ]);
+                return;
+              }
+              if (source === runner) {
+                addNotice(sid, "/skills import", [
+                  `cannot import from the active runner (${runner}). switch first with /claude or /codex.`,
+                ]);
+                return;
+              }
+              if (action.name) {
+                const res = importSkill(runner, source, action.name);
+                addNotice(
+                  sid,
+                  "/skills import",
+                  skillsLines(
+                    runner,
+                    listSkills(runner),
+                    res.ok
+                      ? `imported ${source}/${res.name} → ${res.sourcePath}`
+                      : `failed: ${res.error}`,
+                  ),
+                );
+                return;
+              }
+              const bulk = importAllSkills(runner, source);
+              const headline =
+                bulk.imported.length > 0
+                  ? `imported ${bulk.imported.length} from ${source}` +
+                    (bulk.skipped.length ? ` (skipped ${bulk.skipped.length})` : "")
+                  : `nothing imported from ${source}` +
+                    (bulk.skipped.length ? ` (skipped ${bulk.skipped.length})` : "");
+              const lines = skillsLines(runner, listSkills(runner), headline);
+              if (bulk.skipped.length > 0) {
+                lines.push("", "skipped");
+                const w = Math.max(...bulk.skipped.map((s) => s.name.length));
+                for (const s of bulk.skipped) {
+                  lines.push(`  ${s.name.padEnd(w, " ")}   ${s.reason}`);
+                }
+              }
+              addNotice(sid, "/skills import", lines);
               return;
             }
             case "remove": {

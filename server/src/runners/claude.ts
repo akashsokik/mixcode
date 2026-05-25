@@ -1,5 +1,50 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import type { RunEvent } from "../../../shared/events.js";
+
+// Pull just the plugin-related keys out of the user's ~/.claude/settings.json
+// without enabling the rest of the file (hooks, permissions, etc.). The runner
+// sets `settingSources: []` to isolate from user filesystem state for
+// predictable per-machine behavior, but that also drops `enabledPlugins`, so
+// plugin-bundled slash skills like /superpowers:brainstorming never resolve.
+// Reading and re-applying those two keys surgically keeps the isolation
+// promise while letting the user's enabled plugins load.
+function userClaudePluginSettings(): {
+  enabledPlugins?: Record<string, unknown>;
+  extraKnownMarketplaces?: Record<string, unknown>;
+} {
+  const file = path.join(homedir(), ".claude", "settings.json");
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch {
+    return {};
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  const out: {
+    enabledPlugins?: Record<string, unknown>;
+    extraKnownMarketplaces?: Record<string, unknown>;
+  } = {};
+  if (parsed && typeof parsed === "object") {
+    if (parsed.enabledPlugins && typeof parsed.enabledPlugins === "object") {
+      out.enabledPlugins = parsed.enabledPlugins;
+    }
+    if (
+      parsed.extraKnownMarketplaces &&
+      typeof parsed.extraKnownMarketplaces === "object"
+    ) {
+      out.extraKnownMarketplaces = parsed.extraKnownMarketplaces;
+    }
+  }
+  return out;
+}
 
 type CanUseToolBridge = (
   toolName: string,
@@ -97,11 +142,30 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
   }
 
   // The server owns the rule list — isolate from the user's filesystem
-  // settings so behavior is predictable across machines.
+  // settings so behavior is predictable across machines. But also splice
+  // back the user's enabledPlugins / extraKnownMarketplaces so
+  // plugin-bundled slash skills (e.g. /superpowers:brainstorming) actually
+  // resolve. Permission rules and hooks stay server-owned because the
+  // settings we set below override the user file (precedence is user <
+  // project < local < flag < policy, and `options.settings` lands at flag).
   options.settingSources = [];
+  const userPlugins = userClaudePluginSettings();
+  const settings: Record<string, unknown> = {};
   if (allowRules && allowRules.length > 0) {
-    options.settings = { permissions: { allow: [...allowRules] } };
+    settings.permissions = { allow: [...allowRules] };
   }
+  if (userPlugins.enabledPlugins) {
+    settings.enabledPlugins = userPlugins.enabledPlugins;
+  }
+  if (userPlugins.extraKnownMarketplaces) {
+    settings.extraKnownMarketplaces = userPlugins.extraKnownMarketplaces;
+  }
+  if (Object.keys(settings).length > 0) {
+    options.settings = settings;
+  }
+  // Enable every discovered skill — without this the SDK keeps skills off
+  // for non-CLI integrations even when plugins are loaded.
+  options.skills = "all";
 
   // Apply permission mode to the SDK call. `bypassPermissions` additionally
   // requires opt-in via `allowDangerouslySkipPermissions` (SDK safety check).
@@ -166,6 +230,13 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
 
   const pendingTool = new Map<string, { name: string; input: unknown }>();
 
+  // Track whether the stream ever yielded a `result:success`. Some SDK
+  // paths (notably local slash commands like /usage that bypass the model
+  // loop) close the stream without emitting `result`, leaving the
+  // session_id we captured on init pointing at a conversation that was
+  // never persisted. The post-loop guard below uses this to clear the
+  // resumeId in that case so the next turn doesn't try to resume a ghost.
+  let sawSuccessResult = false;
   try {
     // Per-message index → start timestamp for thinking blocks, used to attach
     // elapsed seconds to the "thinking" marker emitted on content_block_stop.
@@ -175,8 +246,9 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     for await (const message of query({ prompt, options: options as any })) {
       onRaw?.(message);
       switch (message.type) {
-        case "system":
-          if ((message as any).subtype === "init") {
+        case "system": {
+          const sub = (message as any).subtype;
+          if (sub === "init") {
             const m = message as any;
             if (m.session_id) onResumeId(m.session_id);
             if (onSkillInfo) {
@@ -189,8 +261,18 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
                 : [];
               onSkillInfo({ skills, plugins });
             }
+          } else if (sub === "local_command_output") {
+            // Output from a local slash command (e.g. /usage, /voice). The
+            // SDK bypasses the model loop and emits this single chunk. Render
+            // it as plain text so the user sees the result instead of an
+            // empty bullet.
+            const content = (message as any).content;
+            if (typeof content === "string" && content.length > 0) {
+              onEvent({ type: "text_delta", delta: content });
+            }
           }
           break;
+        }
 
         case "stream_event": {
           const ev = (message as any).event;
@@ -265,6 +347,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
         case "result": {
           const m = message as any;
           if (m.subtype === "success") {
+            sawSuccessResult = true;
             if (m.usage) onEvent({ type: "usage", ...normalizeUsage(m.usage) });
           } else if (m.subtype === "error_max_turns") {
             // Soft cap. The session is still valid (resumeId stays good), the
@@ -309,6 +392,16 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
       type: "tool_log",
       log: { name: call.name, input: call.input, output: "(no result)" },
     });
+  }
+
+  // Loop-bypassed turns (e.g. /usage, /voice — see the SDK's "local slash
+  // command" path) close the stream without emitting `result:success`. The
+  // session_id captured on init points at a conversation that was never
+  // persisted, so trying to resume it on the next turn raises
+  // `error_during_execution (No conversation found with session ID: …)`.
+  // Drop the id to force the next turn to start a fresh conversation.
+  if (!sawSuccessResult) {
+    onResumeId(null);
   }
 }
 

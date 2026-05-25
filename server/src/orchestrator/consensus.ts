@@ -1,25 +1,15 @@
-// /consensus — adversarial actor/critic loop.
+// /consensus — single-cycle adversarial actor/critic pass.
 //
-// Two roles, two runners:
-//   PRODUCER writes the actual answer to the user's task — concrete code,
-//   config, prose, whatever the task demands. Not a plan.
+// Exactly two LLM calls, in order:
+//   1. PRODUCER writes the actual answer to the user's task (concrete code
+//      / config / prose — not a plan). Read-only tools to ground in repo.
+//   2. CRITIC reviews that single draft and emits a verdict JSON block
+//      `{verdict: "agree" | "revise", summary: "…"}`.
 //
-//   CRITIC reviews each draft and tries to find real problems. Each turn
-//   the critic emits a JSON verdict block: `{verdict: "agree" | "revise"}`.
-//
-// The loop iterates:
-//   i=0: producer writes first draft → critic reviews
-//   i=1: producer revises (sees critic's review) → critic reviews again
-//   …
-// Terminates on critic AGREE or after maxRounds iterations. The final
-// deliverable is the producer's latest draft; if `converged` is false the
-// user is shown the unresolved critic concerns alongside it.
-//
-// Session continuity: each role has its own peer session id (Claude
-// resumeId / Codex threadId) carried across iterations, so each agent is
-// actually continuing its own conversation — building on prior context
-// rather than getting served a fresh transcript every turn. This is how
-// "talking to each other" emerges; without continuity it's just essays.
+// That's it. No loop, no revise round. The user sees the draft + critic's
+// take and picks who implements. This bounds total cost to 2 LLM calls per
+// /consensus invocation — a loop with convergence detection was easy to
+// burn tokens on when the agents kept disagreeing.
 //
 // Tools: both roles are locked to read-only (`Read`, `Grep`, `Glob`) via
 // `permissionMode: "dontAsk"` + `allowedTools`. Producer doesn't edit the
@@ -67,26 +57,31 @@ export type ConsensusContext = {
   parentCwd: string;
   pair: ConsensusPair;
   depth: number;
-  // Optional per-iteration tool-call budget for each peer (Claude maxTurns
-  // / Vercel maxSteps). Undefined = no cap; the agent runs until it stops
+  // Optional per-call tool-call budget for each peer (Claude maxTurns /
+  // Vercel maxSteps). Undefined = no cap; the agent runs until it stops
   // generating tool calls or hits timeoutSec. Set this when you want a hard
   // limit (e.g. user passed `max=N` on the slash command). The SDK counts
   // every assistant turn — including tool-call turns — so a small value
   // here can starve the draft itself.
   maxTurnsPerPeer?: number;
-  // Max actor/critic iterations before forced exit. Default 6 — i.e. up to
-  // 3 producer drafts and 3 critic reviews.
-  maxRounds: number;
-  // Per-call wall-clock timeout. Producer/critic calls can be slower than
-  // round-1 essays because of session-carried context.
+  // Per-call wall-clock timeout.
   timeoutSec: number;
-  // Parent-turn abort signal. Checked between iterations so an interrupt
-  // doesn't burn through every remaining round before noticing — the
-  // peer-cancellation listener only kills the call that's *currently*
-  // running; without checking signal.aborted between steps the loop
-  // happily starts the next iteration and gets it cancelled too.
+  // Parent-turn abort signal. Checked between the producer and critic
+  // calls so an interrupt during the producer's call kills the cycle
+  // before the critic spins up.
   signal: AbortSignal;
   onPeerEvent: (record: DelegateRunRecord, event: RunEvent) => void;
+  // Fires after each call settles (producer then critic). index.ts uses
+  // this to emit a `consensus_step` anchor tool_log that backward-folds
+  // the streaming peer events into a labelled closed group.
+  onIterationStep?: (info: {
+    role: "producer" | "critic";
+    runner: RunnerKind;
+    replyChars: number;
+    verdict?: ConsensusVerdict;
+    summary?: string;
+    error?: string;
+  }) => void;
 };
 
 // Read-only tools the consensus peers may use. Excluding Edit/Write/Bash/
@@ -96,7 +91,6 @@ const CONSENSUS_ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
 
 const TASK_MAX = 4_000;
 const DRAFT_MAX = 16_000;
-const CRITIQUE_MAX = 8_000;
 
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
@@ -105,46 +99,30 @@ function truncate(s: string, max: number): string {
 
 // ───────────────────────── prompt builders ─────────────────────────
 
-function buildProducerInitial(task: string): string {
+function buildProducerPrompt(task: string): string {
   return [
-    "You are the PRODUCER in an adversarial pair-writing loop. A CRITIC (a peer model) reviews every draft you write and tries to find real problems with it.",
+    "You are the PRODUCER in a single-pass actor/critic exchange. A CRITIC (a peer model) will review your draft ONCE and emit a verdict — there is no revise round. Get it right the first time.",
     "",
     "Your job: produce the ACTUAL ANSWER to the user's task. Not a plan. Not \"I would do X\" — produce X. Write the code, the config, the design, the prose — whatever the task demands. Concrete content the user could ship.",
     "",
-    "GROUND IN REALITY FIRST. Before writing anything, use Read / Grep / Glob to actually look at the repo:",
+    "GROUND IN REALITY FIRST. Before writing, use Read / Grep / Glob to look at the repo:",
     "  - which files already exist and how they're structured",
     "  - what conventions, naming, imports, types the codebase uses",
     "  - what the relevant existing code does today",
-    "Drafts written without checking the repo are easy for the critic to shred. Don't guess at file paths or APIs — verify them. You have read-only tools; use them.",
+    "Drafts written without checking the repo are easy to shred. Don't guess at file paths or APIs — verify them. You have read-only tools; use them.",
     "",
-    "Each turn you'll output your FULL CURRENT DRAFT. The critic only reads your latest message, not the diff. Each revision must contain the whole thing.",
-    "",
-    "The loop ends when the critic emits AGREE. Make their job easy by being precise.",
+    "Output your FULL DRAFT in your reply. There's only one chance — make it complete and precise.",
     "",
     "TASK:",
     truncate(task, TASK_MAX),
     "",
-    "Explore the repo with Read/Grep/Glob as needed, then write your first complete draft.",
+    "Explore the repo as needed, then write your complete draft.",
   ].join("\n");
 }
 
-function buildProducerRevise(criticText: string): string {
+function buildCriticPrompt(task: string, producerDraft: string): string {
   return [
-    "The CRITIC reviewed your draft. Their response:",
-    "",
-    truncate(criticText, CRITIQUE_MAX),
-    "",
-    "If the critic flagged something about the repo (a file, a function, a convention), VERIFY IT WITH Read/Grep/Glob before agreeing or pushing back. Don't accept a claim about reality without checking, and don't defend yours without checking either.",
-    "",
-    "Revise. Where you agree with the critic, fix it. Where you disagree, briefly explain why — citing the file/line you read if applicable.",
-    "",
-    "Output your FULL CURRENT DRAFT (not a diff). The critic only reads your latest message.",
-  ].join("\n");
-}
-
-function buildCriticInitial(task: string, producerDraft: string): string {
-  return [
-    "You are the CRITIC in an adversarial pair-writing loop. A PRODUCER (a peer model) is writing the actual answer to the user's task. Your job: find real problems with each draft.",
+    "You are the CRITIC in a single-pass actor/critic exchange. A PRODUCER (a peer model) has written one draft answer to the user's task. Your job: review it ONCE and emit a verdict. There is no revise round — your verdict is final input to the user, not the producer.",
     "",
     "GROUND IN REALITY. Before declaring anything right or wrong, VERIFY against the actual repo. Use Read / Grep / Glob to:",
     "  - check that files the producer references actually exist at the paths claimed",
@@ -155,9 +133,9 @@ function buildCriticInitial(task: string, producerDraft: string): string {
     "",
     "Look for: incorrect code or config, missing edge cases, broken assumptions, weak design choices, security issues, scope drift from the task, divergence from existing repo conventions. Don't critique style/formatting unless it affects correctness. Don't stall on nitpicks.",
     "",
-    "When the producer has addressed your prior concerns AND your repo checks confirm the draft is sound, emit AGREE. Be specific about what's wrong and where — cite parts of the draft AND the file/line in the repo.",
+    "Emit AGREE only if the draft is genuinely sound — if you're verifying repo claims and they hold up. Otherwise REVISE with specific issues (cite parts of the draft AND file/line in the repo).",
     "",
-    "End EVERY response with EXACTLY this JSON block (and nothing after it):",
+    "End your response with EXACTLY this JSON block (and nothing after it):",
     "```json",
     '{"verdict":"agree"|"revise","summary":"one-line status"}',
     "```",
@@ -165,28 +143,11 @@ function buildCriticInitial(task: string, producerDraft: string): string {
     "TASK:",
     truncate(task, TASK_MAX),
     "",
-    "The PRODUCER's first draft:",
+    "The PRODUCER's draft:",
     "",
     truncate(producerDraft, DRAFT_MAX),
     "",
     "Check it against the actual repo with Read/Grep/Glob, then review.",
-  ].join("\n");
-}
-
-function buildCriticFollowup(producerDraft: string): string {
-  return [
-    "The PRODUCER revised. Their new draft:",
-    "",
-    truncate(producerDraft, DRAFT_MAX),
-    "",
-    "Re-check against the repo. Use Read/Grep/Glob to verify the producer's changes are actually correct — don't just trust their prose. If they cite a file/line, open it.",
-    "",
-    "If they addressed your prior concerns and your repo checks confirm the draft is sound, emit AGREE. Otherwise list what's still wrong (with file:line where you can).",
-    "",
-    "End EVERY response with EXACTLY this JSON block (and nothing after it):",
-    "```json",
-    '{"verdict":"agree"|"revise","summary":"one-line status"}',
-    "```",
   ].join("\n");
 }
 
@@ -328,74 +289,74 @@ export async function runConsensus(
   const iterations: ConsensusIteration[] = [];
   const errors: string[] = [];
 
-  let producerSessionId: string | undefined;
-  let criticSessionId: string | undefined;
-  let lastDraft = "";
-  let lastCriticText = "";
-  let converged = false;
-
-  for (let i = 0; i < ctx.maxRounds; i++) {
-    if (ctx.signal.aborted) break;
-
-    // ── Producer step ─────────────────────────────────────────
-    const producerPrompt =
-      i === 0 ? buildProducerInitial(task) : buildProducerRevise(lastCriticText);
-    const pOut = await runOneCall({
-      runner: producer,
-      prompt: producerPrompt,
-      sessionId: producerSessionId,
-      ctx,
-      label: `iter ${i} producer (${producer})`,
-    });
-    if (pOut.sessionId) producerSessionId = pOut.sessionId;
-    if (pOut.error) errors.push(pOut.error);
-    lastDraft = pOut.text || lastDraft;
-    // If the producer call hard-errored without text, stop. The loop can't
-    // make progress without a draft to review.
-    if (!pOut.text && pOut.error) {
-      iterations.push({
-        index: i,
-        producerText: lastDraft,
-        criticText: "",
-        verdict: "unknown",
-        summary: "producer call failed before producing text",
-        parseError: pOut.error,
-      });
-      break;
-    }
-
-    if (ctx.signal.aborted) break;
-
-    // ── Critic step ───────────────────────────────────────────
-    const criticPrompt =
-      i === 0 ? buildCriticInitial(task, lastDraft) : buildCriticFollowup(lastDraft);
-    const cOut = await runOneCall({
-      runner: critic,
-      prompt: criticPrompt,
-      sessionId: criticSessionId,
-      ctx,
-      label: `iter ${i} critic (${critic})`,
-    });
-    if (cOut.sessionId) criticSessionId = cOut.sessionId;
-    if (cOut.error) errors.push(cOut.error);
-    lastCriticText = cOut.text;
-
-    const parsed = parseVerdict(cOut.text);
-    iterations.push({
-      index: i,
-      producerText: lastDraft,
-      criticText: stripVerdictFence(cOut.text),
-      verdict: parsed.verdict,
-      summary: parsed.summary,
-      ...(parsed.parseError ? { parseError: parsed.parseError } : {}),
-    });
-
-    if (parsed.verdict === "agree") {
-      converged = true;
-      break;
-    }
-    if (ctx.signal.aborted) break;
+  if (ctx.signal.aborted) {
+    return { iterations, finalDraft: "", converged: false, errors };
   }
 
-  return { iterations, finalDraft: lastDraft, converged, errors };
+  // ── PRODUCER ────────────────────────────────────────────────
+  const pOut = await runOneCall({
+    runner: producer,
+    prompt: buildProducerPrompt(task),
+    ctx,
+    label: `producer (${producer})`,
+  });
+  if (pOut.error) errors.push(pOut.error);
+  const draft = pOut.text || "";
+  ctx.onIterationStep?.({
+    role: "producer",
+    runner: producer,
+    replyChars: pOut.text.length,
+    error: pOut.error,
+  });
+
+  // No draft → can't review. Record the failure and surface to the user.
+  if (!draft && pOut.error) {
+    iterations.push({
+      index: 0,
+      producerText: "",
+      criticText: "",
+      verdict: "unknown",
+      summary: "producer call failed before producing text",
+      parseError: pOut.error,
+    });
+    return { iterations, finalDraft: "", converged: false, errors };
+  }
+
+  if (ctx.signal.aborted) {
+    return { iterations, finalDraft: draft, converged: false, errors };
+  }
+
+  // ── CRITIC ──────────────────────────────────────────────────
+  const cOut = await runOneCall({
+    runner: critic,
+    prompt: buildCriticPrompt(task, draft),
+    ctx,
+    label: `critic (${critic})`,
+  });
+  if (cOut.error) errors.push(cOut.error);
+
+  const parsed = parseVerdict(cOut.text);
+  iterations.push({
+    index: 0,
+    producerText: draft,
+    criticText: stripVerdictFence(cOut.text),
+    verdict: parsed.verdict,
+    summary: parsed.summary,
+    ...(parsed.parseError ? { parseError: parsed.parseError } : {}),
+  });
+  ctx.onIterationStep?.({
+    role: "critic",
+    runner: critic,
+    replyChars: cOut.text.length,
+    verdict: parsed.verdict,
+    summary: parsed.summary,
+    error: cOut.error,
+  });
+
+  return {
+    iterations,
+    finalDraft: draft,
+    converged: parsed.verdict === "agree",
+    errors,
+  };
 }

@@ -260,6 +260,98 @@ export function addSkill(runner: RunnerKind, rawPath: string, opts?: { nameOverr
   return { ok: true, runner, name, source: abs, target };
 }
 
+export type ImportSkillResult =
+  | {
+      ok: true;
+      target: RunnerKind;
+      source: RunnerKind;
+      name: string;
+      sourcePath: string;
+      targetPath: string;
+    }
+  | { ok: false; error: string };
+
+// Symlink a single skill from `source`'s skills dir into `target`'s. The link
+// points at the resolved source (following one hop if the source entry itself
+// is a symlink) so removing the source's link later doesn't break the import.
+export function importSkill(
+  target: RunnerKind,
+  source: RunnerKind,
+  name: string,
+): ImportSkillResult {
+  if (target === source) {
+    return { ok: false, error: `target and source are the same runner: ${target}` };
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    return { ok: false, error: `invalid skill name: ${name}` };
+  }
+  const targetDir = skillsDirOrNull(target);
+  if (!targetDir) {
+    return { ok: false, error: `the ${target} runner has no on-disk skills directory` };
+  }
+  if (!skillsDirOrNull(source)) {
+    return { ok: false, error: `the ${source} runner has no on-disk skills directory` };
+  }
+  const entry = listSkills(source).find((s) => s.name === name);
+  if (!entry) {
+    return { ok: false, error: `no such skill in ${source}: ${name}` };
+  }
+  if (!entry.source) {
+    return { ok: false, error: `${source}/${name} is a broken symlink — cannot import` };
+  }
+  try {
+    mkdirSync(targetDir, { recursive: true });
+  } catch (err) {
+    return { ok: false, error: `failed to create ${targetDir}: ${(err as Error).message}` };
+  }
+  const targetPath = path.join(targetDir, name);
+  if (existsSync(targetPath)) {
+    return { ok: false, error: `already exists in ${target}: ${name}` };
+  }
+  try {
+    symlinkSync(entry.source, targetPath);
+  } catch (err) {
+    return { ok: false, error: `symlink failed: ${(err as Error).message}` };
+  }
+  return { ok: true, target, source, name, sourcePath: entry.source, targetPath };
+}
+
+export type ImportAllSkillsResult = {
+  target: RunnerKind;
+  source: RunnerKind;
+  imported: { name: string; sourcePath: string }[];
+  skipped: { name: string; reason: string }[];
+};
+
+// Import every user-installable skill from `source` into `target`. Plugin-
+// bundled skills (names containing colons) are skipped because the runner
+// skills dir requires the `^[A-Za-z0-9._-]+$` filename shape.
+export function importAllSkills(
+  target: RunnerKind,
+  source: RunnerKind,
+): ImportAllSkillsResult {
+  const imported: { name: string; sourcePath: string }[] = [];
+  const skipped: { name: string; reason: string }[] = [];
+  if (target === source) {
+    return {
+      target,
+      source,
+      imported,
+      skipped: [{ name: "*", reason: "target and source are the same runner" }],
+    };
+  }
+  for (const entry of listSkills(source)) {
+    if (!/^[A-Za-z0-9._-]+$/.test(entry.name)) {
+      skipped.push({ name: entry.name, reason: "plugin-bundled (not importable)" });
+      continue;
+    }
+    const res = importSkill(target, source, entry.name);
+    if (res.ok) imported.push({ name: res.name, sourcePath: res.sourcePath });
+    else skipped.push({ name: entry.name, reason: res.error });
+  }
+  return { target, source, imported, skipped };
+}
+
 export type RemoveSkillResult =
   | { ok: true; runner: RunnerKind; name: string; target: string; wasSymlink: boolean }
   | { ok: false; error: string };

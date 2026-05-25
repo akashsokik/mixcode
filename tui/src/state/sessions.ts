@@ -304,7 +304,6 @@ export function useSessions() {
       task: string,
       opts?: {
         maxTurnsPerPeer?: number;
-        maxRounds?: number;
         producer?: RunnerKind;
       },
     ): void {
@@ -314,7 +313,6 @@ export function useSessions() {
         sessionId: activeId,
         task,
         maxTurnsPerPeer: opts?.maxTurnsPerPeer,
-        maxRounds: opts?.maxRounds,
         producer: opts?.producer,
       });
     },

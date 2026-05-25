@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { TextAttributes } from "@opentui/core";
+import { useEffect, useRef, useState } from "react";
+import { TextAttributes, type InputRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import type {
   ClaudePermissionMode,
@@ -14,6 +14,7 @@ import {
 } from "../state/prompt";
 import { theme } from "../theme";
 import { claudeModeLabel } from "../util/notice";
+import { parseSlash } from "../util/slash";
 
 const ENTER_KEYS = new Set(["return", "enter", "linefeed", "kpenter"]);
 
@@ -61,9 +62,28 @@ export function Prompt({
   slashExtras,
 }: PromptProps) {
   const [text, setText] = useState("");
+  const [inputFocused, setInputFocused] = useState(focused && !locked);
+  const inputRef = useRef<InputRenderable>(null);
   const history = useHistory();
   const completions = useCompletions();
   const slash = useSlashCompletions(slashExtras);
+
+  useEffect(() => {
+    setInputFocused(focused && !locked);
+  }, [focused, locked]);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const onFocus = () => setInputFocused(true);
+    const onBlur = () => setInputFocused(false);
+    input.on("focused", onFocus);
+    input.on("blurred", onBlur);
+    return () => {
+      input.off("focused", onFocus);
+      input.off("blurred", onBlur);
+    };
+  }, [locked]);
 
   useEffect(() => {
     // Accept skill-style names (`/use-railway`, `/superpowers:brainstorming`)
@@ -177,6 +197,26 @@ export function Prompt({
 
   const completionRows = Math.min(completions.matches.length, 6);
   const slashView = sliceSlashViewport(slash.matches, slash.selectedIndex);
+  const slashMenuActive = slash.active && isSlashQuery(text);
+  const completionMenuActive = completions.active && isFileQuery(text);
+  const visualFocused = focused && !locked && inputFocused;
+  const rail = buildPromptRail({
+    text,
+    locked: !!locked,
+    streaming: !!streaming,
+    runner: runner ?? null,
+    claudeMode,
+    slashMenuActive,
+    slashSelected: slash.selected,
+    completionMenuActive,
+    completionSelected: completions.selected,
+    slashExtras: slashExtras ?? [],
+    modelLabel: modelLabel ?? null,
+    contextPercent: contextPercent ?? null,
+    projectLabel: projectLabel ?? null,
+    branch: branch ?? null,
+    sessionPill: sessionPill ?? null,
+  });
 
   return (
     <box flexDirection="column" flexShrink={0}>
@@ -232,7 +272,7 @@ export function Prompt({
       <box
         flexDirection="column"
         borderStyle="single"
-        borderColor={focused ? theme.borderFocused : theme.border}
+        borderColor={visualFocused ? theme.borderFocused : theme.border}
         backgroundColor={theme.bgPanel}
         paddingLeft={1}
         paddingRight={1}
@@ -256,39 +296,323 @@ export function Prompt({
               <text fg={theme.textFaint}>{"] "}</text>
             </>
           )}
-          <text fg={focused && !locked ? theme.accent : theme.textSubtle}>{"› "}</text>
+          <text fg={visualFocused ? theme.accent : theme.textSubtle}>{"› "}</text>
           {locked ? (
             <text fg={theme.textFaint}>
               {text || "input disabled — palette/permission overlay active"}
             </text>
           ) : (
             <input
+              ref={inputRef}
               value={text}
               onInput={setText}
               focused={focused}
-              placeholder={
-                placeholderForMode(claudeMode, runner) ??
-                hint ??
-                "ask anything — /switch flips runners"
-              }
+              placeholder={hint ?? "ask anything — / for commands"}
               flexGrow={1}
             />
           )}
         </box>
-        <MetaRow
-          runner={runner ?? null}
-          claudeMode={claudeMode}
-          modelLabel={modelLabel ?? null}
-          contextPercent={contextPercent ?? null}
-          projectLabel={projectLabel ?? null}
-          branch={branch ?? null}
-          streaming={!!streaming}
-          sessionPill={sessionPill ?? null}
-        />
+        <PromptRail rail={rail} />
         <DelegationRow stats={delegations ?? null} />
       </box>
     </box>
   );
+}
+
+type RailSegment = {
+  value: string;
+  color: string;
+  bold?: boolean;
+};
+
+type PromptRailState = {
+  segments: RailSegment[];
+  keys: string[];
+};
+
+function PromptRail({ rail }: { rail: PromptRailState }) {
+  return (
+    <box flexDirection="row" height={1} paddingLeft={1}>
+      {rail.segments.map((seg, i) => (
+        <box key={`${seg.value}-${i}`} flexDirection="row" flexShrink={0}>
+          {i > 0 && <Dot />}
+          <text
+            fg={seg.color}
+            attributes={seg.bold ? TextAttributes.BOLD : undefined}
+          >
+            {seg.value}
+          </text>
+        </box>
+      ))}
+      {rail.keys.length > 0 && <box flexGrow={1} />}
+      {rail.keys.map((key, i) => (
+        <box key={key} flexDirection="row" flexShrink={0}>
+          {i > 0 && <Dot />}
+          <text fg={theme.textMuted}>{key}</text>
+        </box>
+      ))}
+    </box>
+  );
+}
+
+function buildPromptRail({
+  text,
+  locked,
+  streaming,
+  runner,
+  claudeMode,
+  slashMenuActive,
+  slashSelected,
+  completionMenuActive,
+  completionSelected,
+  slashExtras,
+  modelLabel,
+  contextPercent,
+  projectLabel,
+  branch,
+  sessionPill,
+}: {
+  text: string;
+  locked: boolean;
+  streaming: boolean;
+  runner: RunnerKind | null;
+  claudeMode: ClaudePermissionMode | undefined;
+  slashMenuActive: boolean;
+  slashSelected: SlashSuggestion | null;
+  completionMenuActive: boolean;
+  completionSelected: string | null;
+  slashExtras: SlashSuggestion[];
+  modelLabel: string | null;
+  contextPercent: number | null;
+  projectLabel: string | null;
+  branch: { name: string; dirty: boolean } | null;
+  sessionPill: { name: string; streaming: number } | null;
+}): PromptRailState {
+  if (locked) {
+    return {
+      segments: [
+        { value: "locked", color: theme.toolError, bold: true },
+        { value: "overlay owns input", color: theme.textMuted },
+      ],
+      keys: [],
+    };
+  }
+
+  if (slashMenuActive) {
+    return {
+      segments: [
+        { value: "complete", color: theme.toolTask, bold: true },
+        {
+          value: slashSelected
+            ? `${slashSelected.name} · ${slashSelected.help}`
+            : "slash command",
+          color: theme.textMuted,
+        },
+      ],
+      keys: ["↑↓", "tab", "esc"],
+    };
+  }
+
+  if (completionMenuActive) {
+    return {
+      segments: [
+        { value: "attach", color: theme.toolRead, bold: true },
+        {
+          value: completionSelected ? `@${completionSelected}` : "file reference",
+          color: theme.textMuted,
+        },
+      ],
+      keys: ["↑↓", "tab", "esc"],
+    };
+  }
+
+  const trimmed = text.trim();
+  const command = trimmed.startsWith("/") ? parseSlash(trimmed) : null;
+  if (command) {
+    return {
+      segments: [
+        {
+          value: describeSlashCommand(command, runner, slashExtras),
+          color: command.type === "unknown" ? theme.toolError : theme.toolBash,
+          bold: true,
+        },
+      ],
+      keys: command.type === "unknown"
+        ? ["↵ warn", "/help"]
+        : streaming
+          ? ["↵ run", "esc stop"]
+          : ["↵ run"],
+    };
+  }
+
+  const segments: RailSegment[] = [];
+  if (modelLabel) segments.push({ value: modelLabel, color: theme.textMuted });
+  if (projectLabel) segments.push({ value: projectLabel, color: theme.textMuted });
+  if (branch?.name) {
+    segments.push({
+      value: branch.dirty ? `${branch.name} *` : branch.name,
+      color: branch.dirty ? theme.toolBash : theme.textMuted,
+    });
+  }
+
+  if (runner === "claude" && claudeMode && claudeMode !== "default") {
+    segments.push({
+      value: claudeModeLabel(claudeMode),
+      color: claudeMode === "bypassPermissions" ? theme.toolError : theme.textMuted,
+      bold: claudeMode === "bypassPermissions",
+    });
+  }
+
+  const fileRefs = countFileReferences(text);
+  if (fileRefs > 0) {
+    segments.push({
+      value: `${fileRefs} file${fileRefs === 1 ? "" : "s"}`,
+      color: theme.toolRead,
+    });
+  }
+
+  if (contextPercent != null && contextPercent > 0) {
+    segments.push({ value: `${contextPercent}%`, color: theme.textMuted });
+  }
+
+  if (sessionPill) {
+    segments.push({
+      value: sessionPill.streaming > 0
+        ? `${truncate(sessionPill.name, 28)} ●${sessionPill.streaming}`
+        : truncate(sessionPill.name, 28),
+      color: sessionPill.streaming > 0 ? theme.toolError : theme.textMuted,
+    });
+  }
+
+  if (segments.length === 0) {
+    segments.push({ value: runner ?? "ready", color: runnerColor(runner), bold: !!runner });
+  }
+
+  const keys = ["↵ send"];
+  if (streaming) keys.push("esc stop");
+  if (runner === "claude") keys.push("⇧tab mode");
+  else keys.push("/ commands", "@ files");
+
+  return { segments, keys };
+}
+
+function describeSlashCommand(
+  command: NonNullable<ReturnType<typeof parseSlash>>,
+  runner: RunnerKind | null,
+  slashExtras: SlashSuggestion[],
+): string {
+  switch (command.type) {
+    case "claude":
+    case "codex":
+    case "vercel":
+      return command.type;
+    case "switch":
+      return "sessions";
+    case "clear":
+      return "clear";
+    case "help":
+      return "help";
+    case "context":
+      return "context";
+    case "sessions":
+      return "sessions";
+    case "tree":
+      return "tree";
+    case "consensus":
+      return "consensus";
+    case "permissions":
+      return describePermissionsAction(command.action);
+    case "model":
+      return describeModelAction(command.action, runner);
+    case "plan":
+      return describePlanAction(command.action);
+    case "skills":
+      return describeSkillsAction(command.action);
+    case "mcp":
+      return describeMcpAction(command.action);
+    case "unknown": {
+      const extra = slashExtras.find((s) => s.name.slice(1) === command.name);
+      return extra ? `skill ${extra.name}` : `unknown /${command.name}`;
+    }
+  }
+}
+
+function describePermissionsAction(
+  action: Extract<NonNullable<ReturnType<typeof parseSlash>>, { type: "permissions" }>["action"],
+): string {
+  switch (action.kind) {
+    case "list": return "permissions";
+    case "add": return "allow rule";
+    case "remove": return "remove rule";
+    case "clear": return "clear permissions";
+  }
+}
+
+function describeModelAction(
+  action: Extract<NonNullable<ReturnType<typeof parseSlash>>, { type: "model" }>["action"],
+  runner: RunnerKind | null,
+): string {
+  switch (action.kind) {
+    case "picker": return "model picker";
+    case "show": return "models";
+    case "set": return `${runner ?? "active"} model`;
+    case "setRunner": return `${action.runner} model`;
+    case "reset": return `reset ${runner ?? "active"} model`;
+    case "resetRunner": return `reset ${action.runner} model`;
+  }
+}
+
+function describePlanAction(
+  action: Extract<NonNullable<ReturnType<typeof parseSlash>>, { type: "plan" }>["action"],
+): string {
+  switch (action.kind) {
+    case "toggle": return "toggle plan";
+    case "on": return "plan on";
+    case "off": return "plan off";
+    case "status": return "plan status";
+  }
+}
+
+function describeSkillsAction(
+  action: Extract<NonNullable<ReturnType<typeof parseSlash>>, { type: "skills" }>["action"],
+): string {
+  switch (action.kind) {
+    case "list": return "skills";
+    case "add": return "skill add";
+    case "import": return "skill import";
+    case "remove": return "skill remove";
+    case "info": return "skill info";
+  }
+}
+
+function describeMcpAction(
+  action: Extract<NonNullable<ReturnType<typeof parseSlash>>, { type: "mcp" }>["action"],
+): string {
+  switch (action.kind) {
+    case "list": return "mcp";
+    case "add": return "mcp add";
+    case "remove": return "mcp remove";
+    case "test": return "mcp test";
+  }
+}
+
+function runnerColor(runner: RunnerKind | null): string {
+  if (runner === "claude") return theme.runnerClaude;
+  if (runner === "codex") return theme.runnerCodex;
+  if (runner === "vercel") return theme.runnerVercel;
+  return theme.text;
+}
+
+function isSlashQuery(text: string): boolean {
+  return /^\/([A-Za-z0-9][A-Za-z0-9:_.-]*)?$/.test(text);
+}
+
+function isFileQuery(text: string): boolean {
+  return /(?:^|\s)@([^\s]*)$/.test(text);
+}
+
+function countFileReferences(text: string): number {
+  return (text.match(/(?:^|\s)@\S+/g) ?? []).length;
 }
 
 // Second meta row, rendered only when this session has delegated at least
@@ -350,82 +674,6 @@ function DelegationRow({ stats }: { stats: DelegationStats | null }) {
   );
 }
 
-function MetaRow({
-  runner,
-  claudeMode,
-  modelLabel,
-  contextPercent,
-  projectLabel,
-  branch,
-  streaming,
-  sessionPill,
-}: {
-  runner: RunnerKind | null;
-  claudeMode: ClaudePermissionMode | undefined;
-  modelLabel: string | null;
-  contextPercent: number | null;
-  projectLabel: string | null;
-  branch: { name: string; dirty: boolean } | null;
-  streaming: boolean;
-  sessionPill: { name: string; streaming: number } | null;
-}) {
-  if (!runner) return null;
-  const showMode = runner === "claude" && claudeMode && claudeMode !== "default";
-  const showCtx = contextPercent != null && contextPercent > 0;
-  const showCycleHint = runner === "claude";
-
-  const segments: Array<"model" | "project" | "branch" | "mode" | "ctx" | "sess"> = [];
-  if (modelLabel) segments.push("model");
-  if (projectLabel) segments.push("project");
-  if (branch?.name) segments.push("branch");
-  if (showMode) segments.push("mode");
-  if (showCtx) segments.push("ctx");
-  if (sessionPill) segments.push("sess");
-
-  return (
-    <box flexDirection="row" height={1} paddingLeft={1}>
-      {segments.map((seg, i) => (
-        <box key={seg} flexDirection="row">
-          {i > 0 && <Dot />}
-          {seg === "model" && <text fg={theme.textMuted}>{modelLabel}</text>}
-          {seg === "project" && <text fg={theme.textMuted}>{projectLabel}</text>}
-          {seg === "branch" && (
-            <>
-              <text fg={theme.toolBash}>{branch!.name}</text>
-              {branch!.dirty && <text fg={theme.toolError}>{" *"}</text>}
-            </>
-          )}
-          {seg === "mode" && (
-            <text fg={theme.textMuted}>{claudeModeLabel(claudeMode!)}</text>
-          )}
-          {seg === "ctx" && (
-            <text fg={theme.textMuted}>{`${contextPercent}%`}</text>
-          )}
-          {seg === "sess" && (
-            <>
-              <text fg={theme.textMuted}>{truncate(sessionPill!.name, 28)}</text>
-              {sessionPill!.streaming > 0 && (
-                <text fg={theme.toolError}>{`●${sessionPill!.streaming}`}</text>
-              )}
-            </>
-          )}
-        </box>
-      ))}
-      <box flexGrow={1} />
-      {streaming && (
-        <>
-          <text fg={theme.toolError} attributes={TextAttributes.BOLD}>{"esc"}</text>
-          <text fg={theme.textMuted}>{" stop"}</text>
-          {showCycleHint && <Dot />}
-        </>
-      )}
-      {showCycleHint && (
-        <text fg={theme.textMuted}>{"shift+tab mode"}</text>
-      )}
-    </box>
-  );
-}
-
 function Dot() {
   return <text fg={theme.textSubtle}>{"  ·  "}</text>;
 }
@@ -456,16 +704,4 @@ function sliceSlashViewport(
   );
   const end = Math.min(items.length, start + SLASH_VIEWPORT_ROWS);
   return { rows: items.slice(start, end), start, tail: items.length - end };
-}
-
-function placeholderForMode(
-  mode: ClaudePermissionMode | undefined,
-  runner: RunnerKind | null | undefined,
-): string | null {
-  if (runner !== "claude") return null;
-  if (mode === "plan") return "plan mode — Claude will propose a plan, no tools will run";
-  if (mode === "acceptEdits") return "accept-edits mode — Claude auto-allows file edits";
-  if (mode === "bypassPermissions")
-    return "BYPASS mode — Claude will run every tool without asking";
-  return null;
 }

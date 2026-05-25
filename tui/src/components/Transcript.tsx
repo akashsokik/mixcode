@@ -385,6 +385,7 @@ function DelegationGroup({
           toolCount={stats.tools}
           lastSummary={stats.lastSummary}
           replyChars={stats.replyChars}
+          replyTail={stats.replyTail}
         />
       ) : (
         <ToolCard log={group.header!} nested />
@@ -435,27 +436,45 @@ function DelegationGroup({
 // matches the completed-group rendering — only the trailing meta swaps in live
 // counters. The blinking dot is the leading StatusDot itself (status=running)
 // so the activity indicator sits in the same column as every other tool card.
+// `replyTail` is the in-flight draft text (last few lines) so the user sees
+// the actual content being written, not just "Xk chars reply".
 function PendingHeader({
   tag,
   runner,
   toolCount,
   lastSummary,
   replyChars,
+  replyTail,
 }: {
-  tag: "delegate" | "validate";
+  tag: "delegate" | "validate" | "consensus";
   runner: string | null;
   toolCount: number;
   lastSummary: string | null;
   replyChars: number;
+  replyTail: string;
 }) {
   const peer = runner ?? "peer";
   const meta: string[] = [];
   meta.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
   if (replyChars > 0) meta.push(`${formatChars(replyChars)} reply`);
-  const label = tag === "validate" ? "validate" : "delegate";
-  const verb = tag === "validate" ? " validating…" : " working…";
-  // Sage for validate so it reads as review/safety; mauve toolTask for delegate work.
-  const accent = tag === "validate" ? theme.toolEdit : theme.toolTask;
+  const label =
+    tag === "validate" ? "validate" : tag === "consensus" ? "consensus step" : "delegate";
+  const verb =
+    tag === "validate"
+      ? " validating…"
+      : tag === "consensus"
+        ? " drafting…"
+        : " working…";
+  // Sage for validate so it reads as review/safety; soft amber for consensus
+  // so the actor/critic loop is visually distinct from a plain delegate run;
+  // mauve toolTask for delegate work.
+  const accent =
+    tag === "validate"
+      ? theme.toolEdit
+      : tag === "consensus"
+        ? theme.toolBash
+        : theme.toolTask;
+  const tailLineList = replyTail ? replyTail.split("\n") : [];
   return (
     <box flexDirection="column" paddingRight={1}>
       <box flexDirection="row">
@@ -470,6 +489,16 @@ function PendingHeader({
         <text fg={theme.textMuted}>{meta.join("  ·  ")}</text>
         {lastSummary && <text fg={theme.textFaint}>{`  ·  ${lastSummary}`}</text>}
       </box>
+      {tailLineList.length > 0 && (
+        <box flexDirection="column" paddingLeft={4} marginTop={0}>
+          <text fg={theme.textFaint}>{"writing:"}</text>
+          {tailLineList.map((line, i) => (
+            <text key={`tail-${i}`} fg={theme.textMuted}>
+              {line || " "}
+            </text>
+          ))}
+        </box>
+      )}
     </box>
   );
 }
@@ -524,17 +553,27 @@ function collapsedSummary(tools: number, replyChars: number): string {
 
 // Aggregate stats for the children of a delegation_group. `previewSummaries`
 // is reused by the collapsed completed-group preview; `lastSummary` is what
-// the live pending header shows as the most recently-started peer tool.
+// the live pending header shows as the most recently-started peer tool;
+// `replyTail` is the trailing N lines of the latest peer reply text so the
+// live header can preview the actual draft being written, not just chars.
+const REPLY_TAIL_LINES = 6;
+const REPLY_TAIL_CHARS = 320;
+
 function childStats(children: Block[]): {
   tools: number;
   replyChars: number;
   previewSummaries: string[];
   lastSummary: string | null;
+  replyTail: string;
 } {
   let tools = 0;
   let replyChars = 0;
   const previewSummaries: string[] = [];
   let lastSummary: string | null = null;
+  // Track the LAST peer_reply we encountered — that's the in-flight draft.
+  // Earlier peer_reply blocks belong to closed groups already; for the
+  // pending tail we only care about the freshest one.
+  let latestReply = "";
   for (const b of children) {
     if (b.kind === "tool") {
       tools += 1;
@@ -543,9 +582,30 @@ function childStats(children: Block[]): {
       if (previewSummaries.length < 2) previewSummaries.push(summary);
     } else if (b.kind === "peer_reply" || b.kind === "peer_thinking") {
       replyChars += b.text.length;
+      if (b.kind === "peer_reply") latestReply = b.text;
     }
   }
-  return { tools, replyChars, previewSummaries, lastSummary };
+  return {
+    tools,
+    replyChars,
+    previewSummaries,
+    lastSummary,
+    replyTail: tailLines(latestReply, REPLY_TAIL_LINES, REPLY_TAIL_CHARS),
+  };
+}
+
+// Last N lines (or last M chars, whichever is shorter) of the running
+// peer text. Strips leading whitespace lines and caps each line so the
+// pending header stays bounded.
+function tailLines(text: string, maxLines: number, maxChars: number): string {
+  if (!text) return "";
+  const trimmed = text.length > maxChars ? text.slice(-maxChars) : text;
+  const lines = trimmed
+    .split("\n")
+    .map((l) => (l.length > 200 ? l.slice(0, 199) + "…" : l));
+  const tail = lines.slice(-maxLines);
+  while (tail.length > 0 && !tail[0].trim()) tail.shift();
+  return tail.join("\n");
 }
 
 function PeerReply({

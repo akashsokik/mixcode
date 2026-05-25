@@ -480,7 +480,6 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
     case "consensus_start":
       await runConsensusTurn(msg.sessionId, msg.task, {
         maxTurnsPerPeer: msg.maxTurnsPerPeer,
-        maxRounds: msg.maxRounds,
         producer: msg.producer,
       });
       return;
@@ -767,31 +766,21 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
 // TUI uses to actually mount the decision modal.
 // Default per-peer turn budget when the client doesn't pass one. Eight is
 // "read 4-5 files + reason + write a draft" — enough for an agent to
-// actually ground in the repo before writing, tight enough that a peer
-// can't burn 80 tool calls before producing one. Drafts written without
-// repo grounding are easy for the critic to shred, so giving them this
-// room is worth more than the marginal token cost.
 // No default per-peer turn cap. The SDK counts every assistant turn —
 // including tool-call turns — so a default like 8 burns through with 3-4
-// Read/Grep/Globs before the agent writes the actual draft. The real
-// bounds for consensus rounds are already in place:
-//   - allowedTools: ["Read", "Grep", "Glob"] + permissionMode: "dontAsk"
-//     (no destructive ops — a peer can't loop on Edit/Bash/ExitPlanMode)
-//   - timeoutSec wall-clock per call
-//   - maxRounds bounds the actor/critic conversation
-// `max=N` from the slash command is opt-in only; we clamp to the ceiling
-// to keep a typo (max=9999) from asking the SDK for runaway exploration.
+// Read/Grep/Globs before the agent writes the actual draft. Total cost
+// of /consensus is bounded by the single-cycle structure (exactly 1
+// producer call + 1 critic call) plus the read-only tool whitelist; no
+// per-call cap is needed. `max=N` from the slash command is opt-in only;
+// we clamp to the ceiling to keep a typo (max=9999) from asking the SDK
+// for runaway exploration on a single call.
 const CONSENSUS_MAX_TURNS_CEILING = 60;
-
-const CONSENSUS_DEFAULT_MAX_ROUNDS = 6;
-const CONSENSUS_MAX_ROUNDS_CEILING = 12;
 
 async function runConsensusTurn(
   sessionId: string,
   task: string,
   opts: {
     maxTurnsPerPeer?: number;
-    maxRounds?: number;
     producer?: RunnerKind;
   },
 ): Promise<void> {
@@ -805,11 +794,8 @@ async function runConsensusTurn(
     return;
   }
 
-  // Actor/critic is a claude↔codex pair protocol. Vercel doesn't carry
-  // priorMessages across startSubtaskRun calls yet, so it can't continue
-  // its own conversation across iterations — that breaks the "talking to
-  // each other" premise. Reject early instead of silently swapping the
-  // active runner.
+  // Actor/critic is a claude↔codex pair protocol. Reject vercel-active
+  // sessions early instead of silently swapping the runner.
   if (session.activeRunner === "vercel") {
     sessions.broadcast({
       type: "error",
@@ -843,8 +829,8 @@ async function runConsensusTurn(
   turnAborts.get(sessionId)?.abort();
   turnAborts.set(sessionId, abort);
   // Aborting the parent turn cascades to every in-flight peer call so
-  // interrupt / takeover actually kills the loop mid-iteration. Without
-  // this the abort just marks the signal — the peer that's mid-call keeps
+  // interrupt / takeover actually kills the cycle mid-call. Without this
+  // the abort just marks the signal — the peer that's mid-call keeps
   // running and streams into a dead message.
   abort.signal.addEventListener("abort", () => {
     cancelRunsForSession(sessionId);
@@ -859,11 +845,6 @@ async function runConsensusTurn(
     typeof opts.maxTurnsPerPeer === "number" && opts.maxTurnsPerPeer > 0
       ? Math.min(opts.maxTurnsPerPeer, CONSENSUS_MAX_TURNS_CEILING)
       : undefined;
-  const roundsRequested =
-    typeof opts.maxRounds === "number" && opts.maxRounds > 0
-      ? opts.maxRounds
-      : CONSENSUS_DEFAULT_MAX_ROUNDS;
-  const roundsClamped = Math.min(roundsRequested, CONSENSUS_MAX_ROUNDS_CEILING);
 
   try {
     onEvent({
@@ -872,12 +853,11 @@ async function runConsensusTurn(
         id: "consensus:header",
         name: "consensus",
         output:
-          `Actor/critic loop. PRODUCER=${producer}, CRITIC=${critic}. ` +
-          `Max ${roundsClamped} iterations, ` +
+          `Single actor/critic pass. PRODUCER=${producer}, CRITIC=${critic}. ` +
+          `Producer writes one draft; critic reviews it once; cycle ends. ` +
           (turnsClamped !== undefined
-            ? `${turnsClamped} tool turns per peer per iteration`
-            : `no per-peer turn cap (pass max=N to set one)`) +
-          `. Loop ends when the critic emits AGREE.`,
+            ? `Per-call turn cap: ${turnsClamped}.`
+            : `No per-peer turn cap (pass max=N to set one).`),
       },
     });
 
@@ -888,9 +868,30 @@ async function runConsensusTurn(
       depth: 0,
       timeoutSec: 240,
       maxTurnsPerPeer: turnsClamped,
-      maxRounds: roundsClamped,
       signal: abort.signal,
       onPeerEvent: forwardPeerEvent,
+      // Emit a backward-fold anchor after each call settles. The TUI's
+      // groupDelegations folds the streaming peer events under this anchor
+      // so producer + critic each render as a labelled closed card.
+      onIterationStep: ({ role, runner, replyChars, verdict, summary, error }) => {
+        const charLabel =
+          replyChars < 1000 ? `${replyChars} chars` : `${(replyChars / 1000).toFixed(1)}k chars`;
+        const headline =
+          role === "producer"
+            ? `PRODUCER = ${runner} · ${charLabel} draft`
+            : `CRITIC = ${runner} · verdict ${verdict ?? "unknown"}`;
+        const detailLines: string[] = [headline];
+        if (role === "critic" && summary) detailLines.push(summary);
+        if (error) detailLines.push(`(note: ${error})`);
+        onEvent({
+          type: "tool_log",
+          log: {
+            id: `consensus:step:${role}`,
+            name: "consensus_step",
+            output: detailLines.join("\n"),
+          },
+        });
+      },
     });
 
     if (abort.signal.aborted) {
@@ -899,7 +900,7 @@ async function runConsensusTurn(
         log: {
           id: "consensus:footer",
           name: "consensus",
-          output: "Consensus loop cancelled.",
+          output: "Consensus cycle cancelled.",
         },
       });
       return;
@@ -918,20 +919,24 @@ async function runConsensusTurn(
       iterations: result.iterations,
       finalDraft: result.finalDraft,
       converged: result.converged,
-      // The producer wrote the converged draft, so they're the natural pick
-      // for the implementer turn. User can override in the modal.
+      // The producer wrote the draft, so they're the natural pick for the
+      // implementer turn. User can override in the modal.
       suggestedRunner: producer,
     };
     setConsensusReady(ready);
 
+    const verdict = result.iterations[0]?.verdict ?? "unknown";
     onEvent({
       type: "tool_log",
       log: {
         id: "consensus:footer",
         name: "consensus",
-        output: result.converged
-          ? `Converged after ${result.iterations.length} iteration(s). Critic agreed. Awaiting your implementer choice.`
-          : `Hit max rounds (${roundsClamped}) without agreement. Producer's latest draft is the candidate; critic still had concerns.`,
+        output:
+          result.converged
+            ? `Cycle complete. Critic AGREED. Awaiting your implementer choice.`
+            : verdict === "revise"
+              ? `Cycle complete. Critic flagged issues (verdict: revise). Awaiting your implementer choice.`
+              : `Cycle complete. Awaiting your implementer choice.`,
       },
     });
     sessions.broadcast({ type: "consensus_ready", ready });

@@ -126,10 +126,11 @@ export type SessionSkillEntry = {
 
 export type PermissionDecision = "allow_once" | "allow_always" | "deny";
 
-// One iteration of the actor/critic consensus loop. The producer writes a
-// draft answer; the critic reviews it and emits a verdict. The loop
-// terminates when verdict === "agree" or maxRounds is hit. `index` is
-// 0-based; iteration 0 is the producer's first draft.
+// /consensus is a single-cycle actor/critic pass: the producer writes ONE
+// draft, the critic reviews it ONCE, and the loop ends regardless of the
+// verdict. No retries — the user sees the draft + verdict and picks who
+// implements it. `index` is always 0; the field is kept for forward
+// compatibility but `iterations` always has length 1.
 export type ConsensusVerdict = "agree" | "revise" | "unknown";
 export type ConsensusIteration = {
   index: number;
@@ -137,17 +138,16 @@ export type ConsensusIteration = {
   criticText: string;
   verdict: ConsensusVerdict;
   summary: string;
-  // Set when the critic emitted a JSON block we couldn't parse. The TUI
-  // surfaces this as a warning; the loop treats it as "revise" so it doesn't
-  // claim agreement on a malformed reply.
+  // Set when the critic emitted a JSON block we couldn't parse. Treated
+  // as "unknown" so the UI doesn't falsely claim agreement.
   parseError?: string;
 };
 
 // Final consensus output presented to the user. `finalDraft` is the
-// producer's latest text (post-convergence or post-max-rounds). `converged`
-// is true iff the critic emitted AGREE on the final iteration.
-// `suggestedRunner` defaults to the producer — they wrote the converged
-// draft, so they're the natural pick to implement it.
+// producer's single-pass text. `converged` reflects whether the critic
+// emitted AGREE on that one pass — it's informational only (no loop to
+// converge), but the UI uses it to color the modal header.
+// `suggestedRunner` defaults to the producer; the user can override.
 export type ConsensusReady = {
   sessionId: string;
   messageId: string;
@@ -204,11 +204,10 @@ export type ClientMsg =
       type: "consensus_start";
       sessionId: string;
       task: string;
-      // Per-call tool budget (Claude maxTurns / Vercel maxSteps). Default 5.
+      // Per-call tool budget (Claude maxTurns / Vercel maxSteps). Opt-in;
+      // unset = no per-peer SDK cap. The single-cycle bound (one producer
+      // call + one critic call) is the primary safety guard.
       maxTurnsPerPeer?: number;
-      // Max actor/critic iterations before forced exit. Default 6, ceiling
-      // ~12 on the server. Each iteration is producer-write + critic-review.
-      maxRounds?: number;
       // Producer override. Default: the session's active runner. The other
       // runner becomes the critic.
       producer?: RunnerKind;

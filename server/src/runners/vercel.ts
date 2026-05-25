@@ -250,26 +250,10 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
 
   // MCP servers configured in Claude's user state get spawned per-turn and
   // their tools merged in. Skipped for peer runs (consistent with Claude's
-  // peer-spawn rules) and for non-top-level depth.
+  // peer-spawn rules) and for non-top-level depth. The per-turn load is
+  // silent — no status card; merged tools simply appear in the model's tool
+  // surface.
   const mcp = isTopLevel ? await loadMcpForVercel() : null;
-  if (mcp && (mcp.loaded.length > 0 || mcp.failed.length > 0)) {
-    const lines: string[] = [];
-    if (mcp.loaded.length > 0) {
-      lines.push(`loaded: ${mcp.loaded.join(", ")}`);
-    }
-    for (const f of mcp.failed) {
-      lines.push(`failed: ${f.name} — ${f.reason}`);
-    }
-    onEvent({
-      type: "tool_log",
-      log: {
-        name: "vercel: mcp",
-        input: { servers: mcp.loaded.length + mcp.failed.length },
-        output: lines.join("\n") || "(no mcp servers)",
-        isError: mcp.failed.length > 0 && mcp.loaded.length === 0,
-      },
-    });
-  }
 
   const tools: ToolSet = {
     ...(mcp?.tools ?? {}),
