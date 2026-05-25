@@ -4,6 +4,7 @@ import type { Session, SessionMessage } from "../../../shared/events.ts";
 import { ToolCard } from "./ToolCard";
 import { TaskCard } from "./TaskCard";
 import { NoticeCard } from "./NoticeCard";
+import { ChatItem } from "./ChatItem";
 import { StatusDot } from "./StatusDot";
 import { Welcome } from "./Welcome";
 import { theme } from "../theme";
@@ -372,71 +373,70 @@ function DelegationGroup({
       ? extractVerdict(group.header)
       : null;
 
-  return (
-    <box
-      flexDirection="column"
-      paddingLeft={selected ? 0 : 1}
-      marginTop={1}
-      border={selected ? ["left"] : undefined}
-      borderStyle={selected ? "single" : undefined}
-      borderColor={selected ? theme.borderFocused : undefined}
-      onMouseDown={onActivate ? () => onActivate() : undefined}
-    >
-      {isPending ? (
-        <PendingHeader
-          tag={group.tag}
-          runner={group.pendingRunner}
-          toolCount={stats.tools}
-          lastSummary={stats.lastSummary}
-          replyChars={stats.replyChars}
-          replyTail={stats.replyTail}
-        />
-      ) : (
-        <ToolCard id={group.id} log={group.header!} nested />
-      )}
-      {hasChildren && !expanded && !isPending && (
-        <box flexDirection="column" paddingLeft={3} paddingRight={1}>
-          {verdict && (
-            <box flexDirection="row">
-              <text fg={theme.textFaint}>{"└ "}</text>
-              <text fg={verdictColor(verdict.verdict)} attributes={TextAttributes.BOLD}>
-                {`verdict: ${verdict.verdict}`}
-              </text>
-              {verdict.summary && (
-                <text fg={theme.textMuted}>{`  ${truncate(verdict.summary, 80)}`}</text>
-              )}
-            </box>
-          )}
-          {!verdict && stats.previewSummaries.length > 0 && (
-            <box flexDirection="row">
-              <text fg={theme.textFaint}>{"└ "}</text>
-              <text fg={theme.textMuted}>{stats.previewSummaries.join("  ·  ")}</text>
-            </box>
-          )}
-          <box flexDirection="row">
-            <text fg={theme.textFaint}>{collapsedSummary(toolCount, stats.replyChars)}</text>
-          </box>
-        </box>
-      )}
-      {hasChildren && expanded && (
-        <box flexDirection="column" paddingLeft={2}>
-          {group.children.map((b, i) => (
-            <BlockRow
-              key={`gc-${group.id}-${i}`}
-              id={`${group.id}:${i}`}
-              block={b}
-              firstInMessage={false}
-            />
-          ))}
-        </box>
-      )}
-      {selected && hint && (
+  const headerNode = isPending ? (
+    <PendingHeader
+      tag={group.tag}
+      runner={group.pendingRunner}
+      toolCount={stats.tools}
+      lastSummary={stats.lastSummary}
+      replyChars={stats.replyChars}
+      replyTail={stats.replyTail}
+    />
+  ) : (
+    <ToolCard id={group.id} log={group.header!} nested />
+  );
+
+  const collapsedExtras = hasChildren && !isPending ? (
+    <box flexDirection="column" paddingLeft={3} paddingRight={1}>
+      {verdict && (
         <box flexDirection="row">
-          <text fg={theme.textFaint}>{"  "}</text>
-          <text fg={theme.textFaint}>{hint}</text>
+          <text fg={theme.textFaint}>{"└ "}</text>
+          <text fg={verdictColor(verdict.verdict)} attributes={TextAttributes.BOLD}>
+            {`verdict: ${verdict.verdict}`}
+          </text>
+          {verdict.summary && (
+            <text fg={theme.textMuted}>{`  ${truncate(verdict.summary, 80)}`}</text>
+          )}
         </box>
       )}
+      {!verdict && stats.previewSummaries.length > 0 && (
+        <box flexDirection="row">
+          <text fg={theme.textFaint}>{"└ "}</text>
+          <text fg={theme.textMuted}>{stats.previewSummaries.join("  ·  ")}</text>
+        </box>
+      )}
+      <box flexDirection="row">
+        <text fg={theme.textFaint}>{collapsedSummary(toolCount, stats.replyChars)}</text>
+      </box>
     </box>
+  ) : null;
+
+  const expandedChildren = hasChildren ? (
+    <box flexDirection="column" paddingLeft={2}>
+      {group.children.map((b, i) => (
+        <BlockRow
+          key={`gc-${group.id}-${i}`}
+          id={`${group.id}:${i}`}
+          block={b}
+          firstInMessage={false}
+        />
+      ))}
+    </box>
+  ) : null;
+
+  return (
+    <ChatItem
+      id={group.id}
+      selected={selected}
+      expanded={expanded}
+      expandable={hasChildren}
+      hint={hint}
+      onActivate={onActivate}
+      expandedContent={expandedChildren}
+    >
+      {headerNode}
+      {!expanded && collapsedExtras}
+    </ChatItem>
   );
 }
 
