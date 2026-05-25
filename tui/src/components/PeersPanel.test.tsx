@@ -27,6 +27,31 @@ function emptySession(): Session {
   };
 }
 
+function streamingClaudeSession(): Session {
+  return {
+    ...emptySession(),
+    streaming: true,
+    messages: [
+      {
+        id: "m1",
+        role: "assistant",
+        text: "",
+        createdAt: "2026-05-25T10:00:00.000Z",
+        events: [
+          // peer_text_delta does not exist on RunEvent — the wire shape is a
+          // synthesised tool_log whose name matches `^\[runner\] (reply|thinking)$`
+          // (see blocksFromEvents + matchPeerSynthetic). The tool_log's
+          // `output` becomes the peer_reply.text after folding.
+          {
+            type: "tool_log",
+            log: { name: "[claude] reply", input: {}, output: "drafting the patch" },
+          },
+        ],
+      },
+    ],
+  };
+}
+
 describe("PeersPanel", () => {
   test("renders nothing when session has no pending peers", async () => {
     const setup = await testRender(
@@ -37,6 +62,26 @@ describe("PeersPanel", () => {
       await act(async () => { await setup.renderOnce(); });
       // Empty frame: no header, no rows.
       expect(frameText(setup).trim()).toBe("");
+    } finally {
+      await act(async () => { setup.renderer.destroy(); });
+    }
+  });
+});
+
+describe("PeersPanel (single peer)", () => {
+  test("renders header, runner badge, tag, verb, and writing tail", async () => {
+    const setup = await testRender(
+      <PeersPanel session={streamingClaudeSession()} width={28} streamingMessageId="m1" />,
+      { width: 32, height: 16, exitOnCtrlC: false },
+    );
+    try {
+      await act(async () => { await setup.renderOnce(); });
+      const out = frameText(setup);
+      expect(out).toContain("peer activity");
+      expect(out).toContain("claude");
+      expect(out).toContain("delegate");
+      expect(out).toContain("working");
+      expect(out).toContain("drafting the patch");
     } finally {
       await act(async () => { setup.renderer.destroy(); });
     }
