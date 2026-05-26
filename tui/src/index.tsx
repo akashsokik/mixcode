@@ -44,4 +44,15 @@ const renderer = await createCliRenderer({
   targetFps: 60,
 });
 
+// Opt into the kitty keyboard protocol so the prompt can distinguish plain
+// Enter (submit) from Shift+Enter (insert newline). Legacy terminals strip
+// modifiers from control keys; supporting terminals (iTerm2, ghostty, kitty,
+// wezterm, Alacritty) deliver the modifier alongside the key.
+try {
+  renderer.enableKittyKeyboard();
+} catch {
+  // Renderer or terminal doesn't support it — Shift+Enter just falls back to
+  // a plain Enter / submit, which is the same UX we had before this change.
+}
+
 createRoot(renderer).render(<App />);

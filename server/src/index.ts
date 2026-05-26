@@ -53,6 +53,25 @@ import {
   unregisterTaskEmitter,
 } from "./orchestrator/tasks.js";
 import {
+  askPeer,
+  cancelCollab,
+  cancelCollabsForSession,
+  clearCollabsForSession,
+  donePhase,
+  finishCollab,
+  handoffPhase,
+  observeCollab,
+  readPlan,
+  registerCollabEmitter,
+  sendCollabMessage,
+  startCollab,
+  startPhase,
+  unregisterCollabEmitter,
+  writePlan,
+  type CollabMessageKind,
+  type PeerRole,
+} from "./orchestrator/collab.js";
+import {
   clearConsensusReady,
   getConsensusReady,
   runConsensus,
@@ -356,6 +375,149 @@ app.post("/internal/delegate", async (c) => {
       payload: { taskId: r.taskId, cancelled: r.cancelled },
     });
   }
+  if (action === "plan_create") {
+    if (!body.parentRunner || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const phases = Array.isArray(args.phases)
+      ? args.phases.filter((p): p is string => typeof p === "string")
+      : [];
+    const risks = Array.isArray(args.risks)
+      ? args.risks.filter((r): r is string => typeof r === "string")
+      : undefined;
+    const verification = Array.isArray(args.verification)
+      ? args.verification.filter((v): v is string => typeof v === "string")
+      : undefined;
+    const r = await writePlan({
+      cwd: body.parentCwd,
+      owner: body.parentRunner,
+      title: String(args.title ?? ""),
+      goal: String(args.goal ?? ""),
+      phases,
+      scope: typeof args.scope === "string" ? args.scope : undefined,
+      risks,
+      verification,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "plan_read") {
+    if (!body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const r = await readPlan({
+      cwd: body.parentCwd,
+      planId: typeof args.planId === "string" ? args.planId : undefined,
+      path: typeof args.path === "string" ? args.path : undefined,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? { plan: r.plan } : { error: r.error } });
+  }
+  if (action === "collab_start") {
+    if (!body.parentRunner || !body.parentSessionId || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const r = await startCollab({
+      sessionId: body.parentSessionId,
+      cwd: body.parentCwd,
+      leadRunner: body.parentRunner,
+      planId: typeof args.planId === "string" ? args.planId : undefined,
+      path: typeof args.path === "string" ? args.path : undefined,
+      maxPeerTurns:
+        typeof args.maxPeerTurns === "number" && Number.isFinite(args.maxPeerTurns)
+          ? args.maxPeerTurns
+          : 8,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_send") {
+    if (!body.parentRunner) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const r = sendCollabMessage(String(args.collabId ?? ""), {
+      from: body.parentRunner,
+      kind: String(args.kind ?? "note") as CollabMessageKind,
+      body: String(args.body ?? ""),
+      phaseId: typeof args.phaseId === "string" ? args.phaseId : undefined,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_ask_peer") {
+    if (!body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const r = await askPeer(String(args.collabId ?? ""), {
+      phaseId: typeof args.phaseId === "string" ? args.phaseId : undefined,
+      request: String(args.request ?? ""),
+      role: String(args.role ?? "review") as PeerRole,
+      timeoutSec:
+        typeof args.timeoutSec === "number" && Number.isFinite(args.timeoutSec)
+          ? args.timeoutSec
+          : 180,
+      maxTurns:
+        typeof args.maxTurns === "number" && Number.isFinite(args.maxTurns)
+          ? args.maxTurns
+          : undefined,
+      parentCwd: body.parentCwd,
+      depth: (typeof body.depth === "number" ? body.depth : 0) + 1,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_observe") {
+    const r = observeCollab(String(args.collabId ?? ""));
+    return c.json({ ok: r.ok, payload: r.ok ? { snapshot: r.snapshot } : { error: r.error } });
+  }
+  if (action === "phase_start") {
+    const r = startPhase(
+      String(args.collabId ?? ""),
+      typeof args.phaseId === "string" ? args.phaseId : undefined,
+    );
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "phase_done") {
+    const r = donePhase(
+      String(args.collabId ?? ""),
+      String(args.phaseId ?? ""),
+      typeof args.summary === "string" ? args.summary : undefined,
+    );
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "phase_handoff") {
+    const owner = args.owner === "claude" || args.owner === "codex"
+      ? args.owner
+      : undefined;
+    if (!owner) return c.json({ ok: false, payload: { error: "invalid owner" } }, 400);
+    const r = handoffPhase(String(args.collabId ?? ""), String(args.phaseId ?? ""), {
+      owner,
+      makeLead: args.makeLead === true,
+      note: typeof args.note === "string" ? args.note : undefined,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_finish") {
+    const r = finishCollab(
+      String(args.collabId ?? ""),
+      typeof args.summary === "string" ? args.summary : undefined,
+    );
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_cancel") {
+    const r = cancelCollab(String(args.collabId ?? ""));
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
   return c.json({ ok: false, payload: { error: `unknown action: ${action}` } }, 400);
 });
 
@@ -432,6 +594,8 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
     case "delete_session": {
       turnAborts.get(msg.sessionId)?.abort();
       turnAborts.delete(msg.sessionId);
+      cancelCollabsForSession(msg.sessionId);
+      clearCollabsForSession(msg.sessionId);
       cancelTasksForSession(msg.sessionId);
       clearTasksForSession(msg.sessionId);
       clearConsensusReady(msg.sessionId);
@@ -453,6 +617,8 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
       // try to bump finish stats, but bumpOnFinish skips when the session's
       // stats entry is gone — which we wipe next.
       cancelRunsForSession(msg.sessionId);
+      cancelCollabsForSession(msg.sessionId);
+      clearCollabsForSession(msg.sessionId);
       cancelTasksForSession(msg.sessionId);
       clearTasksForSession(msg.sessionId);
       if (clearConsensusReady(msg.sessionId)) {
@@ -554,6 +720,11 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   const abort = new AbortController();
   turnAborts.get(sessionId)?.abort();
   turnAborts.set(sessionId, abort);
+  abort.signal.addEventListener("abort", () => {
+    cancelRunsForSession(sessionId);
+    cancelTasksForSession(sessionId);
+    cancelCollabsForSession(sessionId);
+  });
 
   const runtime = sessions.runtime(sessionId)!;
 
@@ -577,6 +748,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   // lookup as parentCallbacks — works for both in-process Claude and the
   // HTTP-proxy Codex path.
   registerTaskEmitter(sessionId, onEvent);
+  registerCollabEmitter(sessionId, onEvent);
 
   try {
     if (session.activeRunner === "claude") {
@@ -769,6 +941,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
     if (turnAborts.get(sessionId) === abort) turnAborts.delete(sessionId);
     unregisterParentCallbacks(sessionId);
     unregisterTaskEmitter(sessionId);
+    unregisterCollabEmitter(sessionId);
     sessions.finishMessage(sessionId, asst.id);
   }
 }

@@ -43,6 +43,21 @@ import {
   observeTask,
   spawnSubtasks,
 } from "../orchestrator/tasks.js";
+import {
+  askPeer,
+  cancelCollab,
+  donePhase,
+  finishCollab,
+  handoffPhase,
+  observeCollab,
+  readPlan,
+  sendCollabMessage,
+  startCollab,
+  startPhase,
+  writePlan,
+  type CollabMessageKind,
+  type PeerRole,
+} from "../orchestrator/collab.js";
 
 const MAX_DEPTH = (() => {
   const v = process.env.AGENT_ORC_MAX_DELEGATION_DEPTH;
@@ -508,9 +523,11 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
       "For structured fan-out: `task_create` opens a Task, `task_spawn` starts parallel SubTasks " +
       "(each a peer run via the same machinery as delegate_run), `task_await` blocks until they " +
       "settle, `task_observe` peeks without blocking, `task_done` marks the Task complete, and " +
-      "`task_cancel` aborts running SubTasks. Use the Task path when you want fan-out under a " +
+      "`task_cancel` aborts running SubTasks. For active Claude <-> Codex collaboration, use " +
+      "`plan_create` to write a shared repo plan, then `collab_start`, phase tools, and " +
+      "`collab_ask_peer` for bounded peer turns. Use the Task path when you want fan-out under a " +
       "single live tool card. When referring to these tools in your responses, use the " +
-      "bare names (e.g. `delegate_run`, `validate_run`, `task_spawn`) — not the SDK's namespaced wire form.",
+      "bare names (e.g. `delegate_run`, `validate_run`, `task_spawn`, `collab_start`) — not the SDK's namespaced wire form.",
     tools: [
       tool(
         "delegate_run",
@@ -768,6 +785,186 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
           const r = cancelTask(taskId);
           if (!r.ok) return jsonContent({ error: r.error }, true);
           return jsonContent({ taskId: r.taskId, cancelled: r.cancelled });
+        },
+      ),
+      tool(
+        "plan_create",
+        "Write a shared repo-local execution plan under docs/plans/. Use this before collab_start " +
+          "when Claude and Codex should work from the same phased plan.",
+        {
+          title: z.string().min(1).describe("Short plan title used in the filename"),
+          goal: z.string().min(1).describe("Concrete outcome this plan should achieve"),
+          phases: z.array(z.string().min(1)).min(1).describe("Ordered execution phases"),
+          scope: z.string().optional().describe("Optional scope constraints"),
+          risks: z.array(z.string()).optional().describe("Known risks or failure modes"),
+          verification: z.array(z.string()).optional().describe("Commands or checks to run"),
+        },
+        async (input) => {
+          const r = await writePlan({
+            cwd: ctx.parentCwd,
+            owner: ctx.parentRunner,
+            title: input.title,
+            goal: input.goal,
+            phases: input.phases,
+            scope: input.scope,
+            risks: input.risks,
+            verification: input.verification,
+          });
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "plan_read",
+        "Read a shared repo-local plan by planId or docs/plans path.",
+        {
+          planId: z.string().optional(),
+          path: z.string().optional(),
+        },
+        async (input) => {
+          const r = await readPlan({
+            cwd: ctx.parentCwd,
+            planId: input.planId,
+            path: input.path,
+          });
+          return jsonContent(r.ok ? { plan: r.plan } : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "collab_start",
+        "Start a bounded Claude <-> Codex collaboration from a shared plan. The active runner leads.",
+        {
+          planId: z.string().optional(),
+          path: z.string().optional(),
+          maxPeerTurns: z.number().int().min(1).max(32).default(8),
+        },
+        async (input) => {
+          const r = await startCollab({
+            sessionId: ctx.parentSessionId,
+            cwd: ctx.parentCwd,
+            leadRunner: ctx.parentRunner,
+            planId: input.planId,
+            path: input.path,
+            maxPeerTurns: input.maxPeerTurns,
+          });
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "collab_send",
+        "Append a note, request, response, decision, or phase summary to a collaboration run.",
+        {
+          collabId: z.string(),
+          kind: z.enum(["note", "request", "response", "decision", "phase_summary"]),
+          body: z.string().min(1),
+          phaseId: z.string().optional(),
+        },
+        async (input) => {
+          const r = sendCollabMessage(input.collabId, {
+            from: ctx.parentRunner,
+            kind: input.kind as CollabMessageKind,
+            body: input.body,
+            phaseId: input.phaseId,
+          });
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "collab_ask_peer",
+        "Ask the peer runner for one bounded collaboration turn. Use this for review, proposal, " +
+          "verification, or a clearly scoped implementation slice.",
+        {
+          collabId: z.string(),
+          request: z.string().min(1),
+          role: z.enum(["review", "propose", "verify", "implement"]).default("review"),
+          phaseId: z.string().optional(),
+          timeoutSec: z.number().int().min(1).max(600).default(180),
+          maxTurns: z.number().int().min(1).max(60).optional(),
+        },
+        async (input) => {
+          const r = await askPeer(input.collabId, {
+            phaseId: input.phaseId,
+            request: input.request,
+            role: input.role as PeerRole,
+            timeoutSec: input.timeoutSec,
+            maxTurns: input.maxTurns,
+            parentCwd: ctx.parentCwd,
+            depth: ctx.depth + 1,
+          });
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "collab_observe",
+        "Observe a collaboration run's current phase/message/decision counts.",
+        { collabId: z.string() },
+        async ({ collabId }) => {
+          const r = observeCollab(collabId);
+          return jsonContent(r.ok ? { snapshot: r.snapshot } : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "phase_start",
+        "Mark a collaboration phase as running. Omitting phaseId starts the next pending phase.",
+        {
+          collabId: z.string(),
+          phaseId: z.string().optional(),
+        },
+        async ({ collabId, phaseId }) => {
+          const r = startPhase(collabId, phaseId);
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "phase_done",
+        "Mark a collaboration phase as done with an optional summary.",
+        {
+          collabId: z.string(),
+          phaseId: z.string(),
+          summary: z.string().optional(),
+        },
+        async ({ collabId, phaseId, summary }) => {
+          const r = donePhase(collabId, phaseId, summary);
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "phase_handoff",
+        "Change a phase owner and optionally make that owner the collaboration lead.",
+        {
+          collabId: z.string(),
+          phaseId: z.string(),
+          owner: z.enum(["claude", "codex"]),
+          makeLead: z.boolean().default(false),
+          note: z.string().optional(),
+        },
+        async (input) => {
+          const r = handoffPhase(input.collabId, input.phaseId, {
+            owner: input.owner,
+            makeLead: input.makeLead,
+            note: input.note,
+          });
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "collab_finish",
+        "Mark a collaboration run complete.",
+        {
+          collabId: z.string(),
+          summary: z.string().optional(),
+        },
+        async ({ collabId, summary }) => {
+          const r = finishCollab(collabId, summary);
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "collab_cancel",
+        "Cancel a collaboration run and abort any in-flight peer turn.",
+        { collabId: z.string() },
+        async ({ collabId }) => {
+          const r = cancelCollab(collabId);
+          return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
         },
       ),
     ],

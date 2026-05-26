@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { TextAttributes, type InputRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  TextAttributes,
+  decodePasteBytes,
+  stripAnsiSequences,
+  type TextareaRenderable,
+} from "@opentui/core";
+import { useKeyboard, usePaste } from "@opentui/react";
 import type {
   ClaudePermissionMode,
   DelegationStats,
@@ -21,6 +26,32 @@ const ENTER_KEYS = new Set(["return", "enter", "linefeed", "kpenter"]);
 function isEnterKey(name: string | undefined): boolean {
   return !!name && ENTER_KEYS.has(name);
 }
+
+// Pasted blobs bigger than this collapse to a placeholder so they don't fill
+// the prompt. Multi-line pastes always collapse regardless of length.
+const PASTE_PLACEHOLDER_THRESHOLD = 200;
+const PASTE_PLACEHOLDER_RE = /\[Pasted Text \+\d+ lines, \+\d+ words\]/g;
+
+// Plain enter submits; multiple chords insert a newline so the binding works
+// across terminals with very different modifier support:
+//   - shift+enter        kitty keyboard terminals (iTerm2, ghostty, wezterm)
+//   - option/alt+enter   macOS convention; iTerm2/Terminal.app deliver this
+//                        as meta+return
+//   - ctrl+j (linefeed)  universal fallback; every terminal sends \n for ^J
+// Legacy terminals (Terminal.app without modifyOtherKeys) cannot distinguish
+// shift+enter from plain enter at all, so the other chords are what users on
+// those terminals will reach for.
+const PROMPT_KEY_BINDINGS = [
+  { name: "return", action: "submit" as const },
+  { name: "kpenter", action: "submit" as const },
+  { name: "return", shift: true, action: "newline" as const },
+  { name: "kpenter", shift: true, action: "newline" as const },
+  { name: "return", meta: true, action: "newline" as const },
+  { name: "kpenter", meta: true, action: "newline" as const },
+  { name: "linefeed", action: "newline" as const },
+];
+
+const MAX_PROMPT_ROWS = 8;
 
 type PromptProps = {
   focused: boolean;
@@ -74,10 +105,31 @@ export function Prompt({
 }: PromptProps) {
   const [text, setText] = useState("");
   const [inputFocused, setInputFocused] = useState(focused && !locked);
-  const inputRef = useRef<InputRenderable>(null);
+  const inputRef = useRef<TextareaRenderable>(null);
+  // Raw bodies of multi-line / long pastes, in insertion order. Each one is
+  // represented in the textarea as `[Pasted Text +N lines]`. On submit we walk
+  // the prompt left-to-right and re-inflate the i-th placeholder with the i-th
+  // blob, so the model sees the real content and the user sees a tidy chip.
+  const pastedBlobs = useRef<string[]>([]);
   const history = useHistory();
   const completions = useCompletions();
   const slash = useSlashCompletions(slashExtras);
+
+  // Re-sync React state from the textarea after a programmatic write or paste
+  // — the textarea owns the editable buffer, but the slash/completion effects
+  // below key off `text`, so they need a mirror.
+  const syncFromBuffer = useCallback(() => {
+    const next = inputRef.current?.plainText ?? "";
+    setText(next);
+  }, []);
+
+  const writeBuffer = useCallback((value: string) => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.replaceText(value);
+    el.cursorOffset = value.length;
+    setText(value);
+  }, []);
 
   useEffect(() => {
     setInputFocused(focused && !locked);
@@ -120,8 +172,32 @@ export function Prompt({
   }, [text]);
 
   useEffect(() => {
-    if (history.value != null) setText(history.value);
-  }, [history.value]);
+    if (history.value != null) writeBuffer(history.value);
+  }, [history.value, writeBuffer]);
+
+  // Bracketed-paste interception. Runs BEFORE the textarea's own paste
+  // handler (global listeners get priority in InternalKeyHandler) so we can
+  // preventDefault and substitute a placeholder for content that would
+  // overwhelm the prompt — multi-line pastes always, and anything past
+  // PASTE_PLACEHOLDER_THRESHOLD chars on a single line. Short single-line
+  // pastes fall through to the textarea unchanged so URLs etc. paste raw.
+  usePaste((event) => {
+    if (!focused || locked) return;
+    const el = inputRef.current;
+    if (!el) return;
+    const raw = stripAnsiSequences(decodePasteBytes(event.bytes));
+    if (!raw) return;
+    const hasNewline = /\r?\n/.test(raw);
+    if (!hasNewline && raw.length <= PASTE_PLACEHOLDER_THRESHOLD) return;
+    event.preventDefault();
+    const normalized = raw.replace(/\r\n?/g, "\n");
+    const lineCount = normalized.split("\n").length;
+    const wordCount = countWords(normalized);
+    const placeholder = `[Pasted Text +${lineCount} lines, +${wordCount} words]`;
+    pastedBlobs.current.push(normalized);
+    el.insertText(placeholder);
+    syncFromBuffer();
+  });
 
   useKeyboard((key) => {
     if (!focused || locked) return;
@@ -157,8 +233,14 @@ export function Prompt({
     if (slash.active) {
       if (key.name === "up") return slash.moveUp();
       if (key.name === "down") return slash.moveDown();
-      if (key.name === "tab") return applySlashCompletion();
-      if (isEnter && slash.selected) {
+      if (key.name === "tab") {
+        applySlashCompletion();
+        return;
+      }
+      if (isEnter && slash.selected && !key.shift) {
+        // The textarea's enter→submit binding would otherwise fire too; block
+        // it so applying a slash completion doesn't also submit the prompt.
+        key.preventDefault();
         applySlashCompletion();
         return;
       }
@@ -167,23 +249,38 @@ export function Prompt({
     if (completions.active) {
       if (key.name === "up") return completions.moveUp();
       if (key.name === "down") return completions.moveDown();
-      if (key.name === "tab") return applyCompletion();
-      if (isEnter && completions.selected) {
+      if (key.name === "tab") {
+        applyCompletion();
+        return;
+      }
+      if (isEnter && completions.selected && !key.shift) {
+        key.preventDefault();
         applyCompletion();
         return;
       }
     }
 
-    if (isEnter && !completions.active && !slash.active) {
-      handleSubmit(text);
-      return;
-    }
-
     if (!completions.active && !slash.active) {
-      // shift+up / shift+down are reserved for the App-level tool-card
-      // selection navigator — skip them so history doesn't also move.
-      if (key.name === "up" && !key.shift) return history.movePrev();
-      if (key.name === "down" && !key.shift) return history.moveNext();
+      // shift+up / shift+down belong to the App-level chat-item navigator;
+      // preventDefault stops the textarea from also painting a "select-up/
+      // down" range inside the prompt buffer while the user is jumping
+      // through tool cards.
+      if (key.shift && (key.name === "up" || key.name === "down")) {
+        key.preventDefault();
+        return;
+      }
+      // History recall only when the prompt is single-line — otherwise arrow
+      // keys belong to the textarea's cursor so multi-line drafts stay
+      // navigable.
+      const singleLine = !text.includes("\n");
+      if (key.name === "up" && singleLine) {
+        key.preventDefault();
+        return history.movePrev();
+      }
+      if (key.name === "down" && singleLine) {
+        key.preventDefault();
+        return history.moveNext();
+      }
     }
   });
 
@@ -194,23 +291,26 @@ export function Prompt({
       const prefix = match.startsWith("@") ? "" : " ";
       return `${prefix}@${selected} `;
     });
-    setText(next);
+    writeBuffer(next);
     completions.close();
   }
 
   function applySlashCompletion(): void {
     const sel = slash.selected;
     if (!sel) return;
-    setText(`${sel.name} `);
+    writeBuffer(`${sel.name} `);
     slash.close();
   }
 
-  function handleSubmit(value: string): void {
-    const trimmed = value.trim();
+  function handleSubmit(): void {
+    const value = inputRef.current?.plainText ?? text;
+    const expanded = expandPastes(value, pastedBlobs.current);
+    const trimmed = expanded.trim();
     if (!trimmed) return;
     history.push(trimmed);
     onSubmit(trimmed);
-    setText("");
+    pastedBlobs.current = [];
+    writeBuffer("");
     history.reset();
   }
 
@@ -219,6 +319,10 @@ export function Prompt({
   const slashMenuActive = slash.active && isSlashQuery(text);
   const completionMenuActive = completions.active && isFileQuery(text);
   const visualFocused = focused && !locked && inputFocused;
+  const promptRows = Math.min(
+    MAX_PROMPT_ROWS,
+    Math.max(1, text.split("\n").length),
+  );
   const rail = buildPromptRail({
     text,
     locked: !!locked,
@@ -297,7 +401,7 @@ export function Prompt({
         paddingLeft={1}
         paddingRight={1}
       >
-        <box flexDirection="row" height={1}>
+        <box flexDirection="row" height={promptRows}>
           {runner && (
             <>
               <text fg={theme.textFaint}>{"["}</text>
@@ -322,12 +426,13 @@ export function Prompt({
               {text || "input disabled — palette/permission overlay active"}
             </text>
           ) : (
-            <input
+            <textarea
               ref={inputRef}
-              value={text}
-              onInput={setText}
-              focused={focused}
               placeholder={hint ?? "ask anything — / for commands"}
+              focused={focused}
+              keyBindings={PROMPT_KEY_BINDINGS}
+              onSubmit={handleSubmit}
+              onContentChange={syncFromBuffer}
               flexGrow={1}
             />
           )}
@@ -337,6 +442,27 @@ export function Prompt({
       </box>
     </box>
   );
+}
+
+// Whitespace-separated tokens; empty/whitespace-only input is 0 words.
+function countWords(text: string): number {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  return trimmed.split(/\s+/).length;
+}
+
+// Walks the visible prompt text left-to-right and substitutes each
+// `[Pasted Text …]` placeholder with the next stashed raw blob. If
+// the user manually deleted a placeholder, its blob silently drops out (we
+// never resurrect it). Extra placeholders past the blob count stay as-is so
+// the model still sees that something was there.
+function expandPastes(text: string, blobs: string[]): string {
+  if (blobs.length === 0) return text;
+  let i = 0;
+  return text.replace(PASTE_PLACEHOLDER_RE, (match) => {
+    if (i < blobs.length) return blobs[i++];
+    return match;
+  });
 }
 
 type RailSegment = {

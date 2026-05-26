@@ -1,12 +1,15 @@
 import { useEffect, useRef } from "react";
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import type { Session, SessionMessage } from "../../../shared/events.ts";
-import { ToolCard } from "./ToolCard";
-import { TaskCard } from "./TaskCard";
-import { NoticeCard } from "./NoticeCard";
-import { ChatItem } from "./ChatItem";
-import { StatusDot } from "./StatusDot";
-import { Welcome } from "./Welcome";
+import {
+  ChatItem,
+  CollabCard,
+  NoticeCard,
+  StatusDot,
+  TaskCard,
+  ToolCard,
+  Welcome,
+} from "./tuicards";
 import { theme } from "../theme";
 import { markdownStyle } from "../markdown-style";
 import type { Notice } from "../util/notice";
@@ -238,6 +241,28 @@ function AssistantMessage({
               group={g}
               selected={isSelected}
               expanded={isExpanded}
+              hint={hint}
+              onActivate={onItemActivate ? () => onItemActivate(g.id) : undefined}
+            />
+          );
+        }
+        if (g.kind === "collab_group") {
+          const isSelected = g.id === selectedItemId;
+          const isExpanded = expandedItems.has(g.id);
+          const hint = isSelected
+            ? isExpanded
+              ? "click or ctrl+e to collapse"
+              : "click or ctrl+e to expand"
+            : null;
+          return (
+            <CollabCard
+              key={`c-${g.id}`}
+              id={g.id}
+              snapshot={g.snapshot}
+              blocks={g.children}
+              selected={isSelected}
+              expanded={isExpanded}
+              active={messageStreaming}
               hint={hint}
               onActivate={onItemActivate ? () => onItemActivate(g.id) : undefined}
             />

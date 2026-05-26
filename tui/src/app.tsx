@@ -602,8 +602,25 @@ export function App() {
     return () => clearTimeout(t);
   }, [notifications]);
 
+  // Fires on mouse-up after a drag-select (opentui's `selection` event is
+  // emitted from finishSelection — see core/index-3fq5hq97.js:24423). We use
+  // it as a "copy gesture complete" signal: stash the text for the cmd+c /
+  // ctrl+y fallback path, and auto-copy to the system clipboard so the user
+  // doesn't have to find a chord that survives their terminal's interception.
   useSelectionHandler((selection) => {
-    dragSelectionRef.current = selection.getSelectedText() ?? "";
+    const text = (selection.getSelectedText() ?? "").trim();
+    dragSelectionRef.current = text;
+    if (!text) return;
+    void writeClipboard(text).then((ok) => {
+      const len = text.length;
+      addNotification(
+        ok
+          ? `copied ${len} char${len === 1 ? "" : "s"} from selection`
+          : "clipboard write failed",
+        ok ? "success" : "error",
+        4000,
+      );
+    });
   });
 
   // Copy the active payload to the clipboard with toast feedback.

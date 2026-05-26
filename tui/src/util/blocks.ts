@@ -120,7 +120,71 @@ export type GroupedBlock =
       header: ToolLog | null;
       pendingRunner: string | null;
       children: Block[];
+    }
+  | {
+      kind: "collab_group";
+      id: string;
+      anchorIndex: number;
+      snapshot: ToolLog | null;
+      children: Block[];
     };
+
+const COLLAB_CONTROL_TOOLS = new Set([
+  "plan_create",
+  "plan_read",
+  "collab_start",
+  "collab_send",
+  "collab_ask_peer",
+  "collab_observe",
+  "collab_finish",
+  "collab_cancel",
+  "phase_start",
+  "phase_done",
+  "phase_handoff",
+]);
+
+function ownBareToolName(b: Block): string | null {
+  if (b.kind !== "tool") return null;
+  const { peer, rest } = stripPeerPrefix(b.log.name);
+  if (peer !== null) return null;
+  return stripMcpPrefix(rest);
+}
+
+function isCollabSnapshotBlock(b: Block): boolean {
+  return ownBareToolName(b) === "collab";
+}
+
+function isCollabControlBlock(b: Block): boolean {
+  const name = ownBareToolName(b);
+  return name !== null && COLLAB_CONTROL_TOOLS.has(name);
+}
+
+function collabSnapshotPeerTurns(log: ToolLog | null): number {
+  if (!log) return 0;
+  let raw = log.output;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return 0;
+    }
+  }
+  if (!raw || typeof raw !== "object") return 0;
+  const turns = (raw as Record<string, unknown>).peerTurns;
+  return typeof turns === "number" && Number.isFinite(turns) ? turns : 0;
+}
+
+function completedAskPeerCalls(children: Block[]): number {
+  let n = 0;
+  for (const b of children) {
+    if (ownBareToolName(b) === "collab_ask_peer") n += 1;
+  }
+  return n;
+}
+
+function collabMayCapturePeer(group: Extract<GroupedBlock, { kind: "collab_group" }>): boolean {
+  return collabSnapshotPeerTurns(group.snapshot) > completedAskPeerCalls(group.children);
+}
 
 // Fold the run of peer-prefixed blocks that PRECEDE a delegate_run anchor
 // into that anchor's group. The Claude/Codex SDKs only emit the delegate_run
@@ -149,6 +213,7 @@ export function groupDelegations(
   messageStreaming = true,
 ): GroupedBlock[] {
   const items: GroupedBlock[] = [];
+  let currentCollab: Extract<GroupedBlock, { kind: "collab_group" }> | null = null;
 
   const consumeTrailingPeers = (): Block[] => {
     const children: Block[] = [];
@@ -162,7 +227,34 @@ export function groupDelegations(
     return children;
   };
 
+  const ensureCollabGroup = (anchorIndex: number): Extract<GroupedBlock, { kind: "collab_group" }> => {
+    if (currentCollab) return currentCollab;
+    currentCollab = {
+      kind: "collab_group",
+      id: `${messageId}:c:${anchorIndex}`,
+      anchorIndex,
+      snapshot: null,
+      children: [],
+    };
+    items.push(currentCollab);
+    return currentCollab;
+  };
+
   blocks.forEach((b, i) => {
+    if (isCollabSnapshotBlock(b) && b.kind === "tool") {
+      const group = ensureCollabGroup(i);
+      group.snapshot = b.log;
+      return;
+    }
+    if (isCollabControlBlock(b)) {
+      ensureCollabGroup(i).children.push(b);
+      return;
+    }
+    if (currentCollab && isPeerBlock(b) && collabMayCapturePeer(currentCollab)) {
+      currentCollab.children.push(b);
+      return;
+    }
+
     const tag = peerAnchorKind(b);
     if (tag !== null && b.kind === "tool") {
       items.push({
@@ -225,9 +317,8 @@ function inferRunner(children: Block[]): string | null {
 }
 
 // Walk the active session backwards and return the id of the most recent
-// delegation_group (including the pending one synthesized for in-flight
-// peer streams). Used by the ctrl+e binding to know which group to toggle
-// when the user has no explicit selection.
+// collapsible orchestration group. Used by the ctrl+e binding to know which
+// group to toggle when the user has no explicit selection.
 export function latestDelegationId(session: Session | null): string | null {
   if (!session) return null;
   for (let mi = session.messages.length - 1; mi >= 0; mi--) {
@@ -236,7 +327,7 @@ export function latestDelegationId(session: Session | null): string | null {
     const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
     for (let i = grouped.length - 1; i >= 0; i--) {
       const g = grouped[i];
-      if (g.kind === "delegation_group") return g.id;
+      if (g.kind === "delegation_group" || g.kind === "collab_group") return g.id;
     }
   }
   return null;
@@ -272,7 +363,7 @@ export function collectChatItemIds(
     }
     const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
     for (const g of grouped) {
-      if (g.kind === "delegation_group") {
+      if (g.kind === "delegation_group" || g.kind === "collab_group") {
         out.push(g.id);
         continue;
       }
@@ -287,6 +378,7 @@ export function collectChatItemIds(
 //   - msg:<id>           -> user message text
 //   - notice:<id>        -> notice command + lines
 //   - <msgId>:d:<i>      -> delegation group (anchor + all children)
+//   - <msgId>:c:<i>      -> collaboration group (snapshot + all children)
 //   - <msgId>:<index>    -> single assistant block (text / tool / error / …)
 // Returns null when the id can't be matched (e.g. session has changed since
 // the selection was made).
@@ -308,27 +400,39 @@ export function resolveItemContent(
     return [n.command, ...n.lines].join("\n");
   }
   if (!session) return null;
-  // Assistant-block ids have shape `${messageId}:${index}` or
-  // `${messageId}:d:${anchorIndex}`. The message id itself can contain colons,
-  // so split from the right.
+  // Assistant-block ids have shape `${messageId}:${index}`,
+  // `${messageId}:d:${anchorIndex}`, or `${messageId}:c:${anchorIndex}`.
+  // The message id itself can contain colons, so split from the right.
   const lastColon = id.lastIndexOf(":");
   if (lastColon === -1) return null;
   const tailAfterLast = id.slice(lastColon + 1);
   const tailIndex = Number.parseInt(tailAfterLast, 10);
   if (!Number.isFinite(tailIndex)) return null;
   const beforeLast = id.slice(0, lastColon);
-  const isGroup = beforeLast.endsWith(":d");
-  const messageId = isGroup ? beforeLast.slice(0, -2) : beforeLast;
+  const isDelegationGroup = beforeLast.endsWith(":d");
+  const isCollabGroup = beforeLast.endsWith(":c");
+  const messageId =
+    isDelegationGroup || isCollabGroup ? beforeLast.slice(0, -2) : beforeLast;
   const m = session.messages.find((x) => x.id === messageId);
   if (!m) return null;
   const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
-  if (isGroup) {
+  if (isDelegationGroup) {
     const g = grouped.find(
       (x) => x.kind === "delegation_group" && x.anchorIndex === tailIndex,
     );
     if (!g || g.kind !== "delegation_group") return null;
     const parts: string[] = [];
     if (g.header) parts.push(renderToolLogPlain(g.header));
+    for (const child of g.children) parts.push(renderBlockPlain(child));
+    return parts.join("\n\n");
+  }
+  if (isCollabGroup) {
+    const g = grouped.find(
+      (x) => x.kind === "collab_group" && x.anchorIndex === tailIndex,
+    );
+    if (!g || g.kind !== "collab_group") return null;
+    const parts: string[] = [];
+    if (g.snapshot) parts.push(renderToolLogPlain(g.snapshot));
     for (const child of g.children) parts.push(renderBlockPlain(child));
     return parts.join("\n\n");
   }

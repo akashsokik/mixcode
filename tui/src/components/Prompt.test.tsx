@@ -4,6 +4,8 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { theme } from "../theme";
 
+const FLUSH_DELAY_MS = 16;
+
 mock.module("../util/files", () => ({
   listCwdFiles: () => new Promise<string[]>(() => {}),
 }));
@@ -122,6 +124,94 @@ describe("Prompt", () => {
       expect(screen).toContain("↵ run");
       expect(screen).not.toContain("command");
       expect(screen).not.toContain("open model picker");
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("plain enter submits, shift+enter inserts a newline", async () => {
+    const submitted: string[] = [];
+    const setup = await testRender(
+      <Prompt
+        focused
+        onSubmit={(text) => submitted.push(text)}
+        runner="claude"
+        claudeMode="default"
+      />,
+      // kittyKeyboard so shift+return reaches the parser with its modifier
+      // intact — legacy terminals drop shift on control keys.
+      { width: 80, height: 12, exitOnCtrlC: false, kittyKeyboard: true },
+    );
+
+    try {
+      await act(async () => {
+        await setup.renderOnce();
+        await setup.mockInput.typeText("first");
+        setup.mockInput.pressEnter({ shift: true });
+        await setup.mockInput.typeText("second");
+        await setup.renderOnce();
+      });
+
+      // Shift+enter should NOT have submitted; both lines are still in the buffer.
+      expect(submitted).toEqual([]);
+      const screen = setup.captureSpans().lines
+        .map((line) => line.spans.map((span) => span.text).join(""))
+        .join("\n");
+      expect(screen).toContain("first");
+      expect(screen).toContain("second");
+
+      await act(async () => {
+        setup.mockInput.pressEnter();
+        await setup.renderOnce();
+      });
+
+      expect(submitted).toEqual(["first\nsecond"]);
+    } finally {
+      await act(async () => {
+        setup.renderer.destroy();
+      });
+    }
+  });
+
+  test("collapses multi-line pastes to a placeholder and expands on submit", async () => {
+    const submitted: string[] = [];
+    const setup = await testRender(
+      <Prompt
+        focused
+        onSubmit={(text) => submitted.push(text)}
+        runner="claude"
+        claudeMode="default"
+      />,
+      { width: 80, height: 12, exitOnCtrlC: false },
+    );
+
+    try {
+      await act(async () => {
+        await setup.renderOnce();
+        await setup.mockInput.typeText("look at ");
+        await setup.mockInput.pasteBracketedText("line one\nline two\nline three");
+        await setup.mockInput.typeText(" please");
+        await setup.renderOnce();
+      });
+
+      const screen = setup.captureSpans().lines
+        .map((line) => line.spans.map((span) => span.text).join(""))
+        .join("\n");
+      // The placeholder is shown, not the raw multi-line content.
+      expect(screen).toContain("[Pasted Text +3 lines, +6 words]");
+      expect(screen).not.toContain("line one");
+
+      await act(async () => {
+        setup.mockInput.pressEnter();
+        await new Promise((r) => setTimeout(r, FLUSH_DELAY_MS));
+        await setup.renderOnce();
+      });
+
+      expect(submitted).toEqual([
+        "look at line one\nline two\nline three please",
+      ]);
     } finally {
       await act(async () => {
         setup.renderer.destroy();

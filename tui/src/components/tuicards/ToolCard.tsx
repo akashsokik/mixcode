@@ -1,14 +1,15 @@
-import { TextAttributes } from "@opentui/core";
-import type { ToolLog } from "../../../shared/events.ts";
+import type { ToolLog } from "../../../../shared/events.ts";
 import {
   formatInputPretty,
   formatToolLog,
   type EditPreview,
   type ToolCategory,
-} from "../util/format";
-import { theme } from "../theme";
-import { StatusDot, toolLogStatus } from "./StatusDot";
+} from "../../util/format";
+import { theme } from "../../theme";
+import { toolLogStatus } from "./StatusDot";
 import { ChatItem } from "./ChatItem";
+import { CardHeader } from "./parts";
+import { runnerColor } from "./format";
 
 export function ToolCard({
   id,
@@ -64,15 +65,13 @@ export function ToolCard({
       marginTop={nested ? 0 : 1}
       expandedContent={expandedNode}
     >
-      <box flexDirection="row">
-        <StatusDot status={status} />
-        <text fg={theme.text}>{" "}</text>
-        {peer && (
-          <text fg={peerColor(peer)} attributes={TextAttributes.BOLD}>{`[${peer}] `}</text>
-        )}
-        <text fg={accent} attributes={TextAttributes.BOLD}>{verb}</text>
-        {summary && <text fg={theme.text}>{" " + summary}</text>}
-      </box>
+      <CardHeader
+        status={status}
+        peer={peer ? { name: peer, color: runnerColor(peer) } : undefined}
+        verb={verb}
+        verbColor={accent}
+        title={summary || undefined}
+      />
       {edit && <DiffPreview edit={edit} />}
       {!edit && body && !expanded && (
         <box flexDirection="row">
@@ -144,12 +143,6 @@ function ExpandedDetails({
   );
 }
 
-function peerColor(peer: string): string {
-  if (peer === "claude") return theme.runnerClaude;
-  if (peer === "codex") return theme.runnerCodex;
-  return theme.textMuted;
-}
-
 function accentFor(category: ToolCategory): string {
   switch (category) {
     case "edit":
@@ -175,3 +168,4 @@ function splitHeader(header: string): { verb: string; summary: string } {
   if (space === -1) return { verb: header, summary: "" };
   return { verb: header.slice(0, space), summary: header.slice(space + 1) };
 }
+
