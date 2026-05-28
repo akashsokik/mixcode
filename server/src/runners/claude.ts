@@ -65,7 +65,7 @@ type CanUseToolBridge = (
   | { behavior: "deny"; message: string }
 >;
 
-import type { ClaudePermissionMode } from "../../../shared/events.js";
+import type { ClaudePermissionMode, EffortLevel } from "../../../shared/events.js";
 
 type ClaudeRunArgs = {
   prompt: string;
@@ -73,6 +73,7 @@ type ClaudeRunArgs = {
   resumeId?: string;
   systemPrompt?: string;
   model?: string;
+  effort?: EffortLevel;
   allowRules?: string[];
   // Wire-level union plus the SDK-only "dontAsk" mode for peers that have no
   // user UI to gate tool calls. The TUI never sets "dontAsk"; consensus
@@ -122,6 +123,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     resumeId,
     systemPrompt,
     model,
+    effort,
     allowRules,
     permissionMode,
     canUseTool,
@@ -140,6 +142,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
   const options: Record<string, unknown> = { includePartialMessages: true };
   if (cwd) options.cwd = cwd;
   if (model) options.model = model;
+  if (effort) options.effort = effort;
   if (resumeId) options.resume = resumeId;
   if (abortController) options.abortController = abortController;
   if (mcpServers && Object.keys(mcpServers).length > 0) {

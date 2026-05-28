@@ -227,6 +227,31 @@ export function modelLines(
   ];
 }
 
+// Lines for the /effort show notice. Lists each runner's override (or
+// "(default)") plus the active runner's resolved level set so the user can see
+// what the slider would offer.
+export function effortLines(session: Session | null, headline?: string): string[] {
+  if (!session) return ["no active session"];
+  const lines: string[] = [];
+  if (headline) lines.push(headline, "");
+  const order: RunnerKind[] = ["claude", "codex", "vercel"];
+  for (const runner of order) {
+    const marker = runner === session.activeRunner ? "›" : " ";
+    const value = session.efforts?.[runner] ?? "(default)";
+    lines.push(`${marker} ${runner.padEnd(7, " ")} ${value}`);
+  }
+  const info = session.effortInfo;
+  if (info) {
+    lines.push("");
+    lines.push(
+      info.levels.length > 0
+        ? `active model levels: ${info.levels.join(" ")}`
+        : "active model has no effort control",
+    );
+  }
+  return lines;
+}
+
 export function skillsLines(
   runner: RunnerKind,
   entries: SkillEntry[],

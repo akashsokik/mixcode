@@ -1,6 +1,7 @@
-import { Codex, type ModelReasoningEffort } from "@openai/codex-sdk";
+import { Codex } from "@openai/codex-sdk";
 import type {
   ContextUsage,
+  EffortLevel,
   RunEvent,
   RunnerKind,
   TurnUsage,
@@ -49,8 +50,8 @@ type CodexRunArgs = {
   model?: string;
   // Per-turn reasoning effort. Unset uses the Codex CLI default. The /effort
   // command (see docs/plans/2026-05-28-unified-effort.md) feeds the session
-  // override through this same field.
-  reasoningEffort?: ModelReasoningEffort;
+  // override through this field (mapped to threadOptions.modelReasoningEffort).
+  effort?: EffortLevel;
   signal?: AbortSignal;
   onEvent: (ev: RunEvent) => void;
   // Fires once on `turn.completed`. Sourced verbatim from the SDK's Usage
@@ -103,7 +104,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
     cwd,
     threadId,
     model,
-    reasoningEffort,
+    effort,
     signal,
     onEvent,
     onTurnUsage,
@@ -126,7 +127,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
     const threadOptions: any = { skipGitRepoCheck: true };
     if (cwd) threadOptions.workingDirectory = cwd;
     if (model) threadOptions.model = model;
-    if (reasoningEffort) threadOptions.modelReasoningEffort = reasoningEffort;
+    if (effort) threadOptions.modelReasoningEffort = effort;
     // Headless mode hits a known Codex CLI regression (openai/codex#16685):
     // custom MCP servers get routed through the approval pipeline, and exec
     // mode has no way to prompt, so the call auto-cancels with
