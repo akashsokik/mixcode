@@ -7,6 +7,9 @@ import type {
   ClaudePermissionMode,
   ContextUsage,
   DelegationStats,
+  EffortInfo,
+  EffortLevel,
+  EffortOverrides,
   GitInfo,
   ModelOverrides,
   RunEvent,
@@ -82,6 +85,8 @@ export class SessionManager {
       createdAt: now,
       updatedAt: now,
       models: {},
+      efforts: {},
+      effortInfo: null,
       claudeMode: "default",
       git: null,
       runtime: {},
@@ -183,6 +188,30 @@ export class SessionManager {
     else delete next[runner];
     s.models = next;
     s.updatedAt = new Date().toISOString();
+    this.broadcast({ type: "session_updated", session: toWire(s) });
+    this.markDirty();
+    return s;
+  }
+
+  setEffort(id: string, runner: RunnerKind, effort: EffortLevel | null): Stored | null {
+    const s = this.get(id);
+    if (!s) return null;
+    const next: EffortOverrides = { ...s.efforts };
+    if (effort) next[runner] = effort;
+    else delete next[runner];
+    s.efforts = next;
+    s.updatedAt = new Date().toISOString();
+    this.broadcast({ type: "session_updated", session: toWire(s) });
+    this.markDirty();
+    return s;
+  }
+
+  setEffortInfo(id: string, info: EffortInfo | null): Stored | null {
+    const s = this.get(id);
+    if (!s) return null;
+    s.effortInfo = info;
+    // Don't bump updatedAt — capability resolution is a side effect, not user
+    // activity that should re-order the sidebar.
     this.broadcast({ type: "session_updated", session: toWire(s) });
     this.markDirty();
     return s;
@@ -374,6 +403,7 @@ export class SessionManager {
     for (const s of loaded) {
       s.streaming = false;
       if (!s.runtime) s.runtime = {};
+      if (!s.efforts) s.efforts = {};
       migrateLegacyUsage(s);
     }
     this.sessions = loaded;
