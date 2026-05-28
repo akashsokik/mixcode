@@ -93,6 +93,27 @@ export type ModelOverrides = {
   vercel?: string;
 };
 
+// Canonical, ordered superset of reasoning-effort levels across all runners.
+// A given runner+model supports a subset; the supported subset for the active
+// runner+model is resolved server-side into Session.effortInfo.
+export type EffortLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+// Per-runner effort override. Unset means the runner's SDK default is used.
+export type EffortOverrides = {
+  claude?: EffortLevel;
+  codex?: EffortLevel;
+  vercel?: EffortLevel;
+};
+
+// Server-resolved effort capability for a session's ACTIVE runner+model. The
+// TUI slider renders `levels` directly. `source` is "api" for Anthropic models
+// (discovered via the Models API) or "catalog" for OpenAI/Codex models. Empty
+// `levels` means the active model has no effort control (e.g. Haiku, gpt-4o).
+export type EffortInfo = {
+  levels: EffortLevel[];
+  source: "api" | "catalog";
+};
+
 // Claude SDK permission modes that we expose through the UI. Subset of the
 // SDK's full enum — we omit `dontAsk` and `auto` until there's a use case.
 //   default          — prompt for dangerous ops via canUseTool
@@ -138,6 +159,10 @@ export type Session = {
   createdAt: string;
   updatedAt: string;
   models: ModelOverrides;
+  efforts?: EffortOverrides;
+  // Resolved for the active runner+model; recomputed by the server on runner/
+  // model change. Null until first resolution. Empty levels = no effort control.
+  effortInfo?: EffortInfo | null;
   claudeMode: ClaudePermissionMode;
   git: GitInfo | null;
   delegations?: DelegationStats;
@@ -239,6 +264,13 @@ export type ClientMsg =
       runner: RunnerKind;
       // null clears the override and returns to the SDK default
       model: string | null;
+    }
+  | {
+      type: "set_effort";
+      sessionId: string;
+      runner: RunnerKind;
+      // null clears the override and returns to the SDK default
+      effort: EffortLevel | null;
     }
   | { type: "set_claude_mode"; sessionId: string; mode: ClaudePermissionMode }
   | { type: "send"; sessionId: string; text: string }
