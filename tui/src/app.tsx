@@ -13,6 +13,7 @@ import { useSessions } from "./state/sessions";
 import { parseSlash, SLASH_COMMANDS, toggleRunner } from "./util/slash";
 import {
   contextLines,
+  effortLines,
   helpLines,
   makeNotice,
   mcpActionLines,
