@@ -836,6 +836,14 @@ git commit -m "feat(effort): wire /effort command and slider overlay into app"
 - Create: `server/src/effort-capability.ts`
 - Modify: `server/src/sessions.ts`
 
+**Step 0: Precondition — ensure `@anthropic-ai/sdk` is a direct server dep**
+
+Run: `npm --workspace server ls @anthropic-ai/sdk`
+If it only resolves transitively (via `@anthropic-ai/claude-agent-sdk`), add it
+as a direct dependency so the import can't break under a future lockfile change:
+`npm --workspace server install @anthropic-ai/sdk`. Commit the
+`package.json`/lockfile change with Task 8's commit.
+
 **Step 1: Create the capability resolver**
 
 `server/src/effort-capability.ts`:
@@ -894,9 +902,7 @@ export async function resolveEffortInfo(
   if (cached) return { levels: [...cached], source: "api" };
   try {
     const info = await anthropicClient().models.retrieve(base);
-    const levels = effortLevelsFromAnthropicCapability(
-      (info.capabilities ?? null) && info.capabilities!.effort,
-    );
+    const levels = effortLevelsFromAnthropicCapability(info.capabilities?.effort ?? null);
     anthropicCache.set(base, levels);
     return { levels: [...levels], source: "api" };
   } catch (err) {
@@ -1012,6 +1018,10 @@ import type { ClaudePermissionMode, EffortLevel } from "../../../shared/events.j
 (c) `vercel.ts` — add `effort?: EffortLevel;` to `VercelRunArgs` (after `model?: string;`), import `EffortLevel`, destructure it. At the `streamText({ ... })` call (~line 309) add provider options ONLY for OpenAI models:
 
 ```ts
+    // @ai-sdk/openai's reasoningEffort union has no "max" — narrow it out so
+    // the literal typechecks. Runtime never sees "max" here anyway: the OpenAI
+    // catalog tops out at "xhigh" and clampEffort filters to the resolved set.
+    const vercelEffort = effort && effort !== "max" ? effort : undefined;
     const result = streamText({
       model: languageModel,
       system,
@@ -1019,8 +1029,8 @@ import type { ClaudePermissionMode, EffortLevel } from "../../../shared/events.j
       tools,
       stopWhen: stepCountIs(stepLimit),
       abortSignal: signal,
-      ...(effort && !modelId.startsWith("claude-")
-        ? { providerOptions: { openai: { reasoningEffort: effort } } }
+      ...(vercelEffort && !modelId.startsWith("claude-")
+        ? { providerOptions: { openai: { reasoningEffort: vercelEffort } } }
         : {}),
     });
 ```
@@ -1028,6 +1038,10 @@ import type { ClaudePermissionMode, EffortLevel } from "../../../shared/events.j
 > `modelId` is already in scope at this point (resolved earlier in the runner).
 > Anthropic-routed models ignore `effort` here (their effort is N/A on Vercel;
 > the resolver returns empty levels so the slider won't offer one anyway).
+> The `effort !== "max"` narrowing is REQUIRED — without it TS rejects the
+> assignment because `EffortLevel` includes `"max"` but the SDK union does not.
+> Claude options (`Record<string, unknown>`) and Codex options (`any`) don't
+> need this narrowing.
 
 **Step 2: index.ts — resolve effortInfo on change + pass clamped effort to runners**
 
@@ -1088,6 +1102,21 @@ function refreshEffortInfo(sessionId: string): void {
       sessions.setEffort(msg.sessionId, msg.runner, msg.effort);
       return;
 ```
+
+(d.1) Persisted sessions boot with `effortInfo: null`, so a `/effort` on a
+restored session would show the disabled state until the user touches the
+model. Resolve every persisted session once at startup. In `startServer`,
+after the listener binds (right after `boundPort = actualPort;`), add:
+
+```ts
+  // Backfill effort capability for sessions restored from disk so the slider
+  // works on first open without waiting for a model/runner change. Cached per
+  // model id, so this is a handful of Models API calls at most.
+  for (const s of sessions.list()) refreshEffortInfo(s.id);
+```
+
+> `refreshEffortInfo` is module-scoped (defined in step (b)), so it's in scope
+> inside `startServer`.
 
 (e) Pass the clamped effort into each runner in `runTurn`. Just before the
 `if (session.activeRunner === "claude")` branch (~line 754), compute it once:
