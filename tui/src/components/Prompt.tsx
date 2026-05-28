@@ -690,6 +690,8 @@ function describeSlashCommand(
       return describePermissionsAction(command.action);
     case "model":
       return describeModelAction(command.action, runner);
+    case "effort":
+      return describeEffortAction(command.action);
     case "plan":
       return describePlanAction(command.action);
     case "skills":
@@ -725,6 +727,19 @@ function describeModelAction(
     case "setRunner": return `${action.runner} model`;
     case "reset": return `reset ${runner ?? "active"} model`;
     case "resetRunner": return `reset ${action.runner} model`;
+  }
+}
+
+function describeEffortAction(
+  action: Extract<NonNullable<ReturnType<typeof parseSlash>>, { type: "effort" }>["action"],
+): string {
+  switch (action.kind) {
+    case "picker": return "effort";
+    case "show": return "effort: show";
+    case "set": return `effort: ${action.effort}`;
+    case "setRunner": return `${action.runner} effort: ${action.effort}`;
+    case "reset": return "effort: reset";
+    case "resetRunner": return `${action.runner} effort: reset`;
   }
 }
 
