@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import type { RunnerKind } from "../../../shared/events.ts";
-import { modelsFor, type ModelEntry } from "../util/model-catalog";
+import { type ModelEntry } from "../util/model-catalog";
 import { theme } from "../theme";
 
 const ENTER_KEYS = new Set(["return", "enter", "linefeed", "kpenter"]);
@@ -10,6 +10,11 @@ const ENTER_KEYS = new Set(["return", "enter", "linefeed", "kpenter"]);
 type Props = {
   runner: RunnerKind;
   currentId: string | undefined;
+  // Selectable models. For ollama this is fetched live from the daemon; for the
+  // hosted runners it's the static catalog. The picker stays presentational.
+  entries: ModelEntry[];
+  loading?: boolean;
+  error?: string | null;
   onSelect: (modelId: string) => void;
   onReset: () => void;
   onCancel: () => void;
@@ -18,21 +23,29 @@ type Props = {
 export function ModelPicker({
   runner,
   currentId,
+  entries,
+  loading = false,
+  error = null,
   onSelect,
   onReset,
   onCancel,
 }: Props) {
-  const entries = useMemo(() => modelsFor(runner), [runner]);
-  // Pre-select the current model so Enter on open is a no-op confirm.
-  const initialIndex = Math.max(
-    0,
-    entries.findIndex((e) => e.id === currentId),
-  );
-  const [index, setIndex] = useState(initialIndex);
+  const [index, setIndex] = useState(0);
+
+  // Re-sync the cursor onto the current model whenever the entry set changes
+  // (e.g. an async ollama fetch resolves after open) so Enter is a no-op
+  // confirm rather than landing on an arbitrary row.
+  useEffect(() => {
+    setIndex(Math.max(0, entries.findIndex((e) => e.id === currentId)));
+  }, [entries, currentId]);
+
+  const selectable = !loading && !error && entries.length > 0;
 
   useKeyboard((key) => {
     const name = key.name;
     if (name === "escape") return onCancel();
+    if (name === "r") return onReset();
+    if (!selectable) return;
     if (name === "up" || name === "k") {
       setIndex((i) => Math.max(0, i - 1));
       return;
@@ -41,7 +54,6 @@ export function ModelPicker({
       setIndex((i) => Math.min(entries.length - 1, i + 1));
       return;
     }
-    if (name === "r") return onReset();
     if (ENTER_KEYS.has(name)) {
       const e = entries[index];
       if (e) onSelect(e.id);
@@ -49,8 +61,17 @@ export function ModelPicker({
     }
   });
 
-  const labelWidth = Math.max(...entries.map((e) => e.label.length));
+  const labelWidth = entries.length > 0
+    ? Math.max(...entries.map((e) => e.label.length))
+    : 0;
   const accent = runner === "claude" ? theme.toolBash : theme.toolWeb;
+  const statusRow = loading
+    ? "loading models from ollama..."
+    : error
+      ? `ollama unavailable: ${error} — pull a model with \`ollama pull <id>\``
+      : entries.length === 0
+        ? "no models found — pull one with `ollama pull <id>`"
+        : null;
 
   return (
     <box
@@ -68,18 +89,26 @@ export function ModelPicker({
         </text>
         <text fg={theme.textMuted}>{`  ${runner}`}</text>
       </box>
-      {entries.map((entry, i) => (
-        <Row
-          key={entry.id}
-          entry={entry}
-          selected={i === index}
-          current={entry.id === currentId}
-          labelWidth={labelWidth}
-        />
-      ))}
+      {statusRow ? (
+        <box flexDirection="row">
+          <text fg={error ? theme.toolEdit : theme.textMuted}>{statusRow}</text>
+        </box>
+      ) : (
+        entries.map((entry, i) => (
+          <Row
+            key={entry.id}
+            entry={entry}
+            selected={i === index}
+            current={entry.id === currentId}
+            labelWidth={labelWidth}
+          />
+        ))
+      )}
       <box flexDirection="row" marginTop={0}>
         <text fg={theme.textFaint}>
-          {"↑↓ navigate   enter select   r reset to default   esc cancel"}
+          {selectable
+            ? "↑↓ navigate   enter select   r reset to default   esc cancel"
+            : "r reset to default   esc cancel"}
         </text>
       </box>
     </box>

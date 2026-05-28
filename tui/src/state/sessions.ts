@@ -258,6 +258,12 @@ export function useSessions() {
   const [status, setStatus] = useState<WSStatus>(client.getStatus());
   // Local override of activeId so the UI can switch without a server round-trip.
   const [activeOverride, setActiveOverride] = useState<string | null>(null);
+  // When the user runs /new (or otherwise calls createSession), we want to
+  // switch the TUI to the newly-created session as soon as the server tells
+  // us about it. Track known session ids and a pending flag; the effect below
+  // promotes the first unknown id to activeOverride.
+  const knownIdsRef = useRef<Set<string>>(new Set());
+  const pendingActivateRef = useRef(false);
 
   useEffect(() => {
     const offMsg = client.on((msg) => dispatch(msg));
@@ -267,6 +273,17 @@ export function useSessions() {
       offStatus();
     };
   }, [client]);
+
+  useEffect(() => {
+    if (pendingActivateRef.current) {
+      const fresh = state.sessions.find((s) => !knownIdsRef.current.has(s.id));
+      if (fresh) {
+        pendingActivateRef.current = false;
+        setActiveOverride(fresh.id);
+      }
+    }
+    knownIdsRef.current = new Set(state.sessions.map((s) => s.id));
+  }, [state.sessions]);
 
   const activeId = activeOverride ?? state.activeId;
   const active = useMemo(
@@ -300,6 +317,7 @@ export function useSessions() {
     },
 
     createSession(title?: string, runner?: RunnerKind): void {
+      pendingActivateRef.current = true;
       send(client, { type: "create_session", title, runner, cwd: process.cwd() });
     },
     deleteSession(id: string): void {

@@ -30,6 +30,7 @@ import { clampEffort } from "../../shared/effort.js";
 import { runClaude } from "./runners/claude.js";
 import { runCodex } from "./runners/codex.js";
 import { runVercel } from "./runners/vercel.js";
+import { runOllama, listOllamaModels } from "./runners/ollama.js";
 import type { ModelMessage } from "ai";
 import {
   buildDelegateMcpServer,
@@ -230,6 +231,22 @@ refreshGit().catch(() => {});
 const app = new Hono();
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// Live Ollama model list for the TUI picker. The server owns the daemon
+// connection (OLLAMA_BASE_URL), so it does the query and hands the TUI a plain
+// list. Daemon-down returns 200 with an `error` field so the picker can render
+// a clean message instead of treating it as a transport failure.
+app.get("/ollama/models", async (c) => {
+  try {
+    const models = await listOllamaModels();
+    return c.json({ models });
+  } catch (err) {
+    return c.json({
+      models: [],
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
 
 // Internal callback endpoint hit by the stdio MCP child spawned for Codex
 // turns. The child runs in a separate process so it can't reach our delegate
@@ -926,7 +943,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
                 depth: 0,
               },
       });
-    } else {
+    } else if (session.activeRunner === "vercel") {
       // Vercel AI SDK runner. Session continuity rides on
       // runtime.vercelMessages since streamText is stateless. Switching
       // model provider mid-session (e.g. gpt-4o -> claude-sonnet) makes the
@@ -984,6 +1001,37 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           sessions.markDirty();
         },
       });
+    } else {
+      // Ollama runner (local models via the OpenAI-compatible /v1 endpoint).
+      // Like Vercel, streamText is stateless, so continuity rides on
+      // runtime.ollamaMessages. No provider-switch reset is needed: every
+      // ollama turn routes through the same OpenAI-compat client, so swapping
+      // models mid-session (e.g. qwen3:8b -> gpt-oss:20b) keeps the stored
+      // ModelMessage[] valid. No ADVERSARIA append: ollama has no
+      // validate_run tool, so instructing the model to call it would dangle.
+      const priorOllama: ModelMessage[] = Array.isArray(runtime.ollamaMessages)
+        ? (runtime.ollamaMessages as ModelMessage[])
+        : [];
+      await runOllama({
+        prompt: text,
+        cwd: session.cwd,
+        priorMessages: priorOllama,
+        model: session.models.ollama,
+        signal: abort.signal,
+        sessionId,
+        permissionMode: session.claudeMode,
+        permissions,
+        allowRules: permissions.list(),
+        onEvent,
+        onTurnUsage,
+        onContextUsage,
+        onRaw: (raw) => sessions.logRaw(sessionId, asst.id, "ollama", raw),
+        onMessages: (msgs) => {
+          runtime.ollamaMessages = msgs;
+          sessions.logRuntime(sessionId, "ollamaMessages", msgs.length);
+          sessions.markDirty();
+        },
+      });
     }
   } catch (err) {
     onEvent({
@@ -1036,14 +1084,13 @@ async function runConsensusTurn(
     return;
   }
 
-  // Actor/critic is a claude↔codex pair protocol. Reject vercel-active
-  // sessions early instead of silently swapping the runner.
-  if (session.activeRunner === "vercel") {
+  // Actor/critic is a claude↔codex pair protocol. Reject vercel- and ollama-
+  // active sessions early instead of silently swapping the runner.
+  if (session.activeRunner === "vercel" || session.activeRunner === "ollama") {
     sessions.broadcast({
       type: "error",
       sessionId,
-      message:
-        "/consensus is not available for the vercel runner. Switch to claude or codex first (/claude or /codex), then re-run.",
+      message: `/consensus is not available for the ${session.activeRunner} runner. Switch to claude or codex first (/claude or /codex), then re-run.`,
     });
     return;
   }

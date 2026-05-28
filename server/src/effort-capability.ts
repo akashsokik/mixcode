@@ -13,6 +13,9 @@ const DEFAULT_MODEL_ID: Record<RunnerKind, string> = {
   claude: "claude-opus-4-7",
   codex: "gpt-5-codex",
   vercel: "gpt-4o",
+  // Unused: resolveEffortInfo short-circuits ollama to empty effort levels
+  // before this id is read (local models expose no reasoning-effort control).
+  ollama: "",
 };
 
 function stripContextSuffix(modelId: string): string {
@@ -39,6 +42,12 @@ export async function resolveEffortInfo(
   modelOverride: string | undefined,
 ): Promise<EffortInfo> {
   const modelId = (modelOverride && modelOverride.trim()) || DEFAULT_MODEL_ID[runner];
+
+  // Local models served by Ollama expose no reasoning-effort control over the
+  // OpenAI-compat API, so the slider is always disabled (empty levels).
+  if (runner === "ollama") {
+    return { levels: [], source: "catalog" };
+  }
 
   // The Vercel runner only injects effort for OpenAI-routed models. Anthropic-
   // routed (claude-*) models on Vercel have no effort control (it would be a

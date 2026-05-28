@@ -203,11 +203,13 @@ export function modelLines(
   const claudeModel = session?.models?.claude ?? "(default)";
   const codexModel = session?.models?.codex ?? "(default)";
   const vercelModel = session?.models?.vercel ?? "(default → gpt-4o)";
+  const ollamaModel = session?.models?.ollama ?? "(auto → first pulled)";
   return [
     ...header,
     `claude   ${claudeModel}`,
     `codex    ${codexModel}`,
     `vercel   ${vercelModel}`,
+    `ollama   ${ollamaModel}`,
     "",
     "usage",
     "  /model                     show current models",
@@ -215,15 +217,18 @@ export function modelLines(
     "  /model claude <name>       set for claude",
     "  /model codex <name>        set for codex",
     "  /model vercel <name>       set for vercel",
+    "  /model ollama <name>       set for ollama",
     "  /model reset               clear the active runner's override",
     "  /model claude reset        clear claude's override",
     "  /model codex reset         clear codex's override",
     "  /model vercel reset        clear vercel's override",
+    "  /model ollama reset        clear ollama's override",
     "",
     "common claude models   claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001",
     "common codex models    gpt-5-codex, gpt-5, gpt-5-mini",
     "common vercel models   claude-opus-4-7, claude-sonnet-4-6, gpt-5, gpt-5-mini, gpt-4o",
     "                       (claude-* routes via @ai-sdk/anthropic, gpt-*/o*-* via @ai-sdk/openai)",
+    "ollama models          dynamic — your pulled models (the picker lists them live; manage with `ollama pull`/`ollama rm`)",
   ];
 }
 
@@ -234,7 +239,7 @@ export function effortLines(session: Session | null, headline?: string): string[
   if (!session) return ["no active session"];
   const lines: string[] = [];
   if (headline) lines.push(headline, "");
-  const order: RunnerKind[] = ["claude", "codex", "vercel"];
+  const order: RunnerKind[] = ["claude", "codex", "vercel", "ollama"];
   for (const runner of order) {
     const marker = runner === session.activeRunner ? "›" : " ";
     const value = session.efforts?.[runner] ?? "(default)";

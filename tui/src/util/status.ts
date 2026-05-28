@@ -25,6 +25,7 @@ export function prettyModelLabel(
   if (!modelId) {
     if (runner === "claude") return "Claude (default)";
     if (runner === "codex") return "Codex (default)";
+    if (runner === "ollama") return "Ollama (auto)";
     return "Vercel (gpt-4o)";
   }
   const id = modelId.toLowerCase();
