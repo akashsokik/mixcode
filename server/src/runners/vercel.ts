@@ -30,6 +30,7 @@ import { z } from "zod";
 import type {
   ClaudePermissionMode,
   ContextUsage,
+  EffortLevel,
   RunEvent,
   RunnerKind,
   TurnUsage,
@@ -148,6 +149,7 @@ export type VercelRunArgs = {
   // reads the new tail out of onMessages and persists it for next turn.
   priorMessages: ModelMessage[];
   model?: string;
+  effort?: EffortLevel;
   systemPromptAppend?: string;
   signal: AbortSignal;
   sessionId: string;
@@ -207,6 +209,7 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
     cwd,
     priorMessages,
     model,
+    effort,
     systemPromptAppend,
     signal,
     sessionId,
@@ -306,6 +309,10 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
   } as ToolSet;
 
   try {
+    // @ai-sdk/openai's reasoningEffort union has no "max" — narrow it out so
+    // the literal typechecks. Runtime never sees "max" here anyway: the OpenAI
+    // catalog tops out at "xhigh" and clampEffort filters to the resolved set.
+    const vercelEffort = effort && effort !== "max" ? effort : undefined;
     const result = streamText({
       model: languageModel,
       system,
@@ -313,6 +320,9 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
       tools,
       stopWhen: stepCountIs(stepLimit),
       abortSignal: signal,
+      ...(vercelEffort && !modelId.startsWith("claude-")
+        ? { providerOptions: { openai: { reasoningEffort: vercelEffort } } }
+        : {}),
       // Stream errors are surfaced via the `error` part inside `fullStream`
       // below — adding an `onError` callback here would emit them twice.
     });

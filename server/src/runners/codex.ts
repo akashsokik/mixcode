@@ -1,10 +1,12 @@
 import { Codex } from "@openai/codex-sdk";
 import type {
   ContextUsage,
+  EffortLevel,
   RunEvent,
   RunnerKind,
   TurnUsage,
 } from "../../../shared/events.js";
+import { startTurnPerf } from "./perf.js";
 
 // Codex SDK does not expose a per-model context window. Static reference
 // table sourced from each model's published documentation — used only as the
@@ -46,6 +48,10 @@ type CodexRunArgs = {
   cwd?: string;
   threadId?: string;
   model?: string;
+  // Per-turn reasoning effort. Unset uses the Codex CLI default. The /effort
+  // command (see docs/plans/2026-05-28-unified-effort.md) feeds the session
+  // override through this field (mapped to threadOptions.modelReasoningEffort).
+  effort?: EffortLevel;
   signal?: AbortSignal;
   onEvent: (ev: RunEvent) => void;
   // Fires once on `turn.completed`. Sourced verbatim from the SDK's Usage
@@ -98,6 +104,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
     cwd,
     threadId,
     model,
+    effort,
     signal,
     onEvent,
     onTurnUsage,
@@ -115,10 +122,12 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
     return;
   }
 
+  const perf = startTurnPerf("codex");
   try {
     const threadOptions: any = { skipGitRepoCheck: true };
     if (cwd) threadOptions.workingDirectory = cwd;
     if (model) threadOptions.model = model;
+    if (effort) threadOptions.modelReasoningEffort = effort;
     // Headless mode hits a known Codex CLI regression (openai/codex#16685):
     // custom MCP servers get routed through the approval pipeline, and exec
     // mode has no way to prompt, so the call auto-cancels with
@@ -165,6 +174,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
       const delta = full.startsWith(prev) ? full.slice(prev.length) : full;
       if (delta.length === 0) return;
       streamedPrefix.set(id, full);
+      perf.mark("firstText");
       onEvent({ type: "text_delta", delta });
     };
 
@@ -193,6 +203,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
       if (next === SENTINEL || signal?.aborted) break;
       if (next.done) break;
       const ev = next.value;
+      perf.mark("init");
       onRaw?.(ev);
       switch (ev.type) {
         case "thread.started":
@@ -300,6 +311,8 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
   } catch (err: any) {
     if (signal?.aborted) return;
     onEvent({ type: "error", message: `codex sdk: ${err?.message ?? String(err)}` });
+  } finally {
+    perf.done();
   }
 }
 

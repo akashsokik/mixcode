@@ -1,4 +1,4 @@
-import { SyntaxStyle } from "@opentui/core";
+import { SyntaxStyle, type MarkdownTableOptions } from "@opentui/core";
 import { theme } from "./theme";
 
 // Custom markdown SyntaxStyle. OpenTUI's markdown renderer looks up these
@@ -6,6 +6,16 @@ import { theme } from "./theme";
 // markup.italic, markup.raw (inline code + code blocks), markup.link,
 // markup.link.label, markup.link.url, markup.list, markup.quote,
 // markup.strikethrough. Anything we don't register falls back to "default".
+
+// Default `style: "grid"` boxes every table in heavy `┌─┐│└─┘` borders which
+// dominates the transcript and copies badly out of the terminal (cells wrap
+// vertically and the box characters bleed into the paste). Switch to
+// borderless columns + word wrap so chat-style tables read like a denser,
+// space-separated layout — closer to how the model probably intended them.
+export const markdownTableOptions: MarkdownTableOptions = {
+  style: "columns",
+  wrapMode: "word",
+};
 
 export const markdownStyle = SyntaxStyle.fromStyles({
   default: { fg: theme.text },

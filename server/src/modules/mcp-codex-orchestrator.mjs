@@ -79,7 +79,9 @@ const server = new McpServer(
       "Delegate subtasks to a peer agent with `delegate_run`. Use `validate_run` " +
       "as your FINAL step before declaring a task complete: a peer agent " +
       "adversarially reviews your work and returns a structured verdict " +
-      "(pass / needs_changes / fail). Treat needs_changes and fail as work to do.",
+      "(pass / needs_changes / fail). Treat needs_changes and fail as work to do. " +
+      "For active Claude <-> Codex collaboration, write a shared plan with `plan_create`, " +
+      "start it with `collab_start`, and ask bounded peer turns with `collab_ask_peer`.",
   },
 );
 
@@ -222,6 +224,153 @@ server.registerTool(
     inputSchema: { taskId: z.string() },
   },
   async (input) => jsonContent(await callServer("task_cancel", input)),
+);
+
+server.registerTool(
+  "plan_create",
+  {
+    description:
+      "Write a shared repo-local execution plan under docs/plans/. Use before collab_start " +
+      "when Claude and Codex should work from the same phased plan.",
+    inputSchema: {
+      title: z.string().min(1),
+      goal: z.string().min(1),
+      phases: z.array(z.string().min(1)).min(1),
+      scope: z.string().optional(),
+      risks: z.array(z.string()).optional(),
+      verification: z.array(z.string()).optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("plan_create", input)),
+);
+
+server.registerTool(
+  "plan_read",
+  {
+    description: "Read a shared repo-local plan by planId or docs/plans path.",
+    inputSchema: {
+      planId: z.string().optional(),
+      path: z.string().optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("plan_read", input)),
+);
+
+server.registerTool(
+  "collab_start",
+  {
+    description:
+      "Start a bounded Claude <-> Codex collaboration from a shared plan. The active runner leads.",
+    inputSchema: {
+      planId: z.string().optional(),
+      path: z.string().optional(),
+      maxPeerTurns: z.number().int().min(1).max(32).default(8),
+    },
+  },
+  async (input) => jsonContent(await callServer("collab_start", input)),
+);
+
+server.registerTool(
+  "collab_send",
+  {
+    description:
+      "Append a note, request, response, decision, or phase summary to a collaboration run.",
+    inputSchema: {
+      collabId: z.string(),
+      kind: z.enum(["note", "request", "response", "decision", "phase_summary"]),
+      body: z.string().min(1),
+      phaseId: z.string().optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("collab_send", input)),
+);
+
+server.registerTool(
+  "collab_ask_peer",
+  {
+    description:
+      "Ask the peer runner for one bounded collaboration turn: review, proposal, verification, " +
+      "or a clearly scoped implementation slice.",
+    inputSchema: {
+      collabId: z.string(),
+      request: z.string().min(1),
+      role: z.enum(["review", "propose", "verify", "implement"]).default("review"),
+      phaseId: z.string().optional(),
+      timeoutSec: z.number().int().min(1).max(600).default(180),
+      maxTurns: z.number().int().min(1).max(60).optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("collab_ask_peer", input)),
+);
+
+server.registerTool(
+  "collab_observe",
+  {
+    description: "Observe a collaboration run's current phase/message/decision counts.",
+    inputSchema: { collabId: z.string() },
+  },
+  async (input) => jsonContent(await callServer("collab_observe", input)),
+);
+
+server.registerTool(
+  "phase_start",
+  {
+    description: "Mark a collaboration phase as running. Omitting phaseId starts the next pending phase.",
+    inputSchema: {
+      collabId: z.string(),
+      phaseId: z.string().optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("phase_start", input)),
+);
+
+server.registerTool(
+  "phase_done",
+  {
+    description: "Mark a collaboration phase as done with an optional summary.",
+    inputSchema: {
+      collabId: z.string(),
+      phaseId: z.string(),
+      summary: z.string().optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("phase_done", input)),
+);
+
+server.registerTool(
+  "phase_handoff",
+  {
+    description: "Change a phase owner and optionally make that owner the collaboration lead.",
+    inputSchema: {
+      collabId: z.string(),
+      phaseId: z.string(),
+      owner: z.enum(["claude", "codex"]),
+      makeLead: z.boolean().default(false),
+      note: z.string().optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("phase_handoff", input)),
+);
+
+server.registerTool(
+  "collab_finish",
+  {
+    description: "Mark a collaboration run complete.",
+    inputSchema: {
+      collabId: z.string(),
+      summary: z.string().optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("collab_finish", input)),
+);
+
+server.registerTool(
+  "collab_cancel",
+  {
+    description: "Cancel a collaboration run and abort any in-flight peer turn.",
+    inputSchema: { collabId: z.string() },
+  },
+  async (input) => jsonContent(await callServer("collab_cancel", input)),
 );
 
 const transport = new StdioServerTransport();

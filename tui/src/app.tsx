@@ -7,12 +7,14 @@ import { Notifications } from "./components/Notifications";
 import { PermissionPanel } from "./components/PermissionPanel";
 import { ConsensusModal } from "./components/ConsensusModal";
 import { ModelPicker } from "./components/ModelPicker";
+import { EffortSlider } from "./components/EffortSlider";
 import { Palette, type PaletteItem } from "./components/Palette";
 import type { ClaudePermissionMode, RunnerKind, SessionSkillEntry } from "../../shared/events.ts";
 import { useSessions } from "./state/sessions";
 import { parseSlash, SLASH_COMMANDS, toggleRunner } from "./util/slash";
 import {
   contextLines,
+  effortLines,
   helpLines,
   makeNotice,
   mcpActionLines,
@@ -79,6 +81,7 @@ export function App() {
   // App only needs to track which runner it's for so it can keep the selected
   // model up to date if the user switches runners while it's open (closes).
   const [modelPicker, setModelPicker] = useState<{ runner: RunnerKind } | null>(null);
+  const [effortSlider, setEffortSlider] = useState<{ runner: RunnerKind } | null>(null);
   const [paletteMode, setPaletteMode] = useState<
     "sessions" | "skills" | "mcp" | "global" | null
   >(null);
@@ -602,8 +605,25 @@ export function App() {
     return () => clearTimeout(t);
   }, [notifications]);
 
+  // Fires on mouse-up after a drag-select (opentui's `selection` event is
+  // emitted from finishSelection — see core/index-3fq5hq97.js:24423). We use
+  // it as a "copy gesture complete" signal: stash the text for the cmd+c /
+  // ctrl+y fallback path, and auto-copy to the system clipboard so the user
+  // doesn't have to find a chord that survives their terminal's interception.
   useSelectionHandler((selection) => {
-    dragSelectionRef.current = selection.getSelectedText() ?? "";
+    const text = (selection.getSelectedText() ?? "").trim();
+    dragSelectionRef.current = text;
+    if (!text) return;
+    void writeClipboard(text).then((ok) => {
+      const len = text.length;
+      addNotification(
+        ok
+          ? `copied ${len} char${len === 1 ? "" : "s"} from selection`
+          : "clipboard write failed",
+        ok ? "success" : "error",
+        4000,
+      );
+    });
   });
 
   // Copy the active payload to the clipboard with toast feedback.
@@ -901,6 +921,59 @@ export function App() {
           }
           return;
         }
+        case "effort": {
+          if (!sid || !api.active) return;
+          const action = slash.action;
+          switch (action.kind) {
+            case "picker":
+              setEffortSlider({ runner: api.active.activeRunner });
+              return;
+            case "show":
+              addNotice(sid, "/effort", effortLines(api.active));
+              return;
+            case "set": {
+              const runner = api.active.activeRunner;
+              api.setEffort(runner, action.effort);
+              addNotice(
+                sid,
+                "/effort",
+                effortLines(
+                  { ...api.active, efforts: { ...api.active.efforts, [runner]: action.effort } },
+                  `${runner} → ${action.effort}`,
+                ),
+              );
+              return;
+            }
+            case "setRunner": {
+              api.setEffort(action.runner, action.effort);
+              addNotice(
+                sid,
+                "/effort",
+                effortLines(
+                  { ...api.active, efforts: { ...api.active.efforts, [action.runner]: action.effort } },
+                  `${action.runner} → ${action.effort}`,
+                ),
+              );
+              return;
+            }
+            case "reset": {
+              const runner = api.active.activeRunner;
+              api.setEffort(runner, null);
+              const next = { ...api.active.efforts };
+              delete next[runner];
+              addNotice(sid, "/effort", effortLines({ ...api.active, efforts: next }, `${runner} → (default)`));
+              return;
+            }
+            case "resetRunner": {
+              api.setEffort(action.runner, null);
+              const next = { ...api.active.efforts };
+              delete next[action.runner];
+              addNotice(sid, "/effort", effortLines({ ...api.active, efforts: next }, `${action.runner} → (default)`));
+              return;
+            }
+          }
+          return;
+        }
         case "plan": {
           if (!sid || !api.active) return;
           const current = api.active.claudeMode;
@@ -1087,6 +1160,11 @@ export function App() {
           }
           return;
         }
+        case "new": {
+          const { title, runner } = slash.action;
+          api.createSession(title ?? undefined, runner ?? undefined);
+          return;
+        }
         case "unknown": {
           // Known skill names pass through to the runner verbatim. The
           // Claude/Codex CLIs route /<skill-name> through their Skill tool;
@@ -1211,6 +1289,44 @@ export function App() {
           onCancel={() => setModelPicker(null)}
         />
       )}
+      {effortSlider && api.active && (
+        <EffortSlider
+          runner={effortSlider.runner}
+          modelLabel={promptMeta?.modelLabel ?? effortSlider.runner}
+          levels={api.active.effortInfo?.levels ?? []}
+          current={api.active.efforts?.[effortSlider.runner] ?? null}
+          onSelect={(effort) => {
+            if (!api.active) return;
+            api.setEffort(effortSlider.runner, effort);
+            if (api.activeId) {
+              addNotice(
+                api.activeId,
+                "/effort",
+                effortLines(
+                  { ...api.active, efforts: { ...api.active.efforts, [effortSlider.runner]: effort } },
+                  `${effortSlider.runner} → ${effort}`,
+                ),
+              );
+            }
+            setEffortSlider(null);
+          }}
+          onReset={() => {
+            if (!api.active) return;
+            api.setEffort(effortSlider.runner, null);
+            if (api.activeId) {
+              const next = { ...api.active.efforts };
+              delete next[effortSlider.runner];
+              addNotice(
+                api.activeId,
+                "/effort",
+                effortLines({ ...api.active, efforts: next }, `${effortSlider.runner} → (default)`),
+              );
+            }
+            setEffortSlider(null);
+          }}
+          onCancel={() => setEffortSlider(null)}
+        />
+      )}
       {paletteMode && (
         <Palette
           title={titleForMode(paletteMode)}
@@ -1236,6 +1352,7 @@ export function App() {
         locked={
           api.pendingPermissions.length > 0 ||
           modelPicker !== null ||
+          effortSlider !== null ||
           paletteMode !== null ||
           (api.activeId !== null && !!api.consensusReady[api.activeId])
         }

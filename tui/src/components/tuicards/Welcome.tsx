@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { TextAttributes } from "@opentui/core";
-import { theme } from "../theme";
-import pkg from "../../../package.json" with { type: "json" };
+import { theme } from "../../theme";
+import pkg from "../../../../package.json" with { type: "json" };
 
 const LOGO = "MixCode";
 const LOGO_NOISE = "ZXCVBNMASDFGHJKL";

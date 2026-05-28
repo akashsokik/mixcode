@@ -25,6 +25,8 @@ import type {
   TurnUsage,
 } from "../../shared/events.js";
 import { SessionManager } from "./sessions.js";
+import { resolveEffortInfo } from "./effort-capability.js";
+import { clampEffort } from "../../shared/effort.js";
 import { runClaude } from "./runners/claude.js";
 import { runCodex } from "./runners/codex.js";
 import { runVercel } from "./runners/vercel.js";
@@ -52,6 +54,25 @@ import {
   spawnSubtasks,
   unregisterTaskEmitter,
 } from "./orchestrator/tasks.js";
+import {
+  askPeer,
+  cancelCollab,
+  cancelCollabsForSession,
+  clearCollabsForSession,
+  donePhase,
+  finishCollab,
+  handoffPhase,
+  observeCollab,
+  readPlan,
+  registerCollabEmitter,
+  sendCollabMessage,
+  startCollab,
+  startPhase,
+  unregisterCollabEmitter,
+  writePlan,
+  type CollabMessageKind,
+  type PeerRole,
+} from "./orchestrator/collab.js";
 import {
   clearConsensusReady,
   getConsensusReady,
@@ -147,6 +168,31 @@ function updateSessionSkills(
   const entries = resolveSessionSkills(runner, skills, plugins);
   sessionSkills.set(sessionId, { runner, entries });
   sessions.broadcast({ type: "session_skills", sessionId, runner, skills: entries });
+}
+
+// Resolve the active runner+model effort capability and attach it to the
+// session so the TUI slider can render it. Fire-and-forget: the Anthropic path
+// is async but cached, and a failure just yields empty levels.
+function refreshEffortInfo(sessionId: string): void {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  const modelOverride = s.models[s.activeRunner];
+  void resolveEffortInfo(s.activeRunner, modelOverride)
+    .then((info) => {
+      // Re-fetch — the session may have changed runner/model while awaiting.
+      // Guard on BOTH runner and the model override we resolved against, so a
+      // mid-flight model switch on the same runner can't overwrite the new
+      // model's effortInfo with the old model's levels.
+      const cur = sessions.get(sessionId);
+      if (
+        cur &&
+        cur.activeRunner === s.activeRunner &&
+        cur.models[s.activeRunner] === modelOverride
+      ) {
+        sessions.setEffortInfo(sessionId, info);
+      }
+    })
+    .catch(() => {});
 }
 
 permissions.bind({
@@ -356,6 +402,149 @@ app.post("/internal/delegate", async (c) => {
       payload: { taskId: r.taskId, cancelled: r.cancelled },
     });
   }
+  if (action === "plan_create") {
+    if (!body.parentRunner || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const phases = Array.isArray(args.phases)
+      ? args.phases.filter((p): p is string => typeof p === "string")
+      : [];
+    const risks = Array.isArray(args.risks)
+      ? args.risks.filter((r): r is string => typeof r === "string")
+      : undefined;
+    const verification = Array.isArray(args.verification)
+      ? args.verification.filter((v): v is string => typeof v === "string")
+      : undefined;
+    const r = await writePlan({
+      cwd: body.parentCwd,
+      owner: body.parentRunner,
+      title: String(args.title ?? ""),
+      goal: String(args.goal ?? ""),
+      phases,
+      scope: typeof args.scope === "string" ? args.scope : undefined,
+      risks,
+      verification,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "plan_read") {
+    if (!body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const r = await readPlan({
+      cwd: body.parentCwd,
+      planId: typeof args.planId === "string" ? args.planId : undefined,
+      path: typeof args.path === "string" ? args.path : undefined,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? { plan: r.plan } : { error: r.error } });
+  }
+  if (action === "collab_start") {
+    if (!body.parentRunner || !body.parentSessionId || !body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const r = await startCollab({
+      sessionId: body.parentSessionId,
+      cwd: body.parentCwd,
+      leadRunner: body.parentRunner,
+      planId: typeof args.planId === "string" ? args.planId : undefined,
+      path: typeof args.path === "string" ? args.path : undefined,
+      maxPeerTurns:
+        typeof args.maxPeerTurns === "number" && Number.isFinite(args.maxPeerTurns)
+          ? args.maxPeerTurns
+          : 8,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_send") {
+    if (!body.parentRunner) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const r = sendCollabMessage(String(args.collabId ?? ""), {
+      from: body.parentRunner,
+      kind: String(args.kind ?? "note") as CollabMessageKind,
+      body: String(args.body ?? ""),
+      phaseId: typeof args.phaseId === "string" ? args.phaseId : undefined,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_ask_peer") {
+    if (!body.parentCwd) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const r = await askPeer(String(args.collabId ?? ""), {
+      phaseId: typeof args.phaseId === "string" ? args.phaseId : undefined,
+      request: String(args.request ?? ""),
+      role: String(args.role ?? "review") as PeerRole,
+      timeoutSec:
+        typeof args.timeoutSec === "number" && Number.isFinite(args.timeoutSec)
+          ? args.timeoutSec
+          : 180,
+      maxTurns:
+        typeof args.maxTurns === "number" && Number.isFinite(args.maxTurns)
+          ? args.maxTurns
+          : undefined,
+      parentCwd: body.parentCwd,
+      depth: (typeof body.depth === "number" ? body.depth : 0) + 1,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_observe") {
+    const r = observeCollab(String(args.collabId ?? ""));
+    return c.json({ ok: r.ok, payload: r.ok ? { snapshot: r.snapshot } : { error: r.error } });
+  }
+  if (action === "phase_start") {
+    const r = startPhase(
+      String(args.collabId ?? ""),
+      typeof args.phaseId === "string" ? args.phaseId : undefined,
+    );
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "phase_done") {
+    const r = donePhase(
+      String(args.collabId ?? ""),
+      String(args.phaseId ?? ""),
+      typeof args.summary === "string" ? args.summary : undefined,
+    );
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "phase_handoff") {
+    const owner = args.owner === "claude" || args.owner === "codex"
+      ? args.owner
+      : undefined;
+    if (!owner) return c.json({ ok: false, payload: { error: "invalid owner" } }, 400);
+    const r = handoffPhase(String(args.collabId ?? ""), String(args.phaseId ?? ""), {
+      owner,
+      makeLead: args.makeLead === true,
+      note: typeof args.note === "string" ? args.note : undefined,
+    });
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_finish") {
+    const r = finishCollab(
+      String(args.collabId ?? ""),
+      typeof args.summary === "string" ? args.summary : undefined,
+    );
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
+  if (action === "collab_cancel") {
+    const r = cancelCollab(String(args.collabId ?? ""));
+    return c.json({ ok: r.ok, payload: r.ok ? r : { error: r.error } });
+  }
   return c.json({ ok: false, payload: { error: `unknown action: ${action}` } }, 400);
 });
 
@@ -419,6 +608,7 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
         runner: msg.runner,
         cwd: msg.cwd,
       });
+      refreshEffortInfo(created.id);
       // Eagerly fetch git for the new session so the status bar isn't blank
       // for the polling interval.
       readGitInfo(created.cwd)
@@ -432,6 +622,8 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
     case "delete_session": {
       turnAborts.get(msg.sessionId)?.abort();
       turnAborts.delete(msg.sessionId);
+      cancelCollabsForSession(msg.sessionId);
+      clearCollabsForSession(msg.sessionId);
       cancelTasksForSession(msg.sessionId);
       clearTasksForSession(msg.sessionId);
       clearConsensusReady(msg.sessionId);
@@ -442,6 +634,7 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
 
     case "set_runner":
       sessions.setRunner(msg.sessionId, msg.runner);
+      refreshEffortInfo(msg.sessionId);
       return;
 
     case "clear_session": {
@@ -453,6 +646,8 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
       // try to bump finish stats, but bumpOnFinish skips when the session's
       // stats entry is gone — which we wipe next.
       cancelRunsForSession(msg.sessionId);
+      cancelCollabsForSession(msg.sessionId);
+      clearCollabsForSession(msg.sessionId);
       cancelTasksForSession(msg.sessionId);
       clearTasksForSession(msg.sessionId);
       if (clearConsensusReady(msg.sessionId)) {
@@ -469,6 +664,11 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
 
     case "set_model":
       sessions.setModel(msg.sessionId, msg.runner, msg.model);
+      refreshEffortInfo(msg.sessionId);
+      return;
+
+    case "set_effort":
+      sessions.setEffort(msg.sessionId, msg.runner, msg.effort);
       return;
 
     case "set_claude_mode":
@@ -554,6 +754,11 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   const abort = new AbortController();
   turnAborts.get(sessionId)?.abort();
   turnAborts.set(sessionId, abort);
+  abort.signal.addEventListener("abort", () => {
+    cancelRunsForSession(sessionId);
+    cancelTasksForSession(sessionId);
+    cancelCollabsForSession(sessionId);
+  });
 
   const runtime = sessions.runtime(sessionId)!;
 
@@ -577,6 +782,16 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   // lookup as parentCallbacks — works for both in-process Claude and the
   // HTTP-proxy Codex path.
   registerTaskEmitter(sessionId, onEvent);
+  registerCollabEmitter(sessionId, onEvent);
+
+  // Active-runner effort, clamped to what the resolved model actually supports.
+  // effortInfo is for the active runner+model (kept current by refreshEffortInfo).
+  const effortLevels = session.effortInfo?.levels ?? [];
+  const activeEffort = session.efforts?.[session.activeRunner] ?? null;
+  const clampedEffort =
+    activeEffort && effortLevels.length > 0
+      ? clampEffort(effortLevels, activeEffort)
+      : null;
 
   try {
     if (session.activeRunner === "claude") {
@@ -594,6 +809,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         cwd: session.cwd,
         resumeId: runtime.claudeSessionId,
         model: session.models.claude,
+        effort: clampedEffort ?? undefined,
         allowRules: permissions.list(),
         permissionMode: session.claudeMode,
         abortController: abort,
@@ -681,6 +897,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         cwd: session.cwd,
         threadId: runtime.codexThreadId,
         model: session.models.codex,
+        effort: clampedEffort ?? undefined,
         signal: abort.signal,
         onEvent,
         onTurnUsage,
@@ -692,15 +909,22 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           sessions.logRuntime(sessionId, "codexThreadId", id);
           sessions.markDirty();
         },
-        orchestrator: {
-          url: `http://127.0.0.1:${boundPort}`,
-          token: ORCHESTRATOR_TOKEN,
-          scriptPath: ORCHESTRATOR_SCRIPT_PATH,
-          parentSessionId: sessionId,
-          parentRunner: "codex",
-          parentCwd: session.cwd,
-          depth: 0,
-        },
+        // ADVERSARIA_NO_CODEX_ORCH=1 skips wiring the orchestrator MCP, which
+        // stops codex from spawning the Node MCP child + handshake per turn.
+        // Used to measure that child's TTFT contribution against the perf line;
+        // delegation tools are unavailable while set.
+        orchestrator:
+          process.env.ADVERSARIA_NO_CODEX_ORCH === "1"
+            ? undefined
+            : {
+                url: `http://127.0.0.1:${boundPort}`,
+                token: ORCHESTRATOR_TOKEN,
+                scriptPath: ORCHESTRATOR_SCRIPT_PATH,
+                parentSessionId: sessionId,
+                parentRunner: "codex",
+                parentCwd: session.cwd,
+                depth: 0,
+              },
       });
     } else {
       // Vercel AI SDK runner. Session continuity rides on
@@ -742,6 +966,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         cwd: session.cwd,
         priorMessages: prior,
         model: session.models.vercel,
+        effort: clampedEffort ?? undefined,
         systemPromptAppend: ADVERSARIA_SYSTEM_PROMPT_APPEND,
         signal: abort.signal,
         sessionId,
@@ -769,6 +994,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
     if (turnAborts.get(sessionId) === abort) turnAborts.delete(sessionId);
     unregisterParentCallbacks(sessionId);
     unregisterTaskEmitter(sessionId);
+    unregisterCollabEmitter(sessionId);
     sessions.finishMessage(sessionId, asst.id);
   }
 }
@@ -1118,6 +1344,10 @@ export function startServer(
   // honest without lying about runtime behavior.
   const actualPort = server.port ?? port;
   boundPort = actualPort;
+  // Backfill effort capability for sessions restored from disk so the slider
+  // works on first open without waiting for a model/runner change. Cached per
+  // model id, so this is a handful of Models API calls at most.
+  for (const s of sessions.list()) refreshEffortInfo(s.id);
   console.log(
     `adverserial backend listening on http://${server.hostname}:${actualPort}`,
   );

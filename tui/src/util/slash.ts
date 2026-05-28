@@ -1,4 +1,5 @@
-import type { RunnerKind } from "../../../shared/events.ts";
+import type { EffortLevel, RunnerKind } from "../../../shared/events.ts";
+import { isEffortLevel } from "../../../shared/effort.ts";
 
 export type PermissionsAction =
   | { kind: "list" }
@@ -17,6 +18,21 @@ export type ModelAction =
   | { kind: "show" }   // print a notice listing current models for both runners
   | { kind: "set"; model: string }
   | { kind: "setRunner"; runner: RunnerKind; model: string }
+  | { kind: "reset" }
+  | { kind: "resetRunner"; runner: RunnerKind };
+
+// /effort grammar mirrors /model:
+//   (no args)                  — open the interactive slider for the active runner
+//   show | status | list       — print current efforts for all runners
+//   <level>                     — set the active runner's effort
+//   <runner> <level>            — set a specific runner's effort
+//   reset | clear               — clear the active runner's override
+//   <runner> [reset|clear]      — clear a specific runner's override
+export type EffortAction =
+  | { kind: "picker" }
+  | { kind: "show" }
+  | { kind: "set"; effort: EffortLevel }
+  | { kind: "setRunner"; runner: RunnerKind; effort: EffortLevel }
   | { kind: "reset" }
   | { kind: "resetRunner"; runner: RunnerKind };
 
@@ -59,6 +75,15 @@ export type McpAction =
   | { kind: "remove"; name: string }
   | { kind: "test"; name: string };
 
+// /new grammar:
+//   (no args)            — create a new session with default title and active runner
+//   <title>              — create with custom title, active runner
+//   <title> <runner>     — create with custom title and runner (claude|codex|vercel)
+export type NewAction = {
+  title: string | null;
+  runner: RunnerKind | null;
+};
+
 export type SlashCommand =
   | { type: "claude"; rest: string }
   | { type: "codex"; rest: string }
@@ -77,9 +102,11 @@ export type SlashCommand =
     }
   | { type: "permissions"; action: PermissionsAction }
   | { type: "model"; action: ModelAction }
+  | { type: "effort"; action: EffortAction }
   | { type: "plan"; action: PlanAction }
   | { type: "skills"; action: SkillsAction }
   | { type: "mcp"; action: McpAction }
+  | { type: "new"; action: NewAction }
   | { type: "unknown"; name: string; rest: string };
 
 // Allow letters, digits, hyphens, dots, underscores, and colons so
@@ -125,6 +152,8 @@ export function parseSlash(text: string): SlashCommand | null {
       return { type: "permissions", action: parsePermissionsAction(rest) };
     case "model":
       return { type: "model", action: parseModelAction(rest) };
+    case "effort":
+      return { type: "effort", action: parseEffortAction(rest) };
     case "plan":
       return { type: "plan", action: parsePlanAction(rest) };
     case "skills":
@@ -132,6 +161,8 @@ export function parseSlash(text: string): SlashCommand | null {
       return { type: "skills", action: parseSkillsAction(rest) };
     case "mcp":
       return { type: "mcp", action: parseMcpAction(rest) };
+    case "new":
+      return { type: "new", action: parseNewAction(rest) };
     default:
       // `name` preserves the user-typed case so callers can match it against
       // case-sensitive lists (e.g. plugin-qualified skill names).
@@ -206,6 +237,18 @@ function parseMcpAction(rest: string): McpAction {
   }
 }
 
+function parseNewAction(rest: string): NewAction {
+  if (!rest) return { title: null, runner: null };
+  const tokens = rest.split(/\s+/).filter(Boolean);
+  const title = tokens[0] ?? null;
+  const runnerStr = tokens[1]?.toLowerCase();
+  let runner: RunnerKind | null = null;
+  if (runnerStr === "claude" || runnerStr === "codex" || runnerStr === "vercel") {
+    runner = runnerStr;
+  }
+  return { title, runner };
+}
+
 function parsePlanAction(rest: string): PlanAction {
   const v = rest.trim().toLowerCase();
   if (!v) return { kind: "toggle" };
@@ -233,6 +276,33 @@ function parseModelAction(rest: string): ModelAction {
     return { kind: "setRunner", runner: first, model: tail };
   }
   return { kind: "set", model: rest.trim() };
+}
+
+function parseEffortAction(rest: string): EffortAction {
+  if (!rest) return { kind: "picker" };
+  const tokens = rest.split(/\s+/).filter(Boolean);
+  const first = tokens[0].toLowerCase();
+  if (first === "show" || first === "status" || first === "list") {
+    return { kind: "show" };
+  }
+  if (first === "reset" || first === "clear") {
+    return { kind: "reset" };
+  }
+  if (first === "claude" || first === "codex" || first === "vercel") {
+    const tail = (tokens[1] ?? "").toLowerCase();
+    if (!tail || tail === "reset" || tail === "clear") {
+      return { kind: "resetRunner", runner: first };
+    }
+    if (isEffortLevel(tail)) {
+      return { kind: "setRunner", runner: first, effort: tail };
+    }
+    return { kind: "show" };
+  }
+  if (isEffortLevel(first)) {
+    return { kind: "set", effort: first };
+  }
+  // Unknown token -> show current state rather than silently setting garbage.
+  return { kind: "show" };
 }
 
 // /consensus grammar:
@@ -318,7 +388,9 @@ export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/consensus <task>", help: "single actor/critic cycle (claude↔codex); writes one draft, critic reviews once" },
   { name: "/permissions [add|remove|clear]", help: "manage Claude tool-permission rules (Claude only)" },
   { name: "/model [show | <name> | <runner> <name> | reset]", help: "open model picker for active runner; show prints status; <name> sets directly" },
+  { name: "/effort [show | <level> | <runner> <level> | reset]", help: "open effort slider for active runner; levels depend on the active model" },
   { name: "/plan [on|off]", help: "plan-only mode — model proposes a plan, no tools run (Claude only)" },
   { name: "/skills [add|import|remove|info]", help: "manage skills for the active runner (~/.claude/skills or ~/.codex/skills); `import <claude|codex> [name]` copies from the other runner" },
   { name: "/mcp [add|remove|test]", help: "manage MCP servers for the active runner via its CLI" },
+  { name: "/new [title] [runner]", help: "create a new session (optional: title and runner—claude|codex|vercel)" },
 ];

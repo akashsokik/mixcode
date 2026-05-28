@@ -3,10 +3,10 @@
 // names, diffs) carry one desaturated hue each.
 
 export const theme = {
-  bg: "#0a0a0a",
-  bgPanel: "#0a0a0a",
-  bgCard: "#0a0a0a",
-  bgHeader: "#0a0a0a",
+  bg: "transparent",
+  bgPanel: "transparent",
+  bgCard: "transparent",
+  bgHeader: "transparent",
 
   text: "#e5e5e5",
   textMuted: "#8a8a8a",

@@ -1,7 +1,8 @@
 import { TextAttributes } from "@opentui/core";
-import { theme } from "../theme";
-import type { Notice } from "../util/notice";
+import { theme } from "../../theme";
+import type { Notice } from "../../util/notice";
 import { ChatItem } from "./ChatItem";
+import { useFadeInPhase } from "./hooks";
 
 // Slash-command output flows through this one component, so every typographic
 // decision here applies uniformly across /help, /context, /sessions, /model,
@@ -91,7 +92,7 @@ export function NoticeCard({
     <ChatItem id={`notice:${notice.id}`} selected={selected} onActivate={onActivate}>
       <box flexDirection="column">
         <box flexDirection="row" marginBottom={1}>
-          <text fg={theme.textFaint}>{"▎ "}</text>
+          <NoticeAccentBar />
           <text fg={theme.accentDim} attributes={TextAttributes.BOLD}>
             {head}
           </text>
@@ -110,6 +111,17 @@ export function NoticeCard({
       </box>
     </ChatItem>
   );
+}
+
+// Left accent bar with a one-shot fade-in (faint → subtle → muted) so that
+// when a new slash-command notice appears, the eye catches the bar lighting
+// up. Static once mounted — the hook stops ticking once it hits the brightest
+// phase.
+function NoticeAccentBar() {
+  const phase = useFadeInPhase();
+  const palette = [theme.textFaint, theme.textSubtle, theme.textMuted];
+  const fg = palette[phase] ?? theme.textMuted;
+  return <text fg={fg}>{"▎ "}</text>;
 }
 
 function LineRow({ line }: { line: string }) {

@@ -1,9 +1,16 @@
 import { TextAttributes } from "@opentui/core";
-import type { ToolLog } from "../../../shared/events.ts";
-import { theme } from "../theme";
-import { shortId } from "../util/format";
+import type { ToolLog } from "../../../../shared/events.ts";
+import { theme } from "../../theme";
+import { shortId } from "../../util/format";
 import { ChatItem } from "./ChatItem";
-import { StatusDot } from "./StatusDot";
+import {
+  CardHeader,
+  Counter,
+  MetaChips,
+  SubRow,
+} from "./parts";
+import { formatDuration, runnerColor, statusColor, truncate } from "./format";
+import type { Chip } from "./types";
 
 type Snapshot = {
   taskId: string;
@@ -55,11 +62,12 @@ export function TaskCard({
   if (!snap) {
     return (
       <ChatItem id={id} selected={selected} onActivate={onActivate}>
-        <box flexDirection="row">
-          <text fg={theme.textMuted}>{"○ "}</text>
-          <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>task</text>
-          <text fg={theme.textMuted}>{"  (no data)"}</text>
-        </box>
+        <CardHeader
+          status="pending"
+          verb="task"
+          verbColor={theme.toolTask}
+          title="(no data)"
+        />
       </ChatItem>
     );
   }
@@ -71,34 +79,46 @@ export function TaskCard({
   const queued = counts.queued ?? 0;
   const errored = counts.error ?? 0;
   const cancelled = counts.cancelled ?? 0;
+  const showBar = total > 0;
 
-  const countParts: string[] = [];
-  if (total > 0) countParts.push(`${ok}/${total} ok`);
-  if (running > 0) countParts.push(`${running} running`);
-  if (queued > 0) countParts.push(`${queued} queued`);
-  if (errored > 0) countParts.push(`${errored} error`);
-  if (cancelled > 0) countParts.push(`${cancelled} cancelled`);
-  const countSummary = countParts.join("  ·  ");
-
-  const statusColor = colorForTaskStatus(snap.status);
   const idShort = shortId(snap.taskId);
 
   return (
     <ChatItem id={id} selected={selected} onActivate={onActivate}>
-      <box flexDirection="row">
-        <StatusDot status={snap.status} />
-        <text fg={theme.text}>{" "}</text>
-        <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>task</text>
-        <text fg={theme.text}>{` "${truncate(snap.title, 64)}"`}</text>
-        <text fg={theme.textFaint}>{`  ${idShort}`}</text>
-      </box>
+      <CardHeader
+        status={snap.status}
+        verb="task"
+        verbColor={theme.toolTask}
+        title={`"${truncate(snap.title, 64)}"`}
+        id={idShort}
+      />
       <box flexDirection="row">
         <text fg={theme.textFaint}>{"  └ "}</text>
-        <text fg={statusColor} attributes={TextAttributes.BOLD}>{snap.status}</text>
-        {countSummary && <text fg={theme.textMuted}>{`  ·  ${countSummary}`}</text>}
+        <text fg={statusColor(snap.status)} attributes={TextAttributes.BOLD}>
+          {snap.status}
+        </text>
+        {showBar && (
+          <>
+            <text fg={theme.textMuted}>{"  ·  "}</text>
+            <Counter value={ok} bold color={theme.runnerClaude} />
+            <text fg={theme.textFaint}>{"/"}</text>
+            <Counter value={total} color={theme.textMuted} />
+            <text fg={theme.textFaint}>{" ok"}</text>
+          </>
+        )}
+        <CountChips
+          running={running}
+          queued={queued}
+          errored={errored}
+          cancelled={cancelled}
+        />
       </box>
       {snap.subtasks.map((s, i) => (
-        <SubtaskRowView key={s.id || `s-${i}`} sub={s} last={i === snap.subtasks.length - 1} />
+        <SubtaskRowView
+          key={s.id || `s-${i}`}
+          sub={s}
+          last={i === snap.subtasks.length - 1}
+        />
       ))}
       {snap.summary && (
         <box flexDirection="row" marginTop={0}>
@@ -110,21 +130,43 @@ export function TaskCard({
   );
 }
 
+function CountChips({
+  running,
+  queued,
+  errored,
+  cancelled,
+}: {
+  running: number;
+  queued: number;
+  errored: number;
+  cancelled: number;
+}) {
+  const chips: Chip[] = [];
+  if (running > 0) chips.push({ text: `${running} running`, color: theme.toolBash, bold: true });
+  if (queued > 0) chips.push({ text: `${queued} queued` });
+  if (errored > 0) chips.push({ text: `${errored} error`, color: theme.toolError, bold: true });
+  if (cancelled > 0) chips.push({ text: `${cancelled} cancelled`, dim: true });
+  if (chips.length === 0) return null;
+  return (
+    <>
+      <text fg={theme.textMuted}>{"  ·  "}</text>
+      <MetaChips chips={chips} />
+    </>
+  );
+}
+
 function SubtaskRowView({ sub, last }: { sub: SubtaskRow; last: boolean }) {
-  const marker = last ? "  └ " : "  ├ ";
   const dur = formatDuration(sub.durationMs);
   const tail = pickTail(sub);
   return (
-    <box flexDirection="row">
-      <text fg={theme.textFaint}>{marker}</text>
-      <StatusDot status={sub.status} />
+    <SubRow last={last} status={sub.status} fadeIn>
       <text fg={runnerColor(sub.runner)} attributes={TextAttributes.BOLD}>{` [${sub.runner}]`}</text>
       {dur && <text fg={theme.textFaint}>{`  ${dur}`}</text>}
       {sub.prompt && (
         <text fg={theme.textMuted}>{`  "${truncate(sub.prompt, MAX_PROMPT_CHARS)}"`}</text>
       )}
       {tail && <text fg={theme.textFaint}>{`  → ${truncate(tail, MAX_RESULT_CHARS)}`}</text>}
-    </box>
+    </SubRow>
   );
 }
 
@@ -133,37 +175,6 @@ function SubtaskRowView({ sub, last }: { sub: SubtaskRow; last: boolean }) {
 // belong in the expanded view, not on this row.
 function pickTail(sub: SubtaskRow): string {
   return sub.currentTool ?? "";
-}
-
-function colorForTaskStatus(s: string): string {
-  if (s === "done") return theme.runnerClaude;
-  if (s === "running") return theme.toolBash;
-  if (s === "pending") return theme.textMuted;
-  if (s === "error") return theme.toolError;
-  if (s === "cancelled") return theme.textSubtle;
-  return theme.text;
-}
-
-function runnerColor(runner: string): string {
-  if (runner === "claude") return theme.runnerClaude;
-  if (runner === "codex") return theme.runnerCodex;
-  if (runner === "vercel") return theme.runnerVercel;
-  return theme.textMuted;
-}
-
-function formatDuration(ms?: number): string {
-  if (!ms || ms <= 0) return "";
-  if (ms < 1000) return `${ms}ms`;
-  const sec = ms / 1000;
-  if (sec < 60) return `${sec.toFixed(1)}s`;
-  const min = Math.floor(sec / 60);
-  const rem = Math.round(sec - min * 60);
-  return `${min}m${rem.toString().padStart(2, "0")}s`;
-}
-
-function truncate(s: string, max: number): string {
-  const flat = s.replace(/\s+/g, " ").trim();
-  return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 
 // Server emits the snapshot as a plain object on log.output. Be defensive in

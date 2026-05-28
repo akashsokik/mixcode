@@ -1,13 +1,8 @@
 import type { ReactNode } from "react";
-import { theme } from "../theme";
+import { theme } from "../../theme";
+import type { TuiCardBaseProps } from "./types";
 
-export type ChatItemProps = {
-  id: string;
-  selected: boolean;
-  expanded?: boolean;
-  expandable?: boolean;
-  hint?: string | null;
-  onActivate?: () => void;
+export type ChatItemProps = TuiCardBaseProps & {
   marginTop?: number;
   nested?: boolean;
   children: ReactNode;

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { ContextUsage, RunEvent, TurnUsage } from "../../../shared/events.js";
+import { startTurnPerf } from "./perf.js";
 
 // Pull just the plugin-related keys out of the user's ~/.claude/settings.json
 // without enabling the rest of the file (hooks, permissions, etc.). The runner
@@ -64,7 +65,7 @@ type CanUseToolBridge = (
   | { behavior: "deny"; message: string }
 >;
 
-import type { ClaudePermissionMode } from "../../../shared/events.js";
+import type { ClaudePermissionMode, EffortLevel } from "../../../shared/events.js";
 
 type ClaudeRunArgs = {
   prompt: string;
@@ -72,6 +73,7 @@ type ClaudeRunArgs = {
   resumeId?: string;
   systemPrompt?: string;
   model?: string;
+  effort?: EffortLevel;
   allowRules?: string[];
   // Wire-level union plus the SDK-only "dontAsk" mode for peers that have no
   // user UI to gate tool calls. The TUI never sets "dontAsk"; consensus
@@ -121,6 +123,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     resumeId,
     systemPrompt,
     model,
+    effort,
     allowRules,
     permissionMode,
     canUseTool,
@@ -139,6 +142,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
   const options: Record<string, unknown> = { includePartialMessages: true };
   if (cwd) options.cwd = cwd;
   if (model) options.model = model;
+  if (effort) options.effort = effort;
   if (resumeId) options.resume = resumeId;
   if (abortController) options.abortController = abortController;
   if (mcpServers && Object.keys(mcpServers).length > 0) {
@@ -248,6 +252,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
   // never persisted. The post-loop guard below uses this to clear the
   // resumeId in that case so the next turn doesn't try to resume a ghost.
   let sawSuccessResult = false;
+  const perf = startTurnPerf("claude");
   try {
     // Per-message index → start timestamp for thinking blocks, used to attach
     // elapsed seconds to the "thinking" marker emitted on content_block_stop.
@@ -255,6 +260,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     const elapsedSeconds = (startedAt: number): number =>
       Math.max(0, Math.round((Date.now() - startedAt) / 1000));
     for await (const message of query({ prompt, options: options as any })) {
+      perf.mark("init");
       onRaw?.(message);
       switch (message.type) {
         case "system": {
@@ -279,6 +285,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
             // empty bullet.
             const content = (message as any).content;
             if (typeof content === "string" && content.length > 0) {
+              perf.mark("firstText");
               onEvent({ type: "text_delta", delta: content });
             }
           }
@@ -295,6 +302,7 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
           } else if (ev.type === "content_block_delta") {
             const d = ev.delta;
             if (d?.type === "text_delta" && typeof d.text === "string" && d.text.length > 0) {
+              perf.mark("firstText");
               onEvent({ type: "text_delta", delta: d.text });
             }
             // thinking_delta is intentionally dropped — the SDK exposes the
@@ -401,6 +409,8 @@ export async function runClaude(args: ClaudeRunArgs): Promise<void> {
     onResumeId(null);
     onEvent({ type: "error", message: `claude sdk: ${err?.message ?? String(err)}` });
     return;
+  } finally {
+    perf.done();
   }
 
   for (const [, call] of pendingTool) {
