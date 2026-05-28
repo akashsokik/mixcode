@@ -1104,6 +1104,11 @@ export function App() {
           }
           return;
         }
+        case "new": {
+          const { title, runner } = slash.action;
+          api.createSession(title ?? undefined, runner ?? undefined);
+          return;
+        }
         case "unknown": {
           // Known skill names pass through to the runner verbatim. The
           // Claude/Codex CLIs route /<skill-name> through their Skill tool;
