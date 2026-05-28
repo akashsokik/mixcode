@@ -4,6 +4,7 @@ import type {
   ClaudePermissionMode,
   ClientMsg,
   ConsensusReady,
+  EffortLevel,
   PermissionDecision,
   PermissionRequest,
   RunnerKind,
@@ -314,6 +315,10 @@ export function useSessions() {
     setModel(runner: RunnerKind, model: string | null): void {
       if (!activeId) return;
       send(client, { type: "set_model", sessionId: activeId, runner, model });
+    },
+    setEffort(runner: RunnerKind, effort: EffortLevel | null): void {
+      if (!activeId) return;
+      send(client, { type: "set_effort", sessionId: activeId, runner, effort });
     },
     setClaudeMode(mode: ClaudePermissionMode): void {
       if (!activeId) return;
