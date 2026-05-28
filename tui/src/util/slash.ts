@@ -345,4 +345,5 @@ export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/plan [on|off]", help: "plan-only mode — model proposes a plan, no tools run (Claude only)" },
   { name: "/skills [add|import|remove|info]", help: "manage skills for the active runner (~/.claude/skills or ~/.codex/skills); `import <claude|codex> [name]` copies from the other runner" },
   { name: "/mcp [add|remove|test]", help: "manage MCP servers for the active runner via its CLI" },
+  { name: "/new [title] [runner]", help: "create a new session (optional: title and runner—claude|codex|vercel)" },
 ];
