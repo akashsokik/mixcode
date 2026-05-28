@@ -20,9 +20,9 @@ function stripContextSuffix(modelId: string): string {
 }
 
 function providerFor(runner: RunnerKind, modelId: string): "anthropic" | "openai" {
-  if (runner === "claude") return "anthropic";
-  if (runner === "codex") return "openai";
-  return modelId.startsWith("claude-") ? "anthropic" : "openai"; // vercel
+  // Only called for the claude and codex runners (vercel is short-circuited in
+  // resolveEffortInfo). claude -> anthropic, codex -> openai.
+  return runner === "codex" ? "openai" : "anthropic";
 }
 
 // Cache Anthropic level lookups by base model id — there are only a handful of
@@ -39,6 +39,15 @@ export async function resolveEffortInfo(
   modelOverride: string | undefined,
 ): Promise<EffortInfo> {
   const modelId = (modelOverride && modelOverride.trim()) || DEFAULT_MODEL_ID[runner];
+
+  // The Vercel runner only injects effort for OpenAI-routed models. Anthropic-
+  // routed (claude-*) models on Vercel have no effort control (it would be a
+  // thinking budget, out of scope), so Vercel always uses the OpenAI catalog —
+  // claude-* is simply absent from it and yields [] (disabled slider).
+  if (runner === "vercel") {
+    return { levels: openAiEffortLevels(modelId), source: "catalog" };
+  }
+
   const provider = providerFor(runner, modelId);
 
   if (provider === "openai") {
