@@ -116,11 +116,27 @@ export function stripMcpPrefix(name: string): string {
   return parts.slice(2).join("__");
 }
 
+// Display form for tool names. Snake_case orchestrator/internal tools become
+// Sentence case ("delegate_run" -> "Delegate run", "task_create" -> "Task
+// create"). PascalCase/camelCase built-ins ("Read", "WebFetch") pass through
+// unchanged so the SDK-native names stay recognizable.
+export function toolDisplayName(name: string): string {
+  if (!name) return name;
+  if (name.includes("_")) {
+    const lower = name.replace(/_/g, " ").toLowerCase();
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }
+  if (name[0] === name[0].toLowerCase()) {
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  }
+  return name;
+}
+
 // Compact one-line summary of a peer tool_log for the collapsed group preview.
 // "Read /tui/src/app.tsx" -> "Read app.tsx"; "Bash $ npm run build" -> "Bash"
 export function peerToolSummary(log: ToolLog): string {
   const { rest } = stripPeerPrefix(log.name);
-  const name = stripMcpPrefix(rest);
+  const name = toolDisplayName(stripMcpPrefix(rest));
   const obj =
     log.input && typeof log.input === "object"
       ? (log.input as Record<string, unknown>)
@@ -164,9 +180,10 @@ function formatDelegateRun(
     typeof inputObj.profileName === "string" ? inputObj.profileName : "?";
   const prompt = typeof inputObj.prompt === "string" ? inputObj.prompt : "";
   const promptPreview = truncateOneLine(prompt, INLINE_INPUT_LIMIT);
+  const verb = toolDisplayName("delegate");
   const header = promptPreview
-    ? `delegate ${profile} → "${promptPreview}"`
-    : `delegate ${profile}`;
+    ? `${verb} ${profile} → "${promptPreview}"`
+    : `${verb} ${profile}`;
 
   // Output is the MCP envelope with a JSON-stringified delegate payload inside.
   const inner = unwrapMcpContent(output);
@@ -227,10 +244,11 @@ function formatTaskTool(
   const errText =
     outObj && typeof outObj.error === "string" ? (outObj.error as string) : "";
 
+  const verb = toolDisplayName(name);
   switch (name) {
     case "task_create": {
       const title = typeof inObj.title === "string" ? inObj.title : "";
-      const header = title ? `task_create "${truncateOneLine(title, 60)}"` : "task_create";
+      const header = title ? `${verb} "${truncateOneLine(title, 60)}"` : verb;
       let body = "";
       if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
       else if (outObj && typeof outObj.taskId === "string") {
@@ -249,7 +267,7 @@ function formatTaskTool(
         );
       const count = subtasks.length;
       const idPart = taskId ? `${shortId(taskId)} ` : "";
-      const header = `task_spawn ${idPart}${count} subtask${count === 1 ? "" : "s"}`;
+      const header = `${verb} ${idPart}${count} subtask${count === 1 ? "" : "s"}`;
       let body = "";
       if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
       else if (runners.length > 0) {
@@ -264,7 +282,7 @@ function formatTaskTool(
     }
     case "task_await": {
       const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
-      const header = taskId ? `task_await ${shortId(taskId)}` : "task_await";
+      const header = taskId ? `${verb} ${shortId(taskId)}` : verb;
       let body = "";
       if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
       else if (outObj) {
@@ -283,7 +301,7 @@ function formatTaskTool(
     }
     case "task_observe": {
       const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
-      const header = taskId ? `task_observe ${shortId(taskId)}` : "task_observe";
+      const header = taskId ? `${verb} ${shortId(taskId)}` : verb;
       let body = "";
       if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
       else if (outObj) {
@@ -310,7 +328,7 @@ function formatTaskTool(
     case "task_done": {
       const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
       const summary = typeof inObj.summary === "string" ? inObj.summary : "";
-      const head = taskId ? `task_done ${shortId(taskId)}` : "task_done";
+      const head = taskId ? `${verb} ${shortId(taskId)}` : verb;
       const header = summary ? `${head} "${truncateOneLine(summary, 60)}"` : head;
       let body = "";
       if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
@@ -321,7 +339,7 @@ function formatTaskTool(
     }
     case "task_cancel": {
       const taskId = typeof inObj.taskId === "string" ? inObj.taskId : "";
-      const header = taskId ? `task_cancel ${shortId(taskId)}` : "task_cancel";
+      const header = taskId ? `${verb} ${shortId(taskId)}` : verb;
       let body = "";
       if (errText) body = `← error · ${truncateOneLine(errText, 160)}`;
       else if (outObj) {
@@ -333,7 +351,7 @@ function formatTaskTool(
       return { header, body };
     }
     default: {
-      const header = name;
+      const header = verb;
       const body = isError && errText ? `← error · ${truncateOneLine(errText, 160)}` : "";
       return { header, body };
     }
@@ -403,7 +421,8 @@ function formatHeader(name: string, input: unknown, _isError: boolean): string {
   // Error vs ok is conveyed by accent color in the ToolCard; we don't need
   // a literal prefix marker here.
   const summary = summarizeInput(name, input);
-  return summary ? `${name} ${summary}` : name;
+  const verb = toolDisplayName(name);
+  return summary ? `${verb} ${summary}` : verb;
 }
 
 function summarizeInput(name: string, input: unknown): string {

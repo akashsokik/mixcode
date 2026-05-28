@@ -11,7 +11,7 @@ import {
   Welcome,
 } from "./tuicards";
 import { theme } from "../theme";
-import { markdownStyle } from "../markdown-style";
+import { markdownStyle, markdownTableOptions } from "../markdown-style";
 import type { Notice } from "../util/notice";
 import {
   cleanModelText,
@@ -243,6 +243,7 @@ function AssistantMessage({
               expanded={isExpanded}
               hint={hint}
               onActivate={onItemActivate ? () => onItemActivate(g.id) : undefined}
+              messageStreaming={messageStreaming}
             />
           );
         }
@@ -288,6 +289,7 @@ function AssistantMessage({
             }
             selectedItemId={selectedItemId}
             onItemActivate={onItemActivate}
+            messageStreaming={messageStreaming}
           />
         );
       })}
@@ -308,6 +310,7 @@ function BlockRow({
   onToolActivate,
   selectedItemId,
   onItemActivate,
+  messageStreaming = false,
 }: {
   id: string;
   block: Block;
@@ -317,6 +320,7 @@ function BlockRow({
   onToolActivate?: () => void;
   selectedItemId: string | null;
   onItemActivate?: (itemId: string) => void;
+  messageStreaming?: boolean;
 }) {
   const isSelected = id === selectedItemId;
   const activate = onItemActivate ? () => onItemActivate(id) : undefined;
@@ -380,6 +384,7 @@ function BlockRow({
         indent={!firstInMessage}
         selected={isSelected}
         onActivate={activate}
+        streaming={messageStreaming}
       />
     );
   }
@@ -400,7 +405,13 @@ function BlockRow({
   // bullet column. Drop the marker; let the markdown content stand on its own.
   return (
     <ChatItem id={id} selected={isSelected} onActivate={activate} marginTop={rowMarginTop}>
-      <markdown content={cleanModelText(block.text)} syntaxStyle={markdownStyle} fg={theme.text} />
+      <markdown
+        content={cleanModelText(block.text)}
+        syntaxStyle={markdownStyle}
+        fg={theme.text}
+        streaming={messageStreaming}
+        tableOptions={markdownTableOptions}
+      />
     </ChatItem>
   );
 }
@@ -423,12 +434,14 @@ function DelegationGroup({
   expanded,
   hint,
   onActivate,
+  messageStreaming = false,
 }: {
   group: Extract<GroupedBlock, { kind: "delegation_group" }>;
   selected: boolean;
   expanded: boolean;
   hint: string | null;
   onActivate?: () => void;
+  messageStreaming?: boolean;
 }) {
   const isPending = group.header === null;
   const stats = childStats(group.children);
@@ -491,6 +504,11 @@ function DelegationGroup({
           block={b}
           firstInMessage={false}
           selectedItemId={null}
+          // Pending delegations are still live; the expanded peer reply is the
+          // in-flight draft, so its <markdown> needs streaming=true to keep the
+          // trailing block unstable. For completed groups the parent message
+          // has already stopped streaming, so this is a no-op.
+          messageStreaming={messageStreaming && isPending}
         />
       ))}
     </box>
@@ -539,7 +557,7 @@ function PendingHeader({
   meta.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
   if (replyChars > 0) meta.push(`${formatChars(replyChars)} reply`);
   const label =
-    tag === "validate" ? "validate" : tag === "consensus" ? "consensus step" : "delegate";
+    tag === "validate" ? "Validate" : tag === "consensus" ? "Consensus step" : "Delegate";
   const verb =
     tag === "validate"
       ? " validating…"
@@ -696,6 +714,7 @@ function PeerReply({
   indent,
   selected,
   onActivate,
+  streaming = false,
 }: {
   id: string;
   runner: string;
@@ -703,6 +722,7 @@ function PeerReply({
   indent: boolean;
   selected: boolean;
   onActivate?: () => void;
+  streaming?: boolean;
 }) {
   return (
     <ChatItem id={id} selected={selected} onActivate={onActivate} marginTop={indent ? 1 : 0}>
@@ -712,7 +732,13 @@ function PeerReply({
       </box>
       <box flexDirection="row" paddingLeft={2}>
         <box flexGrow={1}>
-          <markdown content={cleanModelText(text) || " "} syntaxStyle={markdownStyle} fg={theme.text} />
+          <markdown
+            content={cleanModelText(text) || " "}
+            syntaxStyle={markdownStyle}
+            fg={theme.text}
+            streaming={streaming}
+            tableOptions={markdownTableOptions}
+          />
         </box>
       </box>
     </ChatItem>

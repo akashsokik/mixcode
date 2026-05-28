@@ -498,7 +498,7 @@ function MetaRow({ pairs }: { pairs: MetaPair[] | undefined }) {
 
 function PromptRail({ rail }: { rail: PromptRailState }) {
   return (
-    <box flexDirection="row" height={1} paddingLeft={1}>
+    <box flexDirection="row" height={1}>
       {rail.segments.map((seg, i) => (
         <box key={`${seg.value}-${i}`} flexDirection="row" flexShrink={0}>
           {i > 0 && <Dot />}
@@ -696,6 +696,8 @@ function describeSlashCommand(
       return describeSkillsAction(command.action);
     case "mcp":
       return describeMcpAction(command.action);
+    case "new":
+      return "new session";
     case "unknown": {
       const extra = slashExtras.find((s) => s.name.slice(1) === command.name);
       return extra ? `skill ${extra.name}` : `unknown /${command.name}`;
@@ -828,7 +830,7 @@ function DelegationRow({ stats }: { stats: DelegationStats | null }) {
   }
 
   return (
-    <box flexDirection="row" height={1} paddingLeft={1}>
+    <box flexDirection="row" height={1}>
       {segments.map((seg, i) => (
         <box key={seg.label} flexDirection="row">
           {i > 0 && <Dot />}

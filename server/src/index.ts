@@ -853,6 +853,10 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         cwd: session.cwd,
         threadId: runtime.codexThreadId,
         model: session.models.codex,
+        // Phase-1 TTFT default: less invisible reasoning is counted against
+        // time-to-first-token. The /effort command supersedes this by passing
+        // session.effort.codex through the same field once it lands.
+        reasoningEffort: "low",
         signal: abort.signal,
         onEvent,
         onTurnUsage,
@@ -864,15 +868,22 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           sessions.logRuntime(sessionId, "codexThreadId", id);
           sessions.markDirty();
         },
-        orchestrator: {
-          url: `http://127.0.0.1:${boundPort}`,
-          token: ORCHESTRATOR_TOKEN,
-          scriptPath: ORCHESTRATOR_SCRIPT_PATH,
-          parentSessionId: sessionId,
-          parentRunner: "codex",
-          parentCwd: session.cwd,
-          depth: 0,
-        },
+        // ADVERSARIA_NO_CODEX_ORCH=1 skips wiring the orchestrator MCP, which
+        // stops codex from spawning the Node MCP child + handshake per turn.
+        // Used to measure that child's TTFT contribution against the perf line;
+        // delegation tools are unavailable while set.
+        orchestrator:
+          process.env.ADVERSARIA_NO_CODEX_ORCH === "1"
+            ? undefined
+            : {
+                url: `http://127.0.0.1:${boundPort}`,
+                token: ORCHESTRATOR_TOKEN,
+                scriptPath: ORCHESTRATOR_SCRIPT_PATH,
+                parentSessionId: sessionId,
+                parentRunner: "codex",
+                parentCwd: session.cwd,
+                depth: 0,
+              },
       });
     } else {
       // Vercel AI SDK runner. Session continuity rides on

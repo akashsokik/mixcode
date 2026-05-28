@@ -202,6 +202,6 @@ describe("collaboration grouping", () => {
 
     expect(collectChatItemIds(session, [])).toContain("m3:c:0");
     expect(latestDelegationId(session)).toBe("m3:c:0");
-    expect(resolveItemContent(session, [], "m3:c:0")).toContain("plan_read");
+    expect(resolveItemContent(session, [], "m3:c:0")).toContain("Plan read");
   });
 });
