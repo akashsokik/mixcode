@@ -59,6 +59,15 @@ export type McpAction =
   | { kind: "remove"; name: string }
   | { kind: "test"; name: string };
 
+// /new grammar:
+//   (no args)            — create a new session with default title and active runner
+//   <title>              — create with custom title, active runner
+//   <title> <runner>     — create with custom title and runner (claude|codex|vercel)
+export type NewAction = {
+  title: string | null;
+  runner: RunnerKind | null;
+};
+
 export type SlashCommand =
   | { type: "claude"; rest: string }
   | { type: "codex"; rest: string }
@@ -80,6 +89,7 @@ export type SlashCommand =
   | { type: "plan"; action: PlanAction }
   | { type: "skills"; action: SkillsAction }
   | { type: "mcp"; action: McpAction }
+  | { type: "new"; action: NewAction }
   | { type: "unknown"; name: string; rest: string };
 
 // Allow letters, digits, hyphens, dots, underscores, and colons so
