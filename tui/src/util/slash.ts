@@ -142,6 +142,8 @@ export function parseSlash(text: string): SlashCommand | null {
       return { type: "skills", action: parseSkillsAction(rest) };
     case "mcp":
       return { type: "mcp", action: parseMcpAction(rest) };
+    case "new":
+      return { type: "new", action: parseNewAction(rest) };
     default:
       // `name` preserves the user-typed case so callers can match it against
       // case-sensitive lists (e.g. plugin-qualified skill names).
@@ -214,6 +216,18 @@ function parseMcpAction(rest: string): McpAction {
     default:
       return { kind: "list" };
   }
+}
+
+function parseNewAction(rest: string): NewAction {
+  if (!rest) return { title: null, runner: null };
+  const tokens = rest.split(/\s+/).filter(Boolean);
+  const title = tokens[0] ?? null;
+  const runnerStr = tokens[1]?.toLowerCase();
+  let runner: RunnerKind | null = null;
+  if (runnerStr === "claude" || runnerStr === "codex" || runnerStr === "vercel") {
+    runner = runnerStr;
+  }
+  return { title, runner };
 }
 
 function parsePlanAction(rest: string): PlanAction {
