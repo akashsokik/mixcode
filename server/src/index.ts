@@ -180,8 +180,15 @@ function refreshEffortInfo(sessionId: string): void {
   void resolveEffortInfo(s.activeRunner, modelOverride)
     .then((info) => {
       // Re-fetch — the session may have changed runner/model while awaiting.
+      // Guard on BOTH runner and the model override we resolved against, so a
+      // mid-flight model switch on the same runner can't overwrite the new
+      // model's effortInfo with the old model's levels.
       const cur = sessions.get(sessionId);
-      if (cur && cur.activeRunner === s.activeRunner) {
+      if (
+        cur &&
+        cur.activeRunner === s.activeRunner &&
+        cur.models[s.activeRunner] === modelOverride
+      ) {
         sessions.setEffortInfo(sessionId, info);
       }
     })
