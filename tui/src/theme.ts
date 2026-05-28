@@ -59,6 +59,9 @@ export const theme = {
   // colliding with the slate/mauve already used for tool accents.
   runnerVercel: "#7ac8c8",
   runnerVercelIdle: "#3e6868",
+  // Ollama (local models) — violet, distinct from the green/amber/teal trio.
+  runnerOllama: "#b08ad8",
+  runnerOllamaIdle: "#5b4870",
 
   // Dirty-worktree marker. Distinct enough from both runner hues that it
   // doesn't get confused with the codex amber on a codex session.

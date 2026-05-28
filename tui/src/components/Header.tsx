@@ -107,7 +107,9 @@ function Dot() {
 }
 
 function runnerColor(runner: RunnerKind): string {
-  return runner === "claude" ? theme.toolBash : theme.toolWeb;
+  if (runner === "claude") return theme.toolBash;
+  if (runner === "ollama") return theme.runnerOllama;
+  return theme.toolWeb;
 }
 
 function modelLabel(session: Session): string | null {

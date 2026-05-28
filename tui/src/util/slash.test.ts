@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseSlash } from "./slash";
+import { parseSlash, toggleRunner } from "./slash";
 
 describe("/effort parsing", () => {
   test("bare /effort opens the picker", () => {
@@ -32,5 +32,44 @@ describe("/effort parsing", () => {
   });
   test("an unknown token falls back to show (not a silent set)", () => {
     expect(parseSlash("/effort turbo")).toEqual({ type: "effort", action: { kind: "show" } });
+  });
+});
+
+describe("/ollama runner command", () => {
+  test("bare /ollama switches runner", () => {
+    expect(parseSlash("/ollama")).toEqual({ type: "ollama", rest: "" });
+  });
+  test("/ollama with text switches and sends", () => {
+    expect(parseSlash("/ollama fix the bug")).toEqual({
+      type: "ollama",
+      rest: "fix the bug",
+    });
+  });
+  test("/model ollama <id> sets the ollama model", () => {
+    expect(parseSlash("/model ollama qwen3:8b")).toEqual({
+      type: "model",
+      action: { kind: "setRunner", runner: "ollama", model: "qwen3:8b" },
+    });
+  });
+  test("/model ollama reset clears the ollama override", () => {
+    expect(parseSlash("/model ollama reset")).toEqual({
+      type: "model",
+      action: { kind: "resetRunner", runner: "ollama" },
+    });
+  });
+  test("/new <title> ollama creates an ollama session", () => {
+    expect(parseSlash("/new scratch ollama")).toEqual({
+      type: "new",
+      action: { title: "scratch", runner: "ollama" },
+    });
+  });
+});
+
+describe("toggleRunner cycle", () => {
+  test("cycles claude -> codex -> vercel -> ollama -> claude", () => {
+    expect(toggleRunner("claude")).toBe("codex");
+    expect(toggleRunner("codex")).toBe("vercel");
+    expect(toggleRunner("vercel")).toBe("ollama");
+    expect(toggleRunner("ollama")).toBe("claude");
   });
 });

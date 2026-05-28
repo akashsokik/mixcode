@@ -56,7 +56,7 @@ import { loadMcpForVercel } from "./vercel-mcp.js";
 // acceptEdits permission mode auto-allows the same set on vercel sessions.
 // NotebookEdit isn't shipped here because we don't expose a notebook tool;
 // the rest match Claude's documented behaviour.
-const EDIT_TOOL_NAMES = new Set(["Edit", "Write", "MultiEdit"]);
+export const EDIT_TOOL_NAMES = new Set(["Edit", "Write", "MultiEdit"]);
 
 // Default model id when neither the per-session override nor VERCEL_MODEL is
 // set. gpt-4o is the conservative pick — broad provider compat, low chance
@@ -78,7 +78,7 @@ const STEP_LIMIT = (() => {
 // runner appeared to "just stop" after one tool call because the model would
 // summarise tersely and emit finishReason=stop. Telling it to keep working
 // until the task is actually done is the single biggest reliability lever.
-function buildBaseSystemPrompt(cwd: string, isTopLevel: boolean): string {
+export function buildBaseSystemPrompt(cwd: string, isTopLevel: boolean): string {
   const lines = [
     "You are a coding assistant running in a terminal session against a real",
     "filesystem. The session's working directory is:",
@@ -251,38 +251,13 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
     { role: "user", content: prompt },
   ];
 
-  // Closure used by every tool's execute() to gate on the shared permission
-  // store. Mirrors the Claude runtime's canUseTool semantics:
-  //   - bypassPermissions: silent allow
-  //   - acceptEdits: silent allow for Write
-  //   - explicit allowRule match: silent allow
-  //   - otherwise: prompt the user via permissions.request
-  const gate = async (
-    toolName: string,
-    input: Record<string, unknown>,
-    suggestions: string[],
-    description: string,
-  ): Promise<{ ok: true } | { ok: false; message: string }> => {
-    // No PermissionStore -> peer-spawned run. Silently allow; the parent
-    // turn's permission context is the gate.
-    if (!permissions) return { ok: true };
-    if (permissionMode === "bypassPermissions") return { ok: true };
-    if (permissionMode === "acceptEdits" && EDIT_TOOL_NAMES.has(toolName)) {
-      return { ok: true };
-    }
-    if (allowRulesMatch(allowRules ?? [], toolName, input)) return { ok: true };
-
-    const resolution = await permissions.request({
-      sessionId,
-      tool: toolName,
-      input,
-      title: toolName,
-      description,
-      suggestions,
-      signal,
-    });
-    return resolutionToGate(resolution, suggestions, permissions);
-  };
+  const gate = buildGate({
+    permissions,
+    permissionMode,
+    allowRules,
+    sessionId,
+    signal,
+  });
 
   const codingTools = buildCodingTools({ cwd, signal, gate, onEvent });
   const orchestratorTools = isTopLevel
@@ -510,6 +485,50 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
   }
 }
 
+// Tool-permission gate shared by the vercel and ollama runners. Mirrors the
+// Claude runtime's canUseTool semantics:
+//   - no PermissionStore (peer-spawned run): silent allow; the parent turn's
+//     permission context is the gate
+//   - bypassPermissions: silent allow
+//   - acceptEdits: silent allow for edit tools
+//   - explicit allowRule match: silent allow
+//   - otherwise: prompt the user via permissions.request
+export type GateDeps = {
+  permissions?: PermissionStore;
+  permissionMode?: ClaudePermissionMode;
+  allowRules?: string[];
+  sessionId: string;
+  signal: AbortSignal;
+};
+
+export function buildGate(deps: GateDeps) {
+  const { permissions, permissionMode, allowRules, sessionId, signal } = deps;
+  return async (
+    toolName: string,
+    input: Record<string, unknown>,
+    suggestions: string[],
+    description: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!permissions) return { ok: true };
+    if (permissionMode === "bypassPermissions") return { ok: true };
+    if (permissionMode === "acceptEdits" && EDIT_TOOL_NAMES.has(toolName)) {
+      return { ok: true };
+    }
+    if (allowRulesMatch(allowRules ?? [], toolName, input)) return { ok: true };
+
+    const resolution = await permissions.request({
+      sessionId,
+      tool: toolName,
+      input,
+      title: toolName,
+      description,
+      suggestions,
+      signal,
+    });
+    return resolutionToGate(resolution, suggestions, permissions);
+  };
+}
+
 // Translate a PermissionStore resolution into our internal gate result.
 // Side effect: when the user picks "allow always" and the request carried
 // suggestion rules, persist them to the store so the next call doesn't ask.
@@ -568,7 +587,7 @@ type ToolDeps = {
   onEvent: (ev: RunEvent) => void;
 };
 
-function buildCodingTools(deps: ToolDeps) {
+export function buildCodingTools(deps: ToolDeps) {
   const { cwd, signal, gate, onEvent } = deps;
   return {
     Bash: tool({
@@ -1230,7 +1249,7 @@ function emitToolLog(
   onEvent({ type: "tool_log", log: { name, input, output, isError } });
 }
 
-function formatError(err: unknown): string {
+export function formatError(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   try {

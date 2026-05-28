@@ -29,13 +29,13 @@ export type TranscriptLine =
   | { kind: "message_done"; sessionId: string; messageId: string }
   | { kind: "event"; sessionId: string; messageId: string; event: unknown }
   | { kind: "turn_usage"; sessionId: string; messageId: string; usage: unknown }
-  | { kind: "raw_sdk"; sessionId: string; messageId: string; runner: "claude" | "codex" | "vercel"; raw: unknown }
+  | { kind: "raw_sdk"; sessionId: string; messageId: string; runner: "claude" | "codex" | "vercel" | "ollama"; raw: unknown }
   | {
       kind: "runtime";
       sessionId: string;
-      field: "claudeSessionId" | "codexThreadId" | "vercelMessages";
-      // string for resume ids; number for vercel message count (the full
-      // ModelMessage[] is too noisy to dump on every turn).
+      field: "claudeSessionId" | "codexThreadId" | "vercelMessages" | "ollamaMessages";
+      // string for resume ids; number for vercel/ollama message count (the
+      // full ModelMessage[] is too noisy to dump on every turn).
       value: string | number | null;
     };
 

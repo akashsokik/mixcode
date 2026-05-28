@@ -34,6 +34,9 @@ type SessionRuntime = {
   // families mid-session — the on-wire tool-call shapes differ enough
   // that a cross-provider replay rejects on the next call.
   vercelLastProvider?: string;
+  // Ollama runner continuity — same stateless-streamText story as vercel, but
+  // single-provider (local OpenAI-compat), so no last-provider reset needed.
+  ollamaMessages?: unknown[];
 };
 
 type Stored = Session & { runtime: SessionRuntime };
@@ -310,7 +313,7 @@ export class SessionManager {
 
   logRuntime(
     sessionId: string,
-    field: "claudeSessionId" | "codexThreadId" | "vercelMessages",
+    field: "claudeSessionId" | "codexThreadId" | "vercelMessages" | "ollamaMessages",
     value: string | number | null,
   ): void {
     this.transcript.log({ kind: "runtime", sessionId, field, value });
@@ -485,14 +488,11 @@ function numericField(v: unknown): number {
 // the SDK-sourced contextWindow path. Only used for one-time backfill; fresh
 // turns supply authoritative values.
 function legacyWindowFor(s: Stored): number | null {
-  const id = (() => {
-    if (s.activeRunner === "claude") return s.models.claude;
-    if (s.activeRunner === "codex") return s.models.codex;
-    return s.models.vercel;
-  })()?.toLowerCase();
+  const id = s.models[s.activeRunner]?.toLowerCase();
   if (!id) {
     if (s.activeRunner === "claude") return 200_000;
     if (s.activeRunner === "codex") return 400_000;
+    if (s.activeRunner === "ollama") return 32_768;
     return 128_000;
   }
   if ((id.includes("1m") || id.includes("[1m]")) && s.activeRunner === "claude") return 1_000_000;

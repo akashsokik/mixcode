@@ -10,6 +10,10 @@ export type PaletteAction = {
   key: string;
   label: string;
   destructive?: boolean;
+  // Optional direct keystroke that triggers this action from the main palette
+  // view, without first opening the action sheet via tab. Destructive
+  // shortcuts still require a second press to confirm.
+  shortcut?: { ctrl?: boolean; name: string };
   run: () => void;
 };
 
@@ -140,6 +144,36 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate, 
       onCreate();
       return;
     }
+    const currentItem = filtered[safeIndex];
+    const shortcutAction = currentItem?.actions?.find(
+      (a) =>
+        a.shortcut !== undefined &&
+        a.shortcut.name === key.name &&
+        !!a.shortcut.ctrl === !!key.ctrl,
+    );
+    if (shortcutAction) {
+      const pendingId = `shortcut:${shortcutAction.key}:${currentItem!.id}`;
+      if (shortcutAction.destructive) {
+        if (pendingDestructive === pendingId) {
+          if (pendingTimerRef.current !== null) {
+            clearTimeout(pendingTimerRef.current);
+            pendingTimerRef.current = null;
+          }
+          shortcutAction.run();
+          setPendingDestructive(null);
+        } else {
+          if (pendingTimerRef.current !== null) clearTimeout(pendingTimerRef.current);
+          setPendingDestructive(pendingId);
+          pendingTimerRef.current = setTimeout(() => {
+            setPendingDestructive(null);
+            pendingTimerRef.current = null;
+          }, 1500);
+        }
+        return;
+      }
+      shortcutAction.run();
+      return;
+    }
     if (ENTER_KEYS.has(key.name ?? "")) {
       const item = filtered[safeIndex];
       if (item) item.onActivate();
@@ -186,7 +220,10 @@ export function Palette({ title, placeholder, items, onClose, footer, onCreate, 
           <text fg={theme.textFaint}>{"esc back"}</text>
         </box>
       )}
-      {!actionSheet && (
+      {!actionSheet && pendingDestructive?.startsWith("shortcut:") && (
+        <text fg={theme.toolError}>{"press again to confirm"}</text>
+      )}
+      {!actionSheet && !pendingDestructive?.startsWith("shortcut:") && (
         <text fg={theme.textFaint}>{footer ?? "↑↓ nav   enter activate   tab actions   esc close"}</text>
       )}
     </box>

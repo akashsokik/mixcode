@@ -54,8 +54,13 @@ const VERCEL_MODELS: ModelEntry[] = [
   { id: "gpt-4o-mini", label: "GPT-4o Mini", hint: "openai · fast / cheap" },
 ];
 
+// The ollama runner's model list is NOT hardcoded — it's fetched live from the
+// local daemon (see util/ollama-models.ts) since "what's installed" only the
+// daemon knows. modelsFor returns [] for ollama so a stray call can't fall
+// through to the vercel catalog.
 export function modelsFor(runner: RunnerKind): ModelEntry[] {
   if (runner === "claude") return CLAUDE_MODELS;
   if (runner === "codex") return CODEX_MODELS;
+  if (runner === "ollama") return [];
   return VERCEL_MODELS;
 }

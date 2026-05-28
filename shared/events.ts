@@ -1,7 +1,7 @@
 // Wire protocol between the TUI client and the Hono server.
 // Transport is a single persistent WebSocket at GET /ws.
 
-export type RunnerKind = "claude" | "codex" | "vercel";
+export type RunnerKind = "claude" | "codex" | "vercel" | "ollama";
 
 export type ToolLog = {
   // Stable identifier used to update a tool_log in place. When the server
@@ -91,6 +91,7 @@ export type ModelOverrides = {
   claude?: string;
   codex?: string;
   vercel?: string;
+  ollama?: string;
 };
 
 // Canonical, ordered superset of reasoning-effort levels across all runners.
@@ -103,6 +104,7 @@ export type EffortOverrides = {
   claude?: EffortLevel;
   codex?: EffortLevel;
   vercel?: EffortLevel;
+  ollama?: EffortLevel;
 };
 
 // Server-resolved effort capability for a session's ACTIVE runner+model. The

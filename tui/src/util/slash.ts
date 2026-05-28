@@ -88,6 +88,7 @@ export type SlashCommand =
   | { type: "claude"; rest: string }
   | { type: "codex"; rest: string }
   | { type: "vercel"; rest: string }
+  | { type: "ollama"; rest: string }
   | { type: "switch"; rest: string }
   | { type: "clear"; rest: string }
   | { type: "help"; rest: string }
@@ -128,6 +129,8 @@ export function parseSlash(text: string): SlashCommand | null {
       return { type: "codex", rest };
     case "vercel":
       return { type: "vercel", rest };
+    case "ollama":
+      return { type: "ollama", rest };
     case "switch":
       return { type: "switch", rest };
     case "clear":
@@ -243,7 +246,12 @@ function parseNewAction(rest: string): NewAction {
   const title = tokens[0] ?? null;
   const runnerStr = tokens[1]?.toLowerCase();
   let runner: RunnerKind | null = null;
-  if (runnerStr === "claude" || runnerStr === "codex" || runnerStr === "vercel") {
+  if (
+    runnerStr === "claude" ||
+    runnerStr === "codex" ||
+    runnerStr === "vercel" ||
+    runnerStr === "ollama"
+  ) {
     runner = runnerStr;
   }
   return { title, runner };
@@ -268,7 +276,12 @@ function parseModelAction(rest: string): ModelAction {
   if (first === "reset" || first === "clear") {
     return { kind: "reset" };
   }
-  if (first === "claude" || first === "codex" || first === "vercel") {
+  if (
+    first === "claude" ||
+    first === "codex" ||
+    first === "vercel" ||
+    first === "ollama"
+  ) {
     const tail = tokens.slice(1).join(" ").trim();
     if (!tail || tail.toLowerCase() === "reset" || tail.toLowerCase() === "clear") {
       return { kind: "resetRunner", runner: first };
@@ -288,7 +301,12 @@ function parseEffortAction(rest: string): EffortAction {
   if (first === "reset" || first === "clear") {
     return { kind: "reset" };
   }
-  if (first === "claude" || first === "codex" || first === "vercel") {
+  if (
+    first === "claude" ||
+    first === "codex" ||
+    first === "vercel" ||
+    first === "ollama"
+  ) {
     const tail = (tokens[1] ?? "").toLowerCase();
     if (!tail || tail === "reset" || tail === "clear") {
       return { kind: "resetRunner", runner: first };
@@ -366,12 +384,13 @@ function parsePermissionsAction(rest: string): PermissionsAction {
   }
 }
 
-// Three-way cycle: claude → codex → vercel → claude. Used by /switch and the
+// Cycle: claude → codex → vercel → ollama → claude. Used by /switch and the
 // runner-toggle keybinding so users can rotate through every harness without
-// memorising the explicit /claude /codex /vercel forms.
+// memorising the explicit /claude /codex /vercel /ollama forms.
 export function toggleRunner(current: RunnerKind): RunnerKind {
   if (current === "claude") return "codex";
   if (current === "codex") return "vercel";
+  if (current === "vercel") return "ollama";
   return "claude";
 }
 
@@ -379,7 +398,8 @@ export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/claude [text]", help: "switch active runner to Claude (and optionally send)" },
   { name: "/codex [text]", help: "switch active runner to Codex (and optionally send)" },
   { name: "/vercel [text]", help: "switch active runner to Vercel AI SDK (and optionally send)" },
-  { name: "/switch [text]", help: "cycle runner: claude → codex → vercel" },
+  { name: "/ollama [text]", help: "switch active runner to Ollama (local models, free; and optionally send)" },
+  { name: "/switch [text]", help: "cycle runner: claude → codex → vercel → ollama" },
   { name: "/clear", help: "start a fresh session and drop the current one" },
   { name: "/help", help: "show this help" },
   { name: "/context", help: "show session info: runner, cwd, tokens, messages" },
@@ -392,5 +412,5 @@ export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/plan [on|off]", help: "plan-only mode — model proposes a plan, no tools run (Claude only)" },
   { name: "/skills [add|import|remove|info]", help: "manage skills for the active runner (~/.claude/skills or ~/.codex/skills); `import <claude|codex> [name]` copies from the other runner" },
   { name: "/mcp [add|remove|test]", help: "manage MCP servers for the active runner via its CLI" },
-  { name: "/new [title] [runner]", help: "create a new session (optional: title and runner—claude|codex|vercel)" },
+  { name: "/new [title] [runner]", help: "create a new session (optional: title and runner—claude|codex|vercel|ollama)" },
 ];

@@ -749,6 +749,7 @@ function peerColor(runner: string): string {
   if (runner === "claude") return theme.runnerClaude;
   if (runner === "codex") return theme.runnerCodex;
   if (runner === "vercel") return theme.runnerVercel;
+  if (runner === "ollama") return theme.runnerOllama;
   return theme.textMuted;
 }
 

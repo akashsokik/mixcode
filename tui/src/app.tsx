@@ -55,6 +55,8 @@ import {
   prettyModelLabel,
   projectName,
 } from "./util/status";
+import { modelsFor, type ModelEntry } from "./util/model-catalog";
+import { fetchOllamaModels } from "./util/ollama-models";
 import type { MetaPair } from "./components/Prompt";
 
 const EMPTY_SET: Set<string> = new Set();
@@ -81,6 +83,13 @@ export function App() {
   // App only needs to track which runner it's for so it can keep the selected
   // model up to date if the user switches runners while it's open (closes).
   const [modelPicker, setModelPicker] = useState<{ runner: RunnerKind } | null>(null);
+  // Live model list for the ollama picker, fetched from the daemon when the
+  // picker opens (the hosted runners use the static catalog instead).
+  const [ollamaModels, setOllamaModels] = useState<{
+    loading: boolean;
+    entries: ModelEntry[];
+    error: string | null;
+  }>({ loading: false, entries: [], error: null });
   const [effortSlider, setEffortSlider] = useState<{ runner: RunnerKind } | null>(null);
   const [paletteMode, setPaletteMode] = useState<
     "sessions" | "skills" | "mcp" | "global" | null
@@ -291,12 +300,7 @@ export function App() {
   const promptMeta = useMemo(() => {
     const s = api.active;
     if (!s) return null;
-    const modelId =
-      s.activeRunner === "claude"
-        ? s.models.claude
-        : s.activeRunner === "codex"
-          ? s.models.codex
-          : s.models.vercel;
+    const modelId = s.models[s.activeRunner];
     const modelLabel = prettyModelLabel(modelId, s.activeRunner);
     const projectLabel = projectName(s.cwd);
     const branch =
@@ -335,6 +339,21 @@ export function App() {
     return { modelLabel, contextPercent, projectLabel, branch, delegations, metaPairs };
   }, [api.active]);
 
+  // Fetch the live ollama model list when the picker opens for an ollama
+  // session. Hosted runners use the static catalog and skip this entirely.
+  useEffect(() => {
+    if (!modelPicker || modelPicker.runner !== "ollama") return;
+    let cancelled = false;
+    setOllamaModels({ loading: true, entries: [], error: null });
+    fetchOllamaModels().then((res) => {
+      if (cancelled) return;
+      setOllamaModels({ loading: false, entries: res.entries, error: res.error });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [modelPicker]);
+
   const sessionPill = useMemo(
     () =>
       api.active
@@ -370,6 +389,7 @@ export function App() {
             key: "d",
             label: "delete (press d again to confirm)",
             destructive: true,
+            shortcut: { ctrl: true, name: "x" },
             run: () => api.deleteSession(s.id),
           },
         ],
@@ -718,6 +738,7 @@ export function App() {
         case "claude":
         case "codex":
         case "vercel":
+        case "ollama":
           api.setRunner(slash.type);
           if (slash.rest) api.send(slash.rest);
           return;
@@ -758,11 +779,14 @@ export function App() {
           return;
         case "consensus": {
           if (!sid) return;
-          // /consensus is a claude↔codex pair protocol. Reject vercel-active
-          // sessions instead of silently swapping the runner.
-          if (api.active?.activeRunner === "vercel") {
+          // /consensus is a claude↔codex pair protocol. Reject vercel- and
+          // ollama-active sessions instead of silently swapping the runner.
+          if (
+            api.active?.activeRunner === "vercel" ||
+            api.active?.activeRunner === "ollama"
+          ) {
             addNotice(sid, "/consensus", [
-              "/consensus is not available for the vercel runner.",
+              `/consensus is not available for the ${api.active.activeRunner} runner.`,
               "It's a claude↔codex pair protocol — switch with /claude or",
               "/codex first, then re-run /consensus.",
             ]);
@@ -1248,6 +1272,13 @@ export function App() {
         <ModelPicker
           runner={modelPicker.runner}
           currentId={api.active.models[modelPicker.runner]}
+          entries={
+            modelPicker.runner === "ollama"
+              ? ollamaModels.entries
+              : modelsFor(modelPicker.runner)
+          }
+          loading={modelPicker.runner === "ollama" ? ollamaModels.loading : false}
+          error={modelPicker.runner === "ollama" ? ollamaModels.error : null}
           onSelect={(modelId) => {
             if (!api.active) return;
             api.setModel(modelPicker.runner, modelId);
@@ -1341,7 +1372,7 @@ export function App() {
           }
           footer={
             paletteMode === "sessions"
-              ? "↑↓ nav   enter switch   tab actions   ctrl+n new   esc close"
+              ? "↑↓ nav   enter switch   ctrl+n new   ctrl+x delete   tab actions   esc close"
               : undefined
           }
         />
