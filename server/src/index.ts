@@ -25,6 +25,8 @@ import type {
   TurnUsage,
 } from "../../shared/events.js";
 import { SessionManager } from "./sessions.js";
+import { resolveEffortInfo } from "./effort-capability.js";
+import { clampEffort } from "../../shared/effort.js";
 import { runClaude } from "./runners/claude.js";
 import { runCodex } from "./runners/codex.js";
 import { runVercel } from "./runners/vercel.js";
@@ -166,6 +168,24 @@ function updateSessionSkills(
   const entries = resolveSessionSkills(runner, skills, plugins);
   sessionSkills.set(sessionId, { runner, entries });
   sessions.broadcast({ type: "session_skills", sessionId, runner, skills: entries });
+}
+
+// Resolve the active runner+model effort capability and attach it to the
+// session so the TUI slider can render it. Fire-and-forget: the Anthropic path
+// is async but cached, and a failure just yields empty levels.
+function refreshEffortInfo(sessionId: string): void {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  const modelOverride = s.models[s.activeRunner];
+  void resolveEffortInfo(s.activeRunner, modelOverride)
+    .then((info) => {
+      // Re-fetch — the session may have changed runner/model while awaiting.
+      const cur = sessions.get(sessionId);
+      if (cur && cur.activeRunner === s.activeRunner) {
+        sessions.setEffortInfo(sessionId, info);
+      }
+    })
+    .catch(() => {});
 }
 
 permissions.bind({
@@ -581,6 +601,7 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
         runner: msg.runner,
         cwd: msg.cwd,
       });
+      refreshEffortInfo(created.id);
       // Eagerly fetch git for the new session so the status bar isn't blank
       // for the polling interval.
       readGitInfo(created.cwd)
@@ -606,6 +627,7 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
 
     case "set_runner":
       sessions.setRunner(msg.sessionId, msg.runner);
+      refreshEffortInfo(msg.sessionId);
       return;
 
     case "clear_session": {
@@ -635,6 +657,11 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
 
     case "set_model":
       sessions.setModel(msg.sessionId, msg.runner, msg.model);
+      refreshEffortInfo(msg.sessionId);
+      return;
+
+    case "set_effort":
+      sessions.setEffort(msg.sessionId, msg.runner, msg.effort);
       return;
 
     case "set_claude_mode":
@@ -750,6 +777,15 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   registerTaskEmitter(sessionId, onEvent);
   registerCollabEmitter(sessionId, onEvent);
 
+  // Active-runner effort, clamped to what the resolved model actually supports.
+  // effortInfo is for the active runner+model (kept current by refreshEffortInfo).
+  const effortLevels = session.effortInfo?.levels ?? [];
+  const activeEffort = session.efforts?.[session.activeRunner] ?? null;
+  const clampedEffort =
+    activeEffort && effortLevels.length > 0
+      ? clampEffort(effortLevels, activeEffort)
+      : null;
+
   try {
     if (session.activeRunner === "claude") {
       // In-process MCP server — same process, no HTTP hop.
@@ -766,6 +802,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         cwd: session.cwd,
         resumeId: runtime.claudeSessionId,
         model: session.models.claude,
+        effort: clampedEffort ?? undefined,
         allowRules: permissions.list(),
         permissionMode: session.claudeMode,
         abortController: abort,
@@ -853,6 +890,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         cwd: session.cwd,
         threadId: runtime.codexThreadId,
         model: session.models.codex,
+        effort: clampedEffort ?? undefined,
         signal: abort.signal,
         onEvent,
         onTurnUsage,
@@ -914,6 +952,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         cwd: session.cwd,
         priorMessages: prior,
         model: session.models.vercel,
+        effort: clampedEffort ?? undefined,
         systemPromptAppend: ADVERSARIA_SYSTEM_PROMPT_APPEND,
         signal: abort.signal,
         sessionId,
@@ -1291,6 +1330,10 @@ export function startServer(
   // honest without lying about runtime behavior.
   const actualPort = server.port ?? port;
   boundPort = actualPort;
+  // Backfill effort capability for sessions restored from disk so the slider
+  // works on first open without waiting for a model/runner change. Cached per
+  // model id, so this is a handful of Models API calls at most.
+  for (const s of sessions.list()) refreshEffortInfo(s.id);
   console.log(
     `adverserial backend listening on http://${server.hostname}:${actualPort}`,
   );

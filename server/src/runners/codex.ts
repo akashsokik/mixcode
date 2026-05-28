@@ -1,6 +1,7 @@
 import { Codex } from "@openai/codex-sdk";
 import type {
   ContextUsage,
+  EffortLevel,
   RunEvent,
   RunnerKind,
   TurnUsage,
@@ -46,6 +47,7 @@ type CodexRunArgs = {
   cwd?: string;
   threadId?: string;
   model?: string;
+  effort?: EffortLevel;
   signal?: AbortSignal;
   onEvent: (ev: RunEvent) => void;
   // Fires once on `turn.completed`. Sourced verbatim from the SDK's Usage
@@ -98,6 +100,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
     cwd,
     threadId,
     model,
+    effort,
     signal,
     onEvent,
     onTurnUsage,
@@ -119,6 +122,7 @@ export async function runCodex(args: CodexRunArgs): Promise<void> {
     const threadOptions: any = { skipGitRepoCheck: true };
     if (cwd) threadOptions.workingDirectory = cwd;
     if (model) threadOptions.model = model;
+    if (effort) threadOptions.modelReasoningEffort = effort;
     // Headless mode hits a known Codex CLI regression (openai/codex#16685):
     // custom MCP servers get routed through the approval pipeline, and exec
     // mode has no way to prompt, so the call auto-cancels with
