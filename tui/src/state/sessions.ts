@@ -12,6 +12,7 @@ import type {
   SessionMessage,
   SessionSkillEntry,
   ServerMsg,
+  WorkflowRun,
 } from "../../../shared/events.ts";
 import { WSClient, type WSStatus } from "../api/ws";
 
@@ -52,6 +53,12 @@ type State = {
   // Only one entry per session at a time — the server is the single source
   // of truth, so a re-emit (e.g. after `synthesize`) replaces the prior one.
   consensusReady: Record<string, ConsensusReady>;
+  // Per-session current workflow run (proposed/running/terminal). Set or
+  // replaced on every `workflow_state` snapshot; cleared on session delete.
+  // Only one active run per session — a new /workflow replaces the prior
+  // terminal one. The server is the single source of truth (full-snapshot on
+  // every transition), so the client just stores the latest.
+  workflows: Record<string, WorkflowRun>;
 };
 
 const initialState: State = {
@@ -62,6 +69,7 @@ const initialState: State = {
   helloReceived: false,
   sessionSkills: {},
   consensusReady: {},
+  workflows: {},
 };
 
 function reduce(state: State, msg: ServerMsg): State {
@@ -99,7 +107,11 @@ function reduce(state: State, msg: ServerMsg): State {
       );
       const sessionSkills = { ...state.sessionSkills };
       delete sessionSkills[msg.sessionId];
-      return { ...state, sessions, activeId, pendingPermissions, sessionSkills };
+      const consensusReady = { ...state.consensusReady };
+      delete consensusReady[msg.sessionId];
+      const workflows = { ...state.workflows };
+      delete workflows[msg.sessionId];
+      return { ...state, sessions, activeId, pendingPermissions, sessionSkills, consensusReady, workflows };
     }
 
     case "message_started": {
@@ -230,6 +242,29 @@ function reduce(state: State, msg: ServerMsg): State {
       return { ...state, consensusReady: next };
     }
 
+    case "workflow_state": {
+      // Full WorkflowRun snapshot on every transition; replace whatever we had
+      // for the session. Terminal runs (done/failed/cancelled) stay mounted as
+      // the inline "pill"; explicit removal comes via `workflow_cleared`.
+      return {
+        ...state,
+        workflows: {
+          ...state.workflows,
+          [msg.run.sessionId]: msg.run,
+        },
+      };
+    }
+
+    case "workflow_cleared": {
+      // /clear teardown: drop the card/panel/approval-modal entirely. A
+      // terminal snapshot is not enough since the inline card renders every
+      // non-`proposed` status, so the server sends this explicit removal.
+      if (!state.workflows[msg.sessionId]) return state;
+      const next = { ...state.workflows };
+      delete next[msg.sessionId];
+      return { ...state, workflows: next };
+    }
+
     case "error":
       // Surfaced via status bar / toast in v2. For now, keep state stable.
       return state;
@@ -301,6 +336,7 @@ export function useSessions() {
     rules: state.rules,
     sessionSkills: state.sessionSkills,
     consensusReady: state.consensusReady,
+    workflows: state.workflows,
 
     setActive(id: string): void {
       setActiveOverride(id);
@@ -378,6 +414,21 @@ export function useSessions() {
         runner: payload?.runner,
         plan: payload?.plan,
       });
+    },
+    startWorkflow(goal: string): void {
+      if (!activeId) return;
+      send(client, { type: "workflow_start", sessionId: activeId, goal });
+    },
+    approveWorkflow(workflowId: string): void {
+      // The wire msg carries only `workflowId` (the server resolves the
+      // session), but keep the active-session guard for symmetry with the
+      // other senders.
+      if (!activeId) return;
+      send(client, { type: "workflow_approve", workflowId });
+    },
+    cancelWorkflow(workflowId: string): void {
+      if (!activeId) return;
+      send(client, { type: "workflow_cancel", workflowId });
     },
     respondPermission(
       requestId: string,

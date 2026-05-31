@@ -224,9 +224,9 @@ export function modelLines(
     "  /model vercel reset        clear vercel's override",
     "  /model ollama reset        clear ollama's override",
     "",
-    "common claude models   claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001",
+    "common claude models   claude-opus-4-8, claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001",
     "common codex models    gpt-5-codex, gpt-5, gpt-5-mini",
-    "common vercel models   claude-opus-4-7, claude-sonnet-4-6, gpt-5, gpt-5-mini, gpt-4o",
+    "common vercel models   claude-opus-4-8, claude-sonnet-4-6, gpt-5, gpt-5-mini, gpt-4o",
     "                       (claude-* routes via @ai-sdk/anthropic, gpt-*/o*-* via @ai-sdk/openai)",
     "ollama models          dynamic — your pulled models (the picker lists them live; manage with `ollama pull`/`ollama rm`)",
   ];

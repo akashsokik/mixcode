@@ -10,6 +10,12 @@ export type ModelEntry = {
 // Curated common picks. Users can always /model <any-id> for off-list models
 // — the picker just exists so they don't have to memorise IDs.
 const CLAUDE_MODELS: ModelEntry[] = [
+  { id: "claude-opus-4-8", label: "Opus 4.8", hint: "200K context" },
+  {
+    id: "claude-opus-4-8[1m]",
+    label: "Opus 4.8 (1M context)",
+    hint: "long-context variant",
+  },
   { id: "claude-opus-4-7", label: "Opus 4.7", hint: "200K context" },
   {
     id: "claude-opus-4-7[1m]",
@@ -39,6 +45,8 @@ const CODEX_MODELS: ModelEntry[] = [
 // suffix since the Anthropic API has no equivalent context-window selector.
 const VERCEL_MODELS: ModelEntry[] = [
   // Anthropic — Claude family
+  { id: "claude-opus-4-8", label: "Opus 4.8", hint: "anthropic · 200K" },
+  { id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)", hint: "anthropic · stripped to base on vercel" },
   { id: "claude-opus-4-7", label: "Opus 4.7", hint: "anthropic · 200K" },
   { id: "claude-opus-4-7[1m]", label: "Opus 4.7 (1M)", hint: "anthropic · stripped to base on vercel" },
   { id: "claude-sonnet-4-6", label: "Sonnet 4.6", hint: "anthropic · balanced" },

@@ -77,7 +77,7 @@ describe("Prompt", () => {
         branch={{ name: "main", dirty: true }}
         sessionPill={{ name: "Session 1", streaming: 0 }}
       />,
-      { width: 100, height: 12, exitOnCtrlC: false },
+      { width: 120, height: 12, exitOnCtrlC: false },
     );
 
     try {

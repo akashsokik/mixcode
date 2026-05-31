@@ -21,6 +21,22 @@ export type PeerEventForwarder = (
 
 type PeerState = { textBuf: string; chunk: number };
 
+// Short run-id for the transcript chip, matching the TUI's shortId() so a peer
+// block in the transcript reads the same id as its node on the workflow card
+// (and any other delegated run). Lets the user correlate `[ollama][run-id]` in
+// the scroll with the `[ollama][run-id]` node row in the card/DAG view.
+function shortRunId(runId: string): string {
+  if (!runId) return "";
+  return runId.length <= 9 ? runId : runId.slice(0, 8) + "…";
+}
+
+// The `[runner][run-id]` chip prefix prepended to every forwarded peer event.
+// run-id is omitted only when the record has none (it always should).
+function peerTag(runner: string, runId: string): string {
+  const short = shortRunId(runId);
+  return short ? `[${runner}][${short}]` : `[${runner}]`;
+}
+
 export function buildPeerEventForwarder(
   onEvent: (event: RunEvent) => void,
 ): PeerEventForwarder {
@@ -43,13 +59,14 @@ export function buildPeerEventForwarder(
 
   return (record, event) => {
     const s = stateFor(record.runId);
+    const tag = peerTag(record.runner, record.runId);
     if (event.type === "text_delta") {
       s.textBuf += event.delta;
       onEvent({
         type: "tool_log",
         log: {
           id: `peer:${record.runId}:text:${s.chunk}`,
-          name: `[${record.runner}] reply`,
+          name: `${tag} reply`,
           output: s.textBuf,
         },
       });
@@ -59,7 +76,7 @@ export function buildPeerEventForwarder(
         type: "tool_log",
         log: {
           ...event.log,
-          name: `[${record.runner}] ${event.log.name}`,
+          name: `${tag} ${event.log.name}`,
         },
       });
     } else if (event.type === "thinking" && typeof event.text === "string") {
@@ -68,7 +85,7 @@ export function buildPeerEventForwarder(
         type: "tool_log",
         log: {
           id: `peer:${record.runId}:think:${s.chunk}`,
-          name: `[${record.runner}] thinking`,
+          name: `${tag} thinking`,
           output: `(${event.seconds}s) ${event.text}`,
         },
       });
@@ -77,7 +94,7 @@ export function buildPeerEventForwarder(
       flushText(s);
       onEvent({
         type: "error",
-        message: `[${record.runner}] ${event.message}`,
+        message: `${tag} ${event.message}`,
       });
     }
   };

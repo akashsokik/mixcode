@@ -22,6 +22,7 @@ import {
 import {
   blocksFromEvents,
   groupDelegations,
+  peerBlockRunId,
   type Block,
   type GroupedBlock,
 } from "../util/blocks";
@@ -32,12 +33,18 @@ export function Transcript({
   selectedItemId,
   expandedItems,
   onItemActivate,
+  suppressPeerRunIds,
 }: {
   session: Session | null;
   notices: Notice[];
   selectedItemId: string | null;
   expandedItems: Set<string>;
   onItemActivate?: (itemId: string) => void;
+  // Short run-ids of workflow nodes that have SETTLED. Their loose peer
+  // reply/thinking/tool rows are dropped from the transcript - the floating
+  // WorkflowCard owns each settled node's output instead. Empty when there is
+  // no active workflow, so non-workflow transcripts are untouched.
+  suppressPeerRunIds?: ReadonlySet<string>;
 }) {
   if (!session) {
     return <Welcome />;
@@ -117,6 +124,7 @@ export function Transcript({
             selectedItemId={selectedItemId}
             expandedItems={expandedItems}
             onItemActivate={onItemActivate}
+            suppressPeerRunIds={suppressPeerRunIds}
           />
         ) : (
           <NoticeCard
@@ -141,12 +149,14 @@ function Message({
   selectedItemId,
   expandedItems,
   onItemActivate,
+  suppressPeerRunIds,
 }: {
   message: SessionMessage;
   messageStreaming: boolean;
   selectedItemId: string | null;
   expandedItems: Set<string>;
   onItemActivate?: (itemId: string) => void;
+  suppressPeerRunIds?: ReadonlySet<string>;
 }) {
   if (message.role === "user") {
     const id = `msg:${message.id}`;
@@ -165,6 +175,7 @@ function Message({
       selectedItemId={selectedItemId}
       expandedItems={expandedItems}
       onItemActivate={onItemActivate}
+      suppressPeerRunIds={suppressPeerRunIds}
     />
   );
 }
@@ -202,17 +213,33 @@ function AssistantMessage({
   selectedItemId,
   expandedItems,
   onItemActivate,
+  suppressPeerRunIds,
 }: {
   message: SessionMessage;
   messageStreaming: boolean;
   selectedItemId: string | null;
   expandedItems: Set<string>;
   onItemActivate?: (itemId: string) => void;
+  suppressPeerRunIds?: ReadonlySet<string>;
 }) {
-  const blocks = blocksFromEvents(message.events);
+  const rawBlocks = blocksFromEvents(message.events);
+  // Drop loose peer rows whose workflow node has settled (the floating
+  // WorkflowCard now shows that node's output). Running nodes keep their rows
+  // so live streaming stays visible.
+  const blocks =
+    suppressPeerRunIds && suppressPeerRunIds.size > 0
+      ? rawBlocks.filter((b) => {
+          const rid = peerBlockRunId(b);
+          return !(rid && suppressPeerRunIds.has(rid));
+        })
+      : rawBlocks;
   const grouped = groupDelegations(blocks, message.id, messageStreaming);
 
   if (grouped.length === 0) {
+    // The whole message was suppressed (every node settled) - render nothing,
+    // not the "…" pending placeholder, so the end-state is clean. The
+    // placeholder is reserved for a genuinely empty (still-streaming) message.
+    if (rawBlocks.length > 0) return null;
     return (
       <box flexDirection="column" marginTop={1}>
         <box flexDirection="row" paddingLeft={1} paddingRight={1}>
@@ -264,6 +291,26 @@ function AssistantMessage({
               selected={isSelected}
               expanded={isExpanded}
               active={messageStreaming}
+              hint={hint}
+              onActivate={onItemActivate ? () => onItemActivate(g.id) : undefined}
+            />
+          );
+        }
+        if (g.kind === "workflow_authoring") {
+          const isSelected = g.id === selectedItemId;
+          const isExpanded = expandedItems.has(g.id);
+          const hint = isSelected
+            ? isExpanded
+              ? "click or ctrl+e to collapse"
+              : "click or ctrl+e to expand"
+            : null;
+          return (
+            <WorkflowAuthoringCard
+              key={`wf-${g.id}`}
+              id={g.id}
+              blocks={g.children}
+              selected={isSelected}
+              expanded={isExpanded}
               hint={hint}
               onActivate={onItemActivate ? () => onItemActivate(g.id) : undefined}
             />
@@ -380,6 +427,7 @@ function BlockRow({
       <PeerReply
         id={id}
         runner={block.runner}
+        runId={block.runId}
         text={block.text}
         indent={!firstInMessage}
         selected={isSelected}
@@ -393,7 +441,9 @@ function BlockRow({
       <ChatItem id={id} selected={isSelected} onActivate={activate} marginTop={rowMarginTop}>
         <box flexDirection="row">
           <text fg={theme.textFaint}>{"> "}</text>
-          <text fg={peerColor(block.runner)} attributes={TextAttributes.BOLD}>{`[${block.runner}] `}</text>
+          <text fg={peerColor(block.runner)} attributes={TextAttributes.BOLD}>{`[${block.runner}]`}</text>
+          {block.runId && <text fg={theme.textFaint}>{`[${block.runId}]`}</text>}
+          <text fg={peerColor(block.runner)} attributes={TextAttributes.BOLD}>{` `}</text>
           <text fg={theme.textSubtle}>{cleanModelText(block.text) || "thinking"}</text>
         </box>
       </ChatItem>
@@ -710,6 +760,7 @@ function tailLines(text: string, maxLines: number, maxChars: number): string {
 function PeerReply({
   id,
   runner,
+  runId = null,
   text,
   indent,
   selected,
@@ -718,6 +769,7 @@ function PeerReply({
 }: {
   id: string;
   runner: string;
+  runId?: string | null;
   text: string;
   indent: boolean;
   selected: boolean;
@@ -728,7 +780,9 @@ function PeerReply({
     <ChatItem id={id} selected={selected} onActivate={onActivate} marginTop={indent ? 1 : 0}>
       <box flexDirection="row">
         <text fg={theme.textMuted}>{"• "}</text>
-        <text fg={peerColor(runner)} attributes={TextAttributes.BOLD}>{`[${runner}] reply`}</text>
+        <text fg={peerColor(runner)} attributes={TextAttributes.BOLD}>{`[${runner}]`}</text>
+        {runId && <text fg={theme.textFaint}>{`[${runId}]`}</text>}
+        <text fg={peerColor(runner)} attributes={TextAttributes.BOLD}>{` reply`}</text>
       </box>
       <box flexDirection="row" paddingLeft={2}>
         <box flexGrow={1}>
@@ -751,6 +805,75 @@ function peerColor(runner: string): string {
   if (runner === "vercel") return theme.runnerVercel;
   if (runner === "ollama") return theme.runnerOllama;
   return theme.textMuted;
+}
+
+function bareToolName(b: Block): string | null {
+  if (b.kind !== "tool") return null;
+  return stripMcpPrefix(stripPeerPrefix(b.log.name).rest);
+}
+
+function nodeTitleOf(b: Block): string {
+  if (b.kind !== "tool" || !b.log.input || typeof b.log.input !== "object") return "";
+  const t = (b.log.input as Record<string, unknown>).title;
+  return typeof t === "string" ? t : "";
+}
+
+// Folded DAG-authoring burst: workflow_add_node ×N (+ workflow_run) collapsed
+// into one card. Collapsed shows the node-count and titles; ctrl+e expands to
+// the individual compact tool cards (each node's id/runner/deps).
+function WorkflowAuthoringCard({
+  id,
+  blocks,
+  selected,
+  expanded,
+  hint,
+  onActivate,
+}: {
+  id: string;
+  blocks: Block[];
+  selected: boolean;
+  expanded: boolean;
+  hint: string | null;
+  onActivate?: () => void;
+}) {
+  const addNodes = blocks.filter((b) => bareToolName(b) === "workflow_add_node");
+  const proposed = blocks.some((b) => bareToolName(b) === "workflow_run");
+  const titles = addNodes.map(nodeTitleOf).filter((t) => t.length > 0);
+  const count = addNodes.length;
+  const verb = proposed ? "authored" : "authoring";
+  return (
+    <ChatItem
+      id={id}
+      selected={selected}
+      expanded={expanded}
+      expandable
+      hint={hint}
+      onActivate={onActivate}
+      expandedContent={
+        <box flexDirection="column" paddingLeft={2}>
+          {blocks.map((b, i) =>
+            b.kind === "tool" ? (
+              <ToolCard key={`wfauth-${i}`} id={`${id}:${i}`} log={b.log} nested />
+            ) : null,
+          )}
+        </box>
+      }
+    >
+      <box flexDirection="row">
+        <text fg={theme.textMuted}>{"• "}</text>
+        <text fg={theme.toolTask} attributes={TextAttributes.BOLD}>{"Workflow"}</text>
+        <text fg={theme.text}>{` ${verb}`}</text>
+        <text fg={theme.textMuted}>{`  ·  ${count} node${count === 1 ? "" : "s"}`}</text>
+        {proposed && <text fg={theme.textFaint}>{"  ·  proposed"}</text>}
+      </box>
+      {titles.length > 0 && (
+        <box flexDirection="row">
+          <text fg={theme.textFaint}>{"  └ "}</text>
+          <text fg={theme.textMuted}>{truncate(titles.join(", "), 80)}</text>
+        </box>
+      )}
+    </ChatItem>
+  );
 }
 
 function Rule() {

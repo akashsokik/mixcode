@@ -3,8 +3,9 @@
 // runner's hand-rolled coding toolkit (Bash/Read/Write/Edit/MultiEdit/Grep/
 // Glob/TodoWrite) and the same shared PermissionStore gate. The point is a
 // free, local, token-burn-free runner for testing — so it is a deliberate
-// subset of the Vercel runner: coding tools only, no orchestrator tools
-// (delegate/validate/task_*), no MCP, and not consensus-eligible.
+// subset of the Vercel runner: coding tools plus workflow authoring, no peer
+// orchestrator tools (delegate/validate/task_*), no MCP, and not
+// consensus-eligible.
 //
 // Ollama implements the Chat Completions API, NOT OpenAI's newer Responses
 // API that the default `openai()` helper targets — so we construct the client
@@ -28,7 +29,9 @@ import type {
   TurnUsage,
 } from "../../../shared/events.js";
 import type { PermissionStore } from "../permissions.js";
+import type { WorkflowProposedHandler } from "../orchestrator/workflow-tools.js";
 import {
+  buildWorkflowAiTools,
   buildBaseSystemPrompt,
   buildCodingTools,
   buildGate,
@@ -143,6 +146,7 @@ export type OllamaRunArgs = {
   permissionMode?: ClaudePermissionMode;
   permissions?: PermissionStore;
   allowRules?: string[];
+  onWorkflowProposed?: WorkflowProposedHandler;
   // Per-call override of STEP_LIMIT.
   maxSteps?: number;
   onEvent: (ev: RunEvent) => void;
@@ -163,6 +167,7 @@ export async function runOllama(args: OllamaRunArgs): Promise<void> {
     permissionMode,
     permissions,
     allowRules,
+    onWorkflowProposed,
     maxSteps,
     onEvent,
     onTurnUsage,
@@ -200,8 +205,9 @@ export async function runOllama(args: OllamaRunArgs): Promise<void> {
   const provider = createOpenAI({ baseURL: BASE_URL, apiKey: "ollama" });
   const languageModel = provider.chat(modelId);
 
-  // Coding-only system prompt (isTopLevel=false suppresses the orchestrator
-  // tool section — ollama doesn't expose delegate/validate/task_*).
+  // Keep the system prompt coding-focused. /workflow injects the authoring
+  // instructions explicitly, and Ollama exposes only workflow_* from the
+  // orchestrator family.
   const system = buildBaseSystemPrompt(cwd, false);
 
   const messages: ModelMessage[] = [
@@ -216,7 +222,14 @@ export async function runOllama(args: OllamaRunArgs): Promise<void> {
     sessionId,
     signal,
   });
-  const tools = buildCodingTools({ cwd, signal, gate, onEvent }) as ToolSet;
+  const tools = {
+    ...buildWorkflowAiTools({
+      parentSessionId: sessionId,
+      parentRunner: "ollama",
+      onWorkflowProposed,
+    }),
+    ...buildCodingTools({ cwd, signal, gate, onEvent }),
+  } as ToolSet;
 
   try {
     const result = streamText({

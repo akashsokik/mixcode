@@ -14,16 +14,20 @@ export type Block =
   | { kind: "tool"; log: ToolLog }
   | { kind: "error"; message: string }
   | { kind: "thinking"; seconds: number; text: string }
-  | { kind: "peer_reply"; runner: string; text: string }
-  | { kind: "peer_thinking"; runner: string; text: string };
+  | { kind: "peer_reply"; runner: string; runId: string | null; text: string }
+  | { kind: "peer_thinking"; runner: string; runId: string | null; text: string };
 
-// "[claude] reply" -> { runner: "claude", kind: "reply" }
+// "[claude] reply" -> { runner: "claude", runId: null, kind: "reply" }
+// "[ollama][run-id] reply" -> { runner: "ollama", runId: "run-id", kind: "reply" }
+// The optional second `[...]` is the peer's run id; it lets a transcript reply
+// block be correlated with its workflow-card node. Optional so legacy/untagged
+// `[runner] reply` names still match.
 export function matchPeerSynthetic(
   name: string,
-): { runner: string; kind: "reply" | "thinking" } | null {
-  const m = name.match(/^\[([^\]]+)\]\s+(reply|thinking)$/);
+): { runner: string; runId: string | null; kind: "reply" | "thinking" } | null {
+  const m = name.match(/^\[([^\]]+)\](?:\[([^\]]*)\])?\s+(reply|thinking)$/);
   if (!m) return null;
-  return { runner: m[1], kind: m[2] as "reply" | "thinking" };
+  return { runner: m[1], runId: m[2] ?? null, kind: m[3] as "reply" | "thinking" };
 }
 
 export function blocksFromEvents(events: SessionMessage["events"]): Block[] {
@@ -45,8 +49,8 @@ export function blocksFromEvents(events: SessionMessage["events"]): Block[] {
         const body = typeof ev.log.output === "string" ? ev.log.output : "";
         out.push(
           peer.kind === "reply"
-            ? { kind: "peer_reply", runner: peer.runner, text: body }
-            : { kind: "peer_thinking", runner: peer.runner, text: body },
+            ? { kind: "peer_reply", runner: peer.runner, runId: peer.runId, text: body }
+            : { kind: "peer_thinking", runner: peer.runner, runId: peer.runId, text: body },
         );
       } else {
         out.push({ kind: "tool", log: ev.log });
@@ -101,6 +105,17 @@ export function isPeerBlock(b: Block): boolean {
   return false;
 }
 
+// The peer run-id a block was tagged with (short form, as embedded by the
+// onPeerEvent bridge), or null for non-peer blocks. Lets the transcript drop
+// the loose reply/thinking/tool rows for a workflow node once that node has
+// settled - the WorkflowCard then owns the node's output. Error blocks carry
+// no structured run-id, so they are never matched here and stay visible.
+export function peerBlockRunId(b: Block): string | null {
+  if (b.kind === "peer_reply" || b.kind === "peer_thinking") return b.runId;
+  if (b.kind === "tool") return stripPeerPrefix(b.log.name).runId;
+  return null;
+}
+
 // Grouping unit returned by groupDelegations: either a plain Block or a
 // folded delegation_group. `header` is the delegate_run tool_log once the
 // MCP body returns; while the peer is still running it's null, and the
@@ -127,7 +142,29 @@ export type GroupedBlock =
       anchorIndex: number;
       snapshot: ToolLog | null;
       children: Block[];
+    }
+  | {
+      // A burst of workflow-authoring tool calls (workflow_add_node ×N +
+      // workflow_run) folded into one card so the DAG assembly reads as a
+      // single action instead of N stacked rows.
+      kind: "workflow_authoring";
+      id: string;
+      index: number;
+      children: Block[];
     };
+
+// The three DAG-authoring tools, by bare (MCP-stripped) name. A run of these
+// gets folded into one card (foldWorkflowAuthoring).
+const WORKFLOW_AUTHORING_TOOLS = new Set([
+  "workflow_add_node",
+  "workflow_run",
+  "workflow_reset",
+]);
+
+function isWorkflowAuthoringBlock(b: Block): boolean {
+  const name = ownBareToolName(b);
+  return name !== null && WORKFLOW_AUTHORING_TOOLS.has(name);
+}
 
 const COLLAB_CONTROL_TOOLS = new Set([
   "plan_create",
@@ -271,6 +308,7 @@ export function groupDelegations(
     items.push({ kind: "passthrough", block: b, index: i });
   });
 
+  // (workflow-authoring fold applied after the trailing-peer pass below)
   const trailing = consumeTrailingPeers();
   if (trailing.length > 0) {
     if (messageStreaming) {
@@ -302,7 +340,42 @@ export function groupDelegations(
     }
   }
 
-  return items;
+  return foldWorkflowAuthoring(items, messageId);
+}
+
+// Collapse maximal runs of 2+ consecutive workflow-authoring passthrough tool
+// blocks (workflow_add_node ×N + workflow_run) into a single workflow_authoring
+// group. A lone authoring call is left as-is (nothing to fold).
+function foldWorkflowAuthoring(
+  items: GroupedBlock[],
+  messageId: string,
+): GroupedBlock[] {
+  const out: GroupedBlock[] = [];
+  let run: Extract<GroupedBlock, { kind: "passthrough" }>[] = [];
+  const flush = (): void => {
+    if (run.length === 0) return;
+    if (run.length === 1) {
+      out.push(run[0]);
+    } else {
+      out.push({
+        kind: "workflow_authoring",
+        id: `${messageId}:wfauth:${run[0].index}`,
+        index: run[0].index,
+        children: run.map((g) => g.block),
+      });
+    }
+    run = [];
+  };
+  for (const g of items) {
+    if (g.kind === "passthrough" && isWorkflowAuthoringBlock(g.block)) {
+      run.push(g);
+    } else {
+      flush();
+      out.push(g);
+    }
+  }
+  flush();
+  return out;
 }
 
 function inferRunner(children: Block[]): string | null {
@@ -363,7 +436,11 @@ export function collectChatItemIds(
     }
     const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
     for (const g of grouped) {
-      if (g.kind === "delegation_group" || g.kind === "collab_group") {
+      if (
+        g.kind === "delegation_group" ||
+        g.kind === "collab_group" ||
+        g.kind === "workflow_authoring"
+      ) {
         out.push(g.id);
         continue;
       }

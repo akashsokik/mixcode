@@ -37,6 +37,11 @@ type SessionRuntime = {
   // Ollama runner continuity — same stateless-streamText story as vercel, but
   // single-provider (local OpenAI-compat), so no last-provider reset needed.
   ollamaMessages?: unknown[];
+  // Bounded terminal result from the most recent detached /workflow run. The
+  // next normal parent-agent turn injects it once into the runner prompt, then
+  // clears it so Agent 1 becomes aware of the accomplishment without inheriting
+  // every workflow node's raw context.
+  pendingWorkflowCompletionContext?: string;
 };
 
 type Stored = Session & { runtime: SessionRuntime };

@@ -230,6 +230,68 @@ export type ConsensusReady = {
   suggestedRunner: RunnerKind;
 };
 
+// /workflow - active-runner-authored DAG of agent nodes. The authoring model
+// assembles the graph by calling the `workflow_add_node` / `workflow_run` tools
+// in its own turn; the user approves it; an in-process scheduler executes nodes
+// respecting `dependsOn`. Each node runs as an ISOLATED fresh agent that shares
+// NO context with any other node - the only thing crossing a `dependsOn` edge is
+// the upstream node's final output text, which the engine auto-injects into the
+// dependent's prompt. Full WorkflowRun snapshots cross the wire on every
+// transition (see `workflow_state` below) - a DAG is small, so full-snapshot
+// beats per-node deltas and sidesteps ordering bugs.
+export type NodeStatus =
+  | "pending"   // unmet dependencies
+  | "ready"     // all deps satisfied, dispatchable
+  | "running"
+  | "ok"
+  | "error"
+  | "skipped"   // bypassed due to upstream failure
+  | "cancelled";
+
+export type WorkflowStatus =
+  | "proposed"  // model assembled it via workflow_run, awaiting user approval
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export type WorkflowNode = {
+  id: string;
+  title: string;
+  runner: RunnerKind;        // which runner spawns this node's isolated agent
+  model?: string;            // optional per-node model override
+  prompt: string;            // self-contained task; upstream outputs are
+                             // auto-injected by the engine, not templated
+  dependsOn?: string[];
+  status: NodeStatus;
+  runId?: string;
+  output?: string;           // the node agent's final response text (the ONLY
+                             // thing handed to dependents)
+  error?: string;
+  attempt: number;
+  startedAt?: number;
+  finishedAt?: number;
+};
+
+export type WorkflowRun = {
+  id: string;
+  sessionId: string;
+  goal: string;
+  planner: RunnerKind;       // the runner that authored the DAG
+  status: WorkflowStatus;
+  nodes: WorkflowNode[];
+  // Reserved for a proposed run that failed validation. In the current
+  // tool-authored flow this is normally unset: workflow_run validates the draft
+  // and returns the structured error (`cycle_detected`, `duplicate_node_id`,
+  // `dependency_unresolved`, `too_many_nodes`, `unknown_runner`) to the model so
+  // it can fix and retry before any run is proposed. The approval UI still
+  // renders it defensively if ever present.
+  validationError?: { code: string; message: string };
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+};
+
 // One pending tool-permission prompt. `suggestions` are SDK-generated rule
 // strings (e.g. "Bash(npm install)"); the client should persist them verbatim
 // when the user picks "allow always".
@@ -297,6 +359,15 @@ export type ClientMsg =
       plan?: string;
     }
   | {
+      type: "workflow_start";
+      sessionId: string;
+      goal: string;
+      // No planner field: authoring runs as the session's active runner, which
+      // calls the workflow_add_node / workflow_run tools.
+    }
+  | { type: "workflow_approve"; workflowId: string }
+  | { type: "workflow_cancel"; workflowId: string }
+  | {
       type: "permission_response";
       requestId: string;
       decision: PermissionDecision;
@@ -362,4 +433,15 @@ export type ServerMsg =
     }
   | { type: "consensus_ready"; ready: ConsensusReady }
   | { type: "consensus_cleared"; sessionId: string }
+  // Full WorkflowRun snapshot, pushed on every state transition (proposal,
+  // approval, each node status change, terminal). Replayed on reconnect like
+  // `consensus_ready`. Per-node streaming token text still flows through the
+  // peer event -> tool_log path; this carries only structural/status changes.
+  | { type: "workflow_state"; run: WorkflowRun }
+  // Drop the session's workflow card/panel entirely (mirrors
+  // `consensus_cleared`). Sent on /clear. A terminal snapshot is NOT enough to
+  // tear the card down: the inline card renders every non-`proposed` status,
+  // including `cancelled`/`done`/`failed` (that is the "pill on completion"
+  // state), so the client needs an explicit removal signal.
+  | { type: "workflow_cleared"; sessionId: string }
   | { type: "error"; sessionId?: string; message: string };

@@ -60,13 +60,14 @@ export function formatToolLog(
   category: ToolCategory;
   edit: EditPreview | null;
   peer: string | null;
+  peerRunId: string | null;
 } {
   const expanded = opts.expanded === true;
   const isError = log.isError === true;
   // Peer-prefixed names (e.g. "[codex] Bash") come from the orchestrator's
   // onPeerEvent bridge. Pull the chip out so it can render separately and the
   // category accent picks up the real underlying tool.
-  const { peer, rest: afterPeer } = stripPeerPrefix(log.name);
+  const { peer, runId: peerRunId, rest: afterPeer } = stripPeerPrefix(log.name);
   // Strip the MCP namespace prefix (`mcp__<server>__tool` -> `tool`) so users
   // see the tool's actual name rather than the wire-format mangling.
   const displayName = stripMcpPrefix(afterPeer);
@@ -75,7 +76,7 @@ export function formatToolLog(
   // the MCP wrapper and double-escaped JSON, neither of which is readable.
   if (displayName === "delegate_run") {
     const { header, body } = formatDelegateRun(log.input, log.output, isError);
-    return { header, body, isError, category: "task", edit: null, peer };
+    return { header, body, isError, category: "task", edit: null, peer, peerRunId };
   }
   // The six task_* tools have specific input/output shapes; we render each
   // as a compact two-line card so the transcript reads like a log, not a
@@ -89,21 +90,40 @@ export function formatToolLog(
     displayName === "task_cancel"
   ) {
     const { header, body } = formatTaskTool(displayName, log.input, log.output, isError);
-    return { header, body, isError, category: "task", edit: null, peer };
+    return { header, body, isError, category: "task", edit: null, peer, peerRunId };
+  }
+  // The three workflow-authoring tools get a compact card too (the model fires
+  // many workflow_add_node calls in a row while assembling the DAG).
+  if (
+    displayName === "workflow_add_node" ||
+    displayName === "workflow_run" ||
+    displayName === "workflow_reset"
+  ) {
+    const { header, body } = formatWorkflowTool(displayName, log.input, log.output, isError);
+    return { header, body, isError, category: "task", edit: null, peer, peerRunId };
   }
 
   const header = formatHeader(displayName, log.input, isError);
   const body = formatOutput(unwrapMcpContent(log.output), expanded);
   const category = categorizeTool(displayName);
   const edit = category === "edit" ? extractEdit(log.input, expanded) : null;
-  return { header, body, isError, category, edit, peer };
+  return { header, body, isError, category, edit, peer, peerRunId };
 }
 
-// "[codex] Bash" -> { peer: "codex", rest: "Bash" }
-export function stripPeerPrefix(name: string): { peer: string | null; rest: string } {
-  const m = name.match(/^\[([^\]]+)\]\s+(.+)$/);
-  if (!m) return { peer: null, rest: name };
-  return { peer: m[1], rest: m[2] };
+// "[codex] Bash" -> { peer: "codex", runId: null, rest: "Bash" }
+// "[ollama][run-id] Bash" -> { peer: "ollama", runId: "run-id", rest: "Bash" }
+// The optional second `[...]` is the peer's run id (added by the onPeerEvent
+// bridge so a transcript row can be correlated with its workflow-card node).
+// It is captured separately - `peer` stays the runner alone so the grouping /
+// anchor logic, which keys on the runner, is unaffected.
+export function stripPeerPrefix(name: string): {
+  peer: string | null;
+  runId: string | null;
+  rest: string;
+} {
+  const m = name.match(/^\[([^\]]+)\](?:\[([^\]]*)\])?\s+(.+)$/);
+  if (!m) return { peer: null, runId: null, rest: name };
+  return { peer: m[1], runId: m[2] ?? null, rest: m[3] };
 }
 
 // "mcp__orchestrator__delegate_run" -> "delegate_run".
@@ -354,6 +374,73 @@ function formatTaskTool(
       const header = verb;
       const body = isError && errText ? `← error · ${truncateOneLine(errText, 160)}` : "";
       return { header, body };
+    }
+  }
+}
+
+// Compact card for the three workflow-authoring tools (workflow_add_node /
+// workflow_run / workflow_reset). The model fires these in a burst while
+// assembling the DAG; the generic renderer would dump each node's full JSON
+// (id, title, runner, prompt, dependsOn) plus the verbose `next:` hint, which
+// reads as a wall of noise. Collapse each into `Workflow <action>` + one
+// readable status line, matching the task_* tool cards.
+function formatWorkflowTool(
+  name: string,
+  input: unknown,
+  output: unknown,
+  isError: boolean,
+): { header: string; body: string } {
+  const inObj =
+    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const outObj = parseMcpJsonPayload(output);
+  const errText =
+    outObj && typeof outObj.error === "string" ? (outObj.error as string) : "";
+  const errBody = errText || isError ? `← error · ${truncateOneLine(errText, 160)}` : "";
+
+  switch (name) {
+    case "workflow_add_node": {
+      const id = typeof inObj.id === "string" ? inObj.id : "";
+      const title = typeof inObj.title === "string" ? inObj.title : "";
+      const runner = typeof inObj.runner === "string" ? inObj.runner : "";
+      const deps = Array.isArray(inObj.dependsOn)
+        ? inObj.dependsOn.filter((d): d is string => typeof d === "string")
+        : [];
+      const header = title
+        ? `Workflow +node "${truncateOneLine(title, 56)}"`
+        : `Workflow +node ${id || "?"}`;
+      if (errBody) return { header, body: errBody };
+      const count =
+        outObj && typeof outObj.nodesInDraft === "number"
+          ? (outObj.nodesInDraft as number)
+          : null;
+      const parts: string[] = [];
+      if (runner) parts.push(runner);
+      if (id) parts.push(`id ${id}`);
+      if (count !== null) parts.push(`#${count} in draft`);
+      if (deps.length > 0) parts.push(`← ${truncateOneLine(deps.join(", "), 32)}`);
+      return { header, body: parts.length > 0 ? `→ ${parts.join(" · ")}` : "" };
+    }
+    case "workflow_run": {
+      const goal = typeof inObj.goal === "string" ? inObj.goal : "";
+      const header = goal
+        ? `Workflow run "${truncateOneLine(goal, 56)}"`
+        : "Workflow run";
+      if (errBody) return { header, body: errBody };
+      const id =
+        outObj && typeof outObj.proposed === "string" ? (outObj.proposed as string) : "";
+      const nodes =
+        outObj && typeof outObj.nodes === "number" ? (outObj.nodes as number) : null;
+      const parts: string[] = ["proposed"];
+      if (nodes !== null) parts.push(`${nodes} node${nodes === 1 ? "" : "s"}`);
+      if (id) parts.push(shortId(id));
+      parts.push("awaiting approval");
+      return { header, body: `→ ${parts.join(" · ")}` };
+    }
+    case "workflow_reset": {
+      return { header: "Workflow reset", body: errBody || "← draft cleared" };
+    }
+    default: {
+      return { header: toolDisplayName(name), body: errBody };
     }
   }
 }

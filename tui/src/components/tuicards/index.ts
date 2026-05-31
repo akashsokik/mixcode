@@ -7,6 +7,7 @@ export { StatusDot, toolLogStatus } from "./StatusDot";
 export { ToolCard } from "./ToolCard";
 export { TaskCard } from "./TaskCard";
 export { CollabCard } from "./CollabCard";
+export { WorkflowCard } from "./WorkflowCard";
 export { NoticeCard } from "./NoticeCard";
 export { Welcome } from "./Welcome";
 

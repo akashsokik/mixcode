@@ -6,6 +6,8 @@ import { Spinner } from "./components/Spinner";
 import { Notifications } from "./components/Notifications";
 import { PermissionPanel } from "./components/PermissionPanel";
 import { ConsensusModal } from "./components/ConsensusModal";
+import { WorkflowPanel, WorkflowApprovalModal } from "./components/WorkflowPanel";
+import { WorkflowCard } from "./components/tuicards";
 import { ModelPicker } from "./components/ModelPicker";
 import { EffortSlider } from "./components/EffortSlider";
 import { Palette, type PaletteItem } from "./components/Palette";
@@ -35,6 +37,7 @@ import {
   type NotificationKind,
 } from "./util/notification";
 import { treeLines } from "./util/tree";
+import { shortId } from "./util/format";
 import { normalizeRule } from "./util/permission-rule";
 import {
   addSkill,
@@ -112,6 +115,18 @@ export function App() {
   const [expandedItems, setExpandedItems] = useState<
     Record<string, Set<string>>
   >({});
+  // Pure UI state: which sessions have their WorkflowPanel Tab-expanded. Kept
+  // App-local (not in the reducer, which only ingests ServerMsg) since the
+  // panel toggle never round-trips the server.
+  const [workflowExpandedBySession, setWorkflowExpandedBySession] = useState<
+    Record<string, boolean>
+  >({});
+  // Which sessions have their floating WorkflowCard ctrl+e-expanded to show
+  // each node's full (clamped) output. Separate from the Tab-driven panel
+  // above; the inline card isn't in the transcript selection model, so its
+  // expansion is its own App-local toggle.
+  const [workflowOutputsExpandedBySession, setWorkflowOutputsExpandedBySession] =
+    useState<Record<string, boolean>>({});
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
   const [mcpServerNames, setMcpServerNames] = useState<string[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
@@ -158,6 +173,16 @@ export function App() {
       }
       return changed ? next : prev;
     });
+    setWorkflowExpandedBySession((prev) => {
+      const alive = new Set(api.sessions.map((s) => s.id));
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const [id, val] of Object.entries(prev)) {
+        if (alive.has(id)) next[id] = val;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
   }, [api.sessions]);
 
   // Skills are read from disk — cheap enough to do synchronously when the
@@ -196,6 +221,50 @@ export function App() {
     () => (api.activeId ? notices[api.activeId] ?? [] : []),
     [notices, api.activeId],
   );
+
+  // Current workflow run for the active session (proposed/running/terminal),
+  // plus whether its DAG panel is Tab-expanded. The card/panel/approval modal
+  // render off these (see the mount block above the Prompt).
+  const activeWorkflow = api.activeId ? api.workflows[api.activeId] ?? null : null;
+  const activeWorkflowExpanded = api.activeId
+    ? !!workflowExpandedBySession[api.activeId]
+    : false;
+  const activeWorkflowOutputsExpanded = api.activeId
+    ? !!workflowOutputsExpandedBySession[api.activeId]
+    : false;
+
+  // Short run-ids of SETTLED workflow nodes. The transcript drops these nodes'
+  // loose peer reply/tool rows (the floating WorkflowCard shows their output
+  // instead); running nodes are excluded so their live streaming stays. Short
+  // form matches what the onPeerEvent bridge embeds in the chip name.
+  const suppressPeerRunIds = useMemo(() => {
+    const s = new Set<string>();
+    if (!activeWorkflow) return s;
+    for (const n of activeWorkflow.nodes) {
+      if (!n.runId) continue;
+      if (
+        n.status === "ok" ||
+        n.status === "error" ||
+        n.status === "skipped" ||
+        n.status === "cancelled"
+      ) {
+        s.add(shortId(n.runId));
+      }
+    }
+    return s;
+  }, [activeWorkflow]);
+
+  // "Collapses to a pill on completion": once a session's workflow is gone or
+  // terminal, force the panel closed so the run shows as the inline card (the
+  // pill) and Tab stops expanding. The panel is only meaningful while running.
+  useEffect(() => {
+    const sid = api.activeId;
+    if (!sid) return;
+    const wf = api.workflows[sid];
+    if (!wf || wf.status !== "running") {
+      setWorkflowExpandedBySession((p) => (p[sid] ? { ...p, [sid]: false } : p));
+    }
+  }, [api.activeId, api.workflows]);
 
   const activeItemIds = useMemo(
     () => collectChatItemIds(api.active ?? null, activeNotices),
@@ -705,9 +774,22 @@ export function App() {
       return;
     }
     // ctrl+e: prefer expanding the selected chat item when one is selected;
-    // otherwise fall back to the delegation-group toggle behavior.
+    // then the floating workflow card's per-node outputs (it isn't in the
+    // selection model); otherwise fall back to the delegation-group toggle.
     if (key.ctrl && key.name === "e") {
-      if (!toggleSelectedItemExpansion()) toggleLatestDelegation();
+      if (toggleSelectedItemExpansion()) return;
+      if (
+        activeWorkflow &&
+        activeWorkflow.status !== "proposed" &&
+        !activeWorkflowExpanded
+      ) {
+        const sid = api.activeId;
+        if (sid) {
+          setWorkflowOutputsExpandedBySession((p) => ({ ...p, [sid]: !p[sid] }));
+        }
+        return;
+      }
+      toggleLatestDelegation();
       return;
     }
     // Copy bindings — two are wired so at least one survives terminal chord
@@ -808,6 +890,20 @@ export function App() {
             maxTurnsPerPeer: slash.maxTurnsPerPeer,
             producer: slash.producer,
           });
+          return;
+        }
+        case "workflow": {
+          if (!sid) return;
+          const goal = slash.action.goal.trim();
+          if (!goal) {
+            addNotice(sid, "/workflow", [
+              "usage: /workflow <goal>",
+              "The active runner authors a DAG of agent nodes via the workflow tools,",
+              "shows it for approval, then the engine runs it.",
+            ]);
+            return;
+          }
+          api.startWorkflow(goal);
           return;
         }
         case "permissions": {
@@ -1252,6 +1348,7 @@ export function App() {
         selectedItemId={activeSelectedItemId}
         expandedItems={activeExpandedItems}
         onItemActivate={handleItemActivate}
+        suppressPeerRunIds={suppressPeerRunIds}
       />
       <Notifications items={notifications} />
       <Spinner active={api.active} />
@@ -1267,6 +1364,50 @@ export function App() {
           ready={api.consensusReady[api.activeId]}
           onAction={api.consensusAction}
         />
+      )}
+      {/* Workflow surfaces. Mount precedence: a `proposed` run shows the
+          approval modal; a running/terminal run shows the expanded DAG panel
+          when Tab-expanded, else the inline card floating above the Prompt
+          (it is session-scoped client state, not a transcript block). */}
+      {activeWorkflow && activeWorkflow.status === "proposed" && (
+        <WorkflowApprovalModal
+          run={activeWorkflow}
+          onAction={(action) => {
+            if (action === "approve") api.approveWorkflow(activeWorkflow.id);
+            else api.cancelWorkflow(activeWorkflow.id);
+          }}
+        />
+      )}
+      {activeWorkflow && activeWorkflow.status !== "proposed" && activeWorkflowExpanded && (
+        <WorkflowPanel
+          run={activeWorkflow}
+          onClose={() => {
+            const wid = api.activeId;
+            if (wid) setWorkflowExpandedBySession((p) => ({ ...p, [wid]: false }));
+          }}
+          onCancel={() => api.cancelWorkflow(activeWorkflow.id)}
+        />
+      )}
+      {activeWorkflow && activeWorkflow.status !== "proposed" && !activeWorkflowExpanded && (
+        // ChatItem is built to live inside the transcript scrollbox; mounted as
+        // a bare sibling of the full-height root column it would be flex-shrunk
+        // to nothing and its transparent text would paint over the Prompt. Wrap
+        // it like the other floating bottom surfaces (PermissionPanel/
+        // ConsensusModal): flexShrink={0} reserves its height so the scrollbox
+        // yields, and the opaque bg keeps it from showing the layers beneath.
+        <box flexShrink={0} backgroundColor={theme.bg}>
+          <WorkflowCard
+            id={`workflow:${activeWorkflow.id}`}
+            run={activeWorkflow}
+            selected={false}
+            outputsExpanded={activeWorkflowOutputsExpanded}
+            hint={
+              activeWorkflow.status === "running"
+                ? "tab expand DAG · ctrl+e outputs"
+                : "ctrl+e outputs"
+            }
+          />
+        </box>
       )}
       {modelPicker && api.active && (
         <ModelPicker
@@ -1385,12 +1526,33 @@ export function App() {
           modelPicker !== null ||
           effortSlider !== null ||
           paletteMode !== null ||
-          (api.activeId !== null && !!api.consensusReady[api.activeId])
+          (api.activeId !== null && !!api.consensusReady[api.activeId]) ||
+          // The approval modal and the expanded DAG panel own keyboard focus
+          // (incl. Tab), so the Prompt must not consume input under them.
+          (activeWorkflow !== null && activeWorkflow.status === "proposed") ||
+          (activeWorkflow !== null && activeWorkflowExpanded)
         }
         streaming={api.active?.streaming ?? false}
         onInterrupt={api.interrupt}
         runner={api.active?.activeRunner ?? null}
-        onCycleRunner={cycleRunner}
+        onCycleRunner={
+          // While a non-terminal workflow exists, the Prompt's plain-Tab is
+          // repurposed to toggle the DAG panel (the spec binds Tab to expand).
+          // This routes Tab at the prop site so no handler-ordering race with
+          // the Prompt's internal Tab binding can occur, and no Prompt edit is
+          // needed. When the panel is expanded the Prompt is locked (above),
+          // so this only ever opens; the panel closes itself via its own
+          // useKeyboard. Only `running` runs are Tab-expandable; terminal
+          // runs collapse to the pill and Tab falls back to runner-cycle.
+          activeWorkflow && activeWorkflow.status === "running"
+            ? () => {
+                const wid = api.activeId;
+                if (wid) {
+                  setWorkflowExpandedBySession((p) => ({ ...p, [wid]: !p[wid] }));
+                }
+              }
+            : cycleRunner
+        }
         claudeMode={api.active?.claudeMode ?? "default"}
         onCycleClaudeMode={cycleClaudeMode}
         modelLabel={promptMeta?.modelLabel ?? null}

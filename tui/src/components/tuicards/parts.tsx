@@ -24,7 +24,7 @@ export function CardHeader({
   shimmer = true,
 }: {
   status: TuiStatus | string;
-  peer?: { name: string; color?: string };
+  peer?: { name: string; color?: string; runId?: string | null };
   verb: string;
   verbColor: string;
   title?: string;
@@ -36,10 +36,14 @@ export function CardHeader({
       <StatusDot status={status} />
       <text fg={theme.text}>{" "}</text>
       {peer && (
-        <text
-          fg={peer.color ?? runnerColor(peer.name)}
-          attributes={TextAttributes.BOLD}
-        >{`[${peer.name}] `}</text>
+        <>
+          <text
+            fg={peer.color ?? runnerColor(peer.name)}
+            attributes={TextAttributes.BOLD}
+          >{`[${peer.name}]`}</text>
+          {peer.runId && <text fg={theme.textFaint}>{`[${peer.runId}]`}</text>}
+          <text fg={peer.color ?? runnerColor(peer.name)}>{" "}</text>
+        </>
       )}
       <ShimmerText
         text={verb}

@@ -50,6 +50,13 @@ import {
   observeTask,
   spawnSubtasks,
 } from "../orchestrator/tasks.js";
+import {
+  executeWorkflowAddNode,
+  executeWorkflowReset,
+  executeWorkflowRun,
+  type WorkflowAddNodeInput,
+  type WorkflowProposedHandler,
+} from "../orchestrator/workflow-tools.js";
 import { loadMcpForVercel } from "./vercel-mcp.js";
 
 // Mirror Claude's edit-tool classification (index.ts EDIT_TOOL_NAMES) so the
@@ -108,11 +115,14 @@ export function buildBaseSystemPrompt(cwd: string, isTopLevel: boolean): string 
       "                    task; by default waits and returns the peer's text",
       "  - get_run         poll a previously-started peer run",
       "  - cancel_run      stop a running peer",
-      "  - validate_run    adversarial peer review — call as your FINAL step",
-      "                    before declaring a task done; the peer returns a",
-      "                    verdict (pass / needs_changes / fail) you act on",
+      "  - validate_run    optional adversarial peer review — call it if you",
+      "                    want a second opinion before declaring a task done;",
+      "                    the peer returns a verdict (pass / needs_changes /",
+      "                    fail) you act on. Not required.",
       "  - task_create / task_spawn / task_await / task_observe /",
       "    task_done / task_cancel — fan-out multiple peers under one card",
+      "  - workflow_add_node / workflow_run / workflow_reset — author a",
+      "    dependency-ordered DAG for user approval",
       "",
       "User-configured MCP servers (loaded from ~/.claude.json) may also",
       "appear in your tool list — use them like any other tool.",
@@ -172,6 +182,7 @@ export type VercelRunArgs = {
   // same gating Claude uses (peer claude runs are launched without the
   // orchestrator MCP).
   depth?: number;
+  onWorkflowProposed?: WorkflowProposedHandler;
   onEvent: (ev: RunEvent) => void;
   // Fires once on the SDK's `finish` part, sourced from `part.totalUsage`
   // (the cumulative-across-steps aggregate — `part.usage` in v5 is final-step
@@ -190,10 +201,94 @@ const VERCEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gpt-4o-mini": 128_000,
   "gpt-5": 400_000,
   "gpt-5-mini": 400_000,
+  "claude-opus-4-8": 200_000,
   "claude-opus-4-7": 200_000,
   "claude-sonnet-4-6": 200_000,
   "claude-haiku-4-5-20251001": 200_000,
 };
+
+// Build the message array sent to streamText: the system message (which
+// already carries the tools+system breakpoint) followed by the conversation,
+// with a SECOND ephemeral breakpoint placed on the last message of the prior
+// turn. Anthropic caches everything before a breakpoint, so this caches the
+// growing conversation history prefix — not just system+tools — while the new
+// user prompt stays the uncached suffix. The breakpoint is applied to a
+// shallow clone; the caller's `messages` array and its elements are never
+// mutated, so the persisted tail (onMessages) stays free of provider metadata.
+// (anthropic.cacheControl is a no-op for the OpenAI provider, so this is safe
+// for every model. Two breakpoints total — well under Anthropic's limit of 4.)
+export function buildRequestMessages(
+  systemMessage: ModelMessage,
+  messages: ModelMessage[],
+): ModelMessage[] {
+  const out: ModelMessage[] = [systemMessage, ...messages];
+  // The new user prompt is the final entry; the last PRIOR message is the one
+  // before it. tailIdx <= 0 means there's no prior conversation (first turn:
+  // out is [system, userPrompt]) — nothing to cache beyond system+tools.
+  const tailIdx = out.length - 2;
+  if (tailIdx <= 0) return out;
+  const tail = out[tailIdx];
+  const existing = (tail.providerOptions ?? {}) as Record<string, unknown>;
+  out[tailIdx] = {
+    ...tail,
+    providerOptions: {
+      ...existing,
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    },
+  };
+  return out;
+}
+
+// Normalize the SDK's cumulative usage into our TurnUsage. v6 reports cache
+// reads/writes under `usage.inputTokenDetails`; `usage.cachedInputTokens` is
+// the deprecated read-only field we fall back to. Reading cacheWriteTokens
+// here is the fix for cache-creation tokens previously being dropped (the
+// first turn of a session is a cache write, so without this it read as 0).
+export function buildVercelTurnUsage(
+  usage:
+    | {
+        inputTokens?: number;
+        outputTokens?: number;
+        cachedInputTokens?: number;
+        inputTokenDetails?: {
+          cacheReadTokens?: number;
+          cacheWriteTokens?: number;
+        };
+      }
+    | undefined,
+  modelId: string,
+): TurnUsage {
+  const details = usage?.inputTokenDetails;
+  return {
+    input: usage?.inputTokens ?? 0,
+    output: usage?.outputTokens ?? 0,
+    cacheRead: details?.cacheReadTokens ?? usage?.cachedInputTokens ?? 0,
+    cacheWrite: details?.cacheWriteTokens ?? 0,
+    model: modelId,
+  };
+}
+
+// Build streamText's `providerOptions`. Anthropic caching is driven entirely
+// by the explicit breakpoints on the messages (see buildRequestMessages), so
+// Claude models need nothing here. OpenAI models get a stable `promptCacheKey`:
+// OpenAI prompt caching is automatic for prompts >1024 tokens, but the cache
+// is per-backend, so a stable key routes a session's turns to the same backend
+// and the warm prefix is actually reused. The sessionId is the natural
+// stable-per-session key. reasoningEffort rides along when set (the OpenAI
+// union has no "max", so that level is narrowed out — clampEffort already keeps
+// runtime within the resolved set, this just satisfies the type).
+export function buildVercelProviderOptions(opts: {
+  modelId: string;
+  effort?: EffortLevel;
+  sessionId: string;
+}): { openai: Record<string, string> } | undefined {
+  if (opts.modelId.startsWith("claude-")) return undefined;
+  const openai: Record<string, string> = { promptCacheKey: opts.sessionId };
+  if (opts.effort && opts.effort !== "max") {
+    openai.reasoningEffort = opts.effort;
+  }
+  return { openai };
+}
 
 function vercelWindowFor(model: string): number | null {
   if (VERCEL_CONTEXT_WINDOWS[model] != null) return VERCEL_CONTEXT_WINDOWS[model];
@@ -218,6 +313,7 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
     allowRules,
     maxSteps,
     depth,
+    onWorkflowProposed,
     onEvent,
     onTurnUsage,
     onContextUsage,
@@ -246,10 +342,25 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
     ? `${baseSystem}\n\n${systemPromptAppend}`
     : baseSystem;
 
+  // The persisted conversation tail. This is what onMessages writes back for
+  // next turn — it must NOT include the system message below, or the system
+  // prompt would accumulate a fresh copy on every turn.
   const messages: ModelMessage[] = [
     ...priorMessages,
     { role: "user", content: prompt },
   ];
+
+  // Anthropic prompt caching. The system prompt + tool definitions are a large,
+  // byte-stable prefix reused on every turn of a session (only `cwd`/isTopLevel
+  // vary it, and those are fixed per session). Tools render before system, so a
+  // single ephemeral breakpoint on the system message caches tools + system
+  // together — the dominant reusable chunk. `providerOptions.anthropic` is a
+  // no-op for the OpenAI provider, so this is safe to pass for every model.
+  const systemMessage: ModelMessage = {
+    role: "system",
+    content: system,
+    providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+  };
 
   const gate = buildGate({
     permissions,
@@ -265,6 +376,7 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
         parentSessionId: sessionId,
         parentCwd: cwd,
         depth: depth ?? 0,
+        onWorkflowProposed,
       })
     : {};
 
@@ -284,20 +396,19 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
   } as ToolSet;
 
   try {
-    // @ai-sdk/openai's reasoningEffort union has no "max" — narrow it out so
-    // the literal typechecks. Runtime never sees "max" here anyway: the OpenAI
-    // catalog tops out at "xhigh" and clampEffort filters to the resolved set.
-    const vercelEffort = effort && effort !== "max" ? effort : undefined;
+    const providerOptions = buildVercelProviderOptions({ modelId, effort, sessionId });
     const result = streamText({
       model: languageModel,
-      system,
-      messages,
+      // System is delivered as the leading message (carrying the tools+system
+      // cache breakpoint) rather than the top-level `system` field, plus a
+      // second breakpoint on the prior turn's tail to cache the conversation
+      // history. Only the request gets these — `messages` stays clean for
+      // persistence (buildRequestMessages clones rather than mutating).
+      messages: buildRequestMessages(systemMessage, messages),
       tools,
       stopWhen: stepCountIs(stepLimit),
       abortSignal: signal,
-      ...(vercelEffort && !modelId.startsWith("claude-")
-        ? { providerOptions: { openai: { reasoningEffort: vercelEffort } } }
-        : {}),
+      ...(providerOptions ? { providerOptions } : {}),
       // Stream errors are surfaced via the `error` part inside `fullStream`
       // below — adding an `onError` callback here would emit them twice.
     });
@@ -405,13 +516,7 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
           sawFinish = true;
           const usage = part.totalUsage;
           if (usage) {
-            const turnUsage: TurnUsage = {
-              input: usage.inputTokens ?? 0,
-              output: usage.outputTokens ?? 0,
-              cacheRead: usage.cachedInputTokens ?? 0,
-              cacheWrite: 0,
-              model: modelId,
-            };
+            const turnUsage = buildVercelTurnUsage(usage, modelId);
             onTurnUsage?.(turnUsage);
             const window = vercelWindowFor(modelId);
             if (window && onContextUsage) {
@@ -966,7 +1071,61 @@ type OrchestratorDeps = {
   parentSessionId: string;
   parentCwd: string;
   depth: number;
+  onWorkflowProposed?: WorkflowProposedHandler;
 };
+
+export function buildWorkflowAiTools(deps: {
+  parentSessionId: string;
+  parentRunner: RunnerKind;
+  onWorkflowProposed?: WorkflowProposedHandler;
+}): ToolSet {
+  return {
+    workflow_add_node: tool({
+      description:
+        "Add one node to the workflow DAG you are assembling. A node is a single isolated agent run. Dependencies receive only upstream final output text, injected by the engine.",
+      inputSchema: z.object({
+        id: z.string().min(1),
+        title: z.string().min(1),
+        runner: z.enum(["claude", "codex", "vercel", "ollama"]),
+        model: z.string().min(1).optional(),
+        prompt: z.string().min(1),
+        dependsOn: z.array(z.string()).optional(),
+      }),
+      execute: async (input) => {
+        const r = executeWorkflowAddNode(input as WorkflowAddNodeInput, {
+          parentSessionId: deps.parentSessionId,
+        });
+        return r.payload;
+      },
+    }),
+
+    workflow_run: tool({
+      description:
+        "Finalize the workflow DAG assembled with workflow_add_node and propose it for user approval. Do not run the nodes yourself.",
+      inputSchema: z.object({ goal: z.string().min(1) }),
+      execute: async ({ goal }) => {
+        const r = executeWorkflowRun(
+          { goal },
+          {
+            parentSessionId: deps.parentSessionId,
+            parentRunner: deps.parentRunner,
+            onWorkflowProposed: deps.onWorkflowProposed,
+          },
+        );
+        return r.payload;
+      },
+    }),
+
+    workflow_reset: tool({
+      description: "Discard the workflow DAG draft you have been assembling.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const r = executeWorkflowReset({ parentSessionId: deps.parentSessionId });
+        return r.payload;
+      },
+    }),
+  } as ToolSet;
+}
 
 function buildOrchestratorTools(deps: OrchestratorDeps): ToolSet {
   const ctx = {
@@ -977,6 +1136,12 @@ function buildOrchestratorTools(deps: OrchestratorDeps): ToolSet {
   };
 
   return {
+    ...buildWorkflowAiTools({
+      parentSessionId: deps.parentSessionId,
+      parentRunner: ctx.parentRunner,
+      onWorkflowProposed: deps.onWorkflowProposed,
+    }),
+
     delegate_run: tool({
       description:
         "Spawn a peer agent (claude, codex, or vercel — must differ from this runner) with a natural-language task. By default waits for completion and returns the peer's final text. Set wait=false to return immediately with a runId you can poll via get_run.",
@@ -1018,7 +1183,7 @@ function buildOrchestratorTools(deps: OrchestratorDeps): ToolSet {
 
     validate_run: tool({
       description:
-        "Adversarial peer review of your just-completed work. Call as the FINAL step before declaring a task done. A peer agent reads the repo, looks for flaws in your claim, and returns a structured verdict (pass / fail / needs_changes) plus an issues list.",
+        "Optional adversarial peer review of your just-completed work. Call it when you want a second opinion before declaring a task done — it is not required. A peer agent reads the repo, looks for flaws in your claim, and returns a structured verdict (pass / fail / needs_changes) plus an issues list.",
       inputSchema: z.object({
         peer: z.enum(["claude", "codex", "vercel"]).optional(),
         claim: z.string().min(1),

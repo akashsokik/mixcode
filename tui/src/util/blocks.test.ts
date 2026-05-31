@@ -4,6 +4,7 @@ import {
   collectChatItemIds,
   groupDelegations,
   latestDelegationId,
+  peerBlockRunId,
   resolveItemContent,
 } from "./blocks";
 import type { RunEvent, Session } from "../../../shared/events.ts";
@@ -203,5 +204,67 @@ describe("collaboration grouping", () => {
     expect(collectChatItemIds(session, [])).toContain("m3:c:0");
     expect(latestDelegationId(session)).toBe("m3:c:0");
     expect(resolveItemContent(session, [], "m3:c:0")).toContain("Plan read");
+  });
+});
+
+describe("workflow authoring fold", () => {
+  const addNode = (id: string, title: string): RunEvent => ({
+    type: "tool_log",
+    log: {
+      name: "mcp__orchestrator__workflow_add_node",
+      input: { id, title, runner: "ollama" },
+      output: [{ type: "text", text: "{}" }],
+    },
+  });
+  const runTool: RunEvent = {
+    type: "tool_log",
+    log: {
+      name: "mcp__orchestrator__workflow_run",
+      input: { goal: "math" },
+      output: [{ type: "text", text: "{}" }],
+    },
+  };
+
+  test("folds a run of 2+ authoring tools into one workflow_authoring group", () => {
+    const events = [addNode("a1", "Compute A1"), addNode("a2", "Compute A2"), runTool];
+    const grouped = groupDelegations(blocksFromEvents(events), "m1");
+    expect(grouped).toHaveLength(1);
+    const g = grouped[0];
+    expect(g.kind).toBe("workflow_authoring");
+    if (g.kind !== "workflow_authoring") throw new Error("expected workflow_authoring");
+    expect(g.children).toHaveLength(3);
+    expect(g.id).toBe("m1:wfauth:0");
+    // The folded group is selectable as one item, not three.
+    expect(collectChatItemIds({
+      id: "s", title: "t", activeRunner: "claude", cwd: "/tmp", streaming: false,
+      createdAt: "2026-05-25T10:00:00.000Z", updatedAt: "2026-05-25T10:00:00.000Z",
+      models: {}, claudeMode: "default", git: null,
+      messages: [{ id: "m1", role: "assistant", text: "", events, createdAt: "2026-05-25T10:00:01.000Z" }],
+    }, [])).toEqual(["m1:wfauth:0"]);
+  });
+
+  test("a lone authoring tool is left unfolded", () => {
+    const grouped = groupDelegations(blocksFromEvents([addNode("a1", "only")]), "m1");
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].kind).toBe("passthrough");
+  });
+});
+
+describe("peerBlockRunId", () => {
+  test("extracts the short run-id from tagged peer reply / tool names", () => {
+    const events: RunEvent[] = [
+      { type: "tool_log", log: { name: "[ollama][lf00lmyA…] reply", output: "50" } },
+      { type: "tool_log", log: { name: "[ollama][fkPlDEIT…] Bash", input: {}, output: "ok" } },
+    ];
+    const blocks = blocksFromEvents(events);
+    expect(blocks.map(peerBlockRunId)).toEqual(["lf00lmyA…", "fkPlDEIT…"]);
+  });
+
+  test("returns null for an untagged peer reply and a non-peer block", () => {
+    const events: RunEvent[] = [
+      { type: "tool_log", log: { name: "[codex] reply", output: "hi" } },
+      { type: "tool_log", log: { name: "Read", input: { path: "/a" }, output: "ok" } },
+    ];
+    expect(blocksFromEvents(events).map(peerBlockRunId)).toEqual([null, null]);
   });
 });

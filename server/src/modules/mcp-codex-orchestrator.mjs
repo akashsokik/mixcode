@@ -1,6 +1,7 @@
 // Stdio MCP server spawned as a child of the Codex CLI. Exposes
-// `delegate_run` / `get_run` / `cancel_run` / `validate_run` so a Codex turn
-// can hand work off to a peer agent (e.g. ask Claude to do something).
+// orchestrator tools (`delegate_run`, `validate_run`, task/collab helpers, and
+// workflow authoring) so a Codex turn can hand work off to peer agents or
+// propose an approval-gated workflow DAG.
 //
 // We can't share memory with the parent Hono server (separate process), so
 // every tool call proxies via HTTP to `POST <ORCHESTRATOR_URL>/internal/delegate`.
@@ -76,12 +77,14 @@ const server = new McpServer(
     // MCP server instructions — surfaced to the model alongside the tool
     // descriptions so the Codex agent knows when to call validate_run.
     instructions:
-      "Delegate subtasks to a peer agent with `delegate_run`. Use `validate_run` " +
-      "as your FINAL step before declaring a task complete: a peer agent " +
-      "adversarially reviews your work and returns a structured verdict " +
-      "(pass / needs_changes / fail). Treat needs_changes and fail as work to do. " +
+      "Delegate subtasks to a peer agent with `delegate_run`. Optionally use `validate_run` " +
+      "when you want a peer agent to adversarially review your work and return a structured " +
+      "verdict (pass / needs_changes / fail) — it is an available tool, not a required step. " +
+      "If you use it, treat needs_changes and fail as work to do. " +
       "For active Claude <-> Codex collaboration, write a shared plan with `plan_create`, " +
-      "start it with `collab_start`, and ask bounded peer turns with `collab_ask_peer`.",
+      "start it with `collab_start`, and ask bounded peer turns with `collab_ask_peer`. " +
+      "For dependency-ordered DAGs, call `workflow_add_node` once per node and " +
+      "`workflow_run` to show the graph for user approval.",
   },
 );
 
@@ -127,11 +130,11 @@ server.registerTool(
   "validate_run",
   {
     description:
-      "Adversarial peer review of your just-completed work. Call this as the FINAL step " +
-      "before declaring a task done. A peer agent (default: the other runner) reads the " +
-      "actual repo state, tries to find flaws in your claim, and returns a structured " +
-      "verdict (pass / fail / needs_changes) plus an issues list. Treat fail and " +
-      "needs_changes as work to do.",
+      "Optional adversarial peer review of your just-completed work. Call this when you want " +
+      "a second opinion before declaring a task done — it is not required. A peer agent " +
+      "(default: the other runner) reads the actual repo state, tries to find flaws in your " +
+      "claim, and returns a structured verdict (pass / fail / needs_changes) plus an issues " +
+      "list. Treat fail and needs_changes as work to do.",
     inputSchema: {
       peer: z.enum(["claude", "codex"]).optional(),
       claim: z.string().min(1),
@@ -371,6 +374,44 @@ server.registerTool(
     inputSchema: { collabId: z.string() },
   },
   async (input) => jsonContent(await callServer("collab_cancel", input)),
+);
+
+server.registerTool(
+  "workflow_add_node",
+  {
+    description:
+      "Add one node to the workflow DAG you are assembling. A node is a single isolated agent run. Dependencies receive only upstream final output text, injected by the engine.",
+    inputSchema: {
+      id: z.string().min(1),
+      title: z.string().min(1),
+      runner: z.enum(["claude", "codex", "vercel", "ollama"]),
+      model: z.string().min(1).optional(),
+      prompt: z.string().min(1),
+      dependsOn: z.array(z.string()).optional(),
+    },
+  },
+  async (input) => jsonContent(await callServer("workflow_add_node", input)),
+);
+
+server.registerTool(
+  "workflow_run",
+  {
+    description:
+      "Finalize the workflow DAG assembled with workflow_add_node and propose it for user approval. Do not run the nodes yourself.",
+    inputSchema: {
+      goal: z.string().min(1),
+    },
+  },
+  async (input) => jsonContent(await callServer("workflow_run", input)),
+);
+
+server.registerTool(
+  "workflow_reset",
+  {
+    description: "Discard the workflow DAG draft you have been assembling.",
+    inputSchema: {},
+  },
+  async (input) => jsonContent(await callServer("workflow_reset", input)),
 );
 
 const transport = new StdioServerTransport();

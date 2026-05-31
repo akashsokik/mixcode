@@ -701,6 +701,8 @@ function describeSlashCommand(
       return describeMcpAction(command.action);
     case "new":
       return "new session";
+    case "workflow":
+      return "workflow";
     case "unknown": {
       const extra = slashExtras.find((s) => s.name.slice(1) === command.name);
       return extra ? `skill ${extra.name}` : `unknown /${command.name}`;

@@ -37,7 +37,7 @@ export function ToolCard({
   // the header one column right of a regular top-level ToolCard.
   nested?: boolean;
 }) {
-  const { header, body, isError, category, edit, peer } = formatToolLog(log, {
+  const { header, body, isError, category, edit, peer, peerRunId } = formatToolLog(log, {
     expanded,
   });
   const { verb, summary } = splitHeader(header);
@@ -67,7 +67,7 @@ export function ToolCard({
     >
       <CardHeader
         status={status}
-        peer={peer ? { name: peer, color: runnerColor(peer) } : undefined}
+        peer={peer ? { name: peer, color: runnerColor(peer), runId: peerRunId } : undefined}
         verb={verb}
         verbColor={accent}
         title={summary || undefined}

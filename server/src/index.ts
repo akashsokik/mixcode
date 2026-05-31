@@ -23,6 +23,7 @@ import type {
   ServerMsg,
   SessionSkillEntry,
   TurnUsage,
+  WorkflowRun,
 } from "../../shared/events.js";
 import { SessionManager } from "./sessions.js";
 import { resolveEffortInfo } from "./effort-capability.js";
@@ -80,6 +81,25 @@ import {
   runConsensus,
   setConsensusReady,
 } from "./orchestrator/consensus.js";
+import {
+  cancelWorkflowRuns,
+  clearWorkflowRun,
+  createRealDispatcher,
+  buildWorkflowCompletionContext,
+  getWorkflowRun,
+  isWorkflowActive,
+  runWorkflow,
+  setWorkflowRun,
+  withWorkflowCompletionContext,
+  type WorkflowController,
+} from "./orchestrator/workflow.js";
+import { clearDraft } from "./orchestrator/workflow-draft.js";
+import {
+  executeWorkflowAddNode,
+  executeWorkflowReset,
+  executeWorkflowRun,
+  type WorkflowAddNodeInput,
+} from "./orchestrator/workflow-tools.js";
 import { PermissionStore } from "./permissions.js";
 import { gitInfoEquals, readGitInfo } from "./git.js";
 import { buildPeerEventForwarder } from "./orchestrator/peer-forwarding.js";
@@ -97,20 +117,31 @@ const ORCHESTRATOR_SCRIPT_PATH = path.join(
   "mcp-codex-orchestrator.mjs",
 );
 
-// Appended to the Claude SDK's system prompt for every turn. Nudges the
-// agent to use validate_run as its final step before declaring done. The
-// agent is free to skip it — verdict is informational, not enforced.
+// Appended to the Claude SDK's system prompt for every turn. Tells the agent
+// that validate_run is available as an option — not a required step. The model
+// decides whether to use it; nothing here forces a validation pass.
 const ADVERSARIA_SYSTEM_PROMPT_APPEND =
-  "Before you declare a task complete, call `validate_run` with a concise " +
-  "`claim` describing what you did. The peer agent will adversarially review " +
-  "your work and return a verdict (pass / needs_changes / fail). Treat " +
-  "needs_changes and fail as work to do; pass means you can stop.";
+  "The `validate_run` tool is available if you want a peer agent to " +
+  "adversarially review your work: pass a concise `claim` describing what you " +
+  "did and it returns a verdict (pass / needs_changes / fail) plus an issues " +
+  "list. Using it is optional and entirely your choice — it is not required " +
+  "before declaring a task complete. If you do use it, treat needs_changes " +
+  "and fail as work to do.";
 
 const sessions = new SessionManager();
 const permissions = new PermissionStore();
 // Map sessionId -> AbortController for the in-flight turn, so deleting a
 // session or starting a new turn can cancel pending permission prompts.
 const turnAborts = new Map<string, AbortController>();
+// Map sessionId -> the live WorkflowController for an approved+running
+// workflow. The engine's per-session run store (getWorkflowRun) holds the
+// snapshot for replay; this holds the scheduler handle so workflow_cancel /
+// /clear / delete_session can reach controller.cancel() (which aborts
+// in-flight node runs, marks pending nodes skipped, and emits the terminal
+// snapshot). Populated at approve, deleted when the run settles. One active
+// workflow per session, so a single entry suffices - mirrors the consensus
+// per-session model rather than a workflowId-keyed registry.
+const workflowControllers = new Map<string, WorkflowController>();
 // Map sessionId -> last SDK-reported skill listing, tagged with the runner
 // that produced it. Populated when the Claude runner sees its `system init`
 // message (so it's empty until the first turn). Codex doesn't expose an
@@ -340,6 +371,59 @@ app.post("/internal/delegate", async (c) => {
       },
     );
     return c.json(result);
+  }
+  if (action === "workflow_add_node") {
+    if (!body.parentSessionId) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const dependsOnIn = args.dependsOn;
+    const dependsOn = Array.isArray(dependsOnIn)
+      ? dependsOnIn.filter((d): d is string => typeof d === "string")
+      : undefined;
+    const result = executeWorkflowAddNode(
+      {
+        id: String(args.id ?? ""),
+        title: String(args.title ?? ""),
+        runner: args.runner as RunnerKind,
+        model: typeof args.model === "string" ? args.model : undefined,
+        prompt: String(args.prompt ?? ""),
+        dependsOn,
+      } satisfies WorkflowAddNodeInput,
+      { parentSessionId: body.parentSessionId },
+    );
+    return c.json(result);
+  }
+  if (action === "workflow_run") {
+    if (!body.parentRunner || !body.parentSessionId) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    const result = executeWorkflowRun(
+      { goal: String(args.goal ?? "") },
+      {
+        parentSessionId: body.parentSessionId,
+        parentRunner: body.parentRunner,
+        onWorkflowProposed: (run) =>
+          handleWorkflowProposed(body.parentSessionId!, run),
+      },
+    );
+    return c.json(result);
+  }
+  if (action === "workflow_reset") {
+    if (!body.parentSessionId) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    return c.json(
+      executeWorkflowReset({ parentSessionId: body.parentSessionId }),
+    );
   }
   if (action === "task_create") {
     if (!body.parentSessionId) {
@@ -584,9 +668,15 @@ app.get(
       // Same idea for pending consensus modals — a TUI that reconnects mid
       // /consensus decision should re-receive the ready payload, otherwise
       // the user loses the modal with no way back to it.
+      // Same idea for an in-flight or proposed workflow - a reconnecting TUI
+      // must re-receive the current DAG snapshot or it loses the card/panel
+      // and any pending approval modal. The engine mutates the stored run in
+      // place, so getWorkflowRun is always the current snapshot.
       for (const s of sessions.list()) {
         const ready = getConsensusReady(s.id);
         if (ready) sendTo(ws, { type: "consensus_ready", ready });
+        const run = getWorkflowRun(s.id);
+        if (run) sendTo(ws, { type: "workflow_state", run });
       }
     },
     onClose(_evt, ws) {
@@ -639,11 +729,19 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
     case "delete_session": {
       turnAborts.get(msg.sessionId)?.abort();
       turnAborts.delete(msg.sessionId);
+      cancelRunsForSession(msg.sessionId);
       cancelCollabsForSession(msg.sessionId);
       clearCollabsForSession(msg.sessionId);
       cancelTasksForSession(msg.sessionId);
       clearTasksForSession(msg.sessionId);
       clearConsensusReady(msg.sessionId);
+      // Stop the workflow scheduler (if approved+running) and drop its store.
+      // session_deleted tears down all client-side state for the session, so
+      // no workflow_state broadcast is needed here - any terminal snapshot the
+      // engine's cancel() emits is harmless.
+      clearWorkflowCompletionContext(msg.sessionId);
+      teardownWorkflow(msg.sessionId);
+      clearDelegationStats(msg.sessionId);
       sessionSkills.delete(msg.sessionId);
       sessions.delete(msg.sessionId);
       return;
@@ -673,6 +771,11 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
           sessionId: msg.sessionId,
         });
       }
+      // Explicitly tear down workflow UI state. The turnAborts.abort() above does
+      // NOT reach an approved+running workflow (no live turn holds its
+      // controller), so this mirrors the tasks/collab cleanup.
+      clearWorkflowCompletionContext(msg.sessionId);
+      clearWorkflowForClear(msg.sessionId);
       clearDelegationStats(msg.sessionId);
       sessions.setDelegations(msg.sessionId, null);
       sessions.clearSession(msg.sessionId);
@@ -705,6 +808,38 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
 
     case "consensus_action":
       await handleConsensusAction(msg);
+      return;
+
+    case "workflow_start": {
+      // Authoring runs on the session's active runner. Reject overlap so a new
+      // proposal cannot orphan an already running scheduler.
+      const existing = getWorkflowRun(msg.sessionId);
+      if (isWorkflowActive(existing)) {
+        sessions.broadcast({
+          type: "error",
+          sessionId: msg.sessionId,
+          message: `a workflow is already ${existing.status}; approve/cancel it before starting another`,
+        });
+        return;
+      }
+      clearWorkflowCompletionContext(msg.sessionId);
+      if (existing) {
+        clearWorkflowRun(msg.sessionId);
+        sessions.broadcast({ type: "workflow_cleared", sessionId: msg.sessionId });
+      }
+      clearDraft(msg.sessionId);
+      await runTurn(msg.sessionId, buildWorkflowAuthoringPrompt(msg.goal), {
+        displayText: `/workflow ${msg.goal}`,
+      });
+      return;
+    }
+
+    case "workflow_approve":
+      handleWorkflowApprove(msg.workflowId);
+      return;
+
+    case "workflow_cancel":
+      handleWorkflowCancel(msg.workflowId);
       return;
 
     case "interrupt": {
@@ -741,7 +876,11 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
   }
 }
 
-async function runTurn(sessionId: string, text: string): Promise<void> {
+async function runTurn(
+  sessionId: string,
+  text: string,
+  opts?: { displayText?: string; runner?: RunnerKind },
+): Promise<void> {
   const session = sessions.get(sessionId);
   if (!session) {
     sessions.broadcast({
@@ -752,7 +891,18 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
     return;
   }
 
-  sessions.startMessage(sessionId, "user", text);
+  // The runner that actually executes this turn. Normally the session's active
+  // runner; opts.runner is reserved for explicit internal overrides.
+  const turnRunner: RunnerKind = opts?.runner ?? session.activeRunner;
+  const runtime = sessions.runtime(sessionId)!;
+  const workflowCompletionContext =
+    opts?.runner === undefined ? runtime.pendingWorkflowCompletionContext : undefined;
+  const runnerPrompt = withWorkflowCompletionContext(text, workflowCompletionContext);
+
+  // The user message shows `displayText` (e.g. "/workflow <goal>") while the
+  // runner receives `runnerPrompt` (possibly with hidden workflow completion
+  // context or the goal wrapped in tool instructions).
+  sessions.startMessage(sessionId, "user", opts?.displayText ?? text);
   const asst = sessions.startMessage(sessionId, "assistant", "");
   if (!asst) return;
 
@@ -777,8 +927,6 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
     cancelCollabsForSession(sessionId);
   });
 
-  const runtime = sessions.runtime(sessionId)!;
-
   // Peer events emitted by a delegated run are folded into the parent's
   // assistant message with a `[runner]` chip in the name so the TUI can
   // render them inline alongside the parent's own events. See
@@ -801,17 +949,17 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
   registerTaskEmitter(sessionId, onEvent);
   registerCollabEmitter(sessionId, onEvent);
 
-  // Active-runner effort, clamped to what the resolved model actually supports.
+  // Turn-runner effort, clamped to what the resolved model actually supports.
   // effortInfo is for the active runner+model (kept current by refreshEffortInfo).
   const effortLevels = session.effortInfo?.levels ?? [];
-  const activeEffort = session.efforts?.[session.activeRunner] ?? null;
+  const activeEffort = session.efforts?.[turnRunner] ?? null;
   const clampedEffort =
     activeEffort && effortLevels.length > 0
       ? clampEffort(effortLevels, activeEffort)
       : null;
 
   try {
-    if (session.activeRunner === "claude") {
+    if (turnRunner === "claude") {
       // In-process MCP server — same process, no HTTP hop.
       const orchestrator = buildDelegateMcpServer({
         parentRunner: "claude",
@@ -820,9 +968,14 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         depth: 0,
         onPeerEvent: forwardPeerEvent,
         onStatsChange,
+        // workflow_run hands the assembled DAG here; store it + broadcast so the
+        // approval modal mounts (approve later starts the scheduler). Guard here
+        // too because workflow tools are available to any top-level Claude turn,
+        // not just /workflow.
+        onWorkflowProposed: (run) => handleWorkflowProposed(sessionId, run),
       });
       await runClaude({
-        prompt: text,
+        prompt: runnerPrompt,
         cwd: session.cwd,
         resumeId: runtime.claudeSessionId,
         model: session.models.claude,
@@ -904,13 +1057,13 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           updateSessionSkills(sessionId, "claude", skills, plugins);
         },
       });
-    } else if (session.activeRunner === "codex") {
+    } else if (turnRunner === "codex") {
       // Codex CLI only accepts stdio MCP servers, so wire it to spawn our
       // own child (mcp-codex-orchestrator.mjs) that proxies tool calls back
       // to /internal/delegate. parentSessionId + token + depth are passed via
       // env on the spawn so the child's HTTP callbacks land on this session.
       await runCodex({
-        prompt: text,
+        prompt: runnerPrompt,
         cwd: session.cwd,
         threadId: runtime.codexThreadId,
         model: session.models.codex,
@@ -943,7 +1096,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
                 depth: 0,
               },
       });
-    } else if (session.activeRunner === "vercel") {
+    } else if (turnRunner === "vercel") {
       // Vercel AI SDK runner. Session continuity rides on
       // runtime.vercelMessages since streamText is stateless. Switching
       // model provider mid-session (e.g. gpt-4o -> claude-sonnet) makes the
@@ -979,7 +1132,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
       }
       runtime.vercelLastProvider = currentProvider;
       await runVercel({
-        prompt: text,
+        prompt: runnerPrompt,
         cwd: session.cwd,
         priorMessages: prior,
         model: session.models.vercel,
@@ -991,6 +1144,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         permissions,
         allowRules: permissions.list(),
         depth: 0,
+        onWorkflowProposed: (run) => handleWorkflowProposed(sessionId, run),
         onEvent,
         onTurnUsage,
         onContextUsage,
@@ -1013,7 +1167,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         ? (runtime.ollamaMessages as ModelMessage[])
         : [];
       await runOllama({
-        prompt: text,
+        prompt: runnerPrompt,
         cwd: session.cwd,
         priorMessages: priorOllama,
         model: session.models.ollama,
@@ -1022,6 +1176,7 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
         permissionMode: session.claudeMode,
         permissions,
         allowRules: permissions.list(),
+        onWorkflowProposed: (run) => handleWorkflowProposed(sessionId, run),
         onEvent,
         onTurnUsage,
         onContextUsage,
@@ -1032,6 +1187,10 @@ async function runTurn(sessionId: string, text: string): Promise<void> {
           sessions.markDirty();
         },
       });
+    }
+    if (workflowCompletionContext && !abort.signal.aborted) {
+      delete runtime.pendingWorkflowCompletionContext;
+      sessions.markDirty();
     }
   } catch (err) {
     onEvent({
@@ -1304,6 +1463,248 @@ async function handleConsensusAction(
     plan,
   ].join("\n");
   await runTurn(msg.sessionId, implementationPrompt);
+}
+
+// ----- /workflow dispatch -----
+//
+// Authoring is no longer a separate planner lifecycle: workflow_start runs a
+// normal active-runner turn with an authoring prompt, and the model assembles
+// + proposes the DAG via workflow_add_node / workflow_run. The proposal hook
+// stores the run + broadcasts workflow_state, so the TUI mounts the approval
+// modal. workflow_approve starts the scheduler (runWorkflow), detached from
+// any turn: approve opens its own host assistant message to carry per-node
+// peer events and pushes a fresh snapshot on every transition via `emit`.
+// workflow_cancel / /clear / delete_session tear it down.
+//
+// The engine (workflow.ts) stays low-level: a per-session run store
+// (get/set/clearWorkflowRun), runWorkflow(run, dispatcher, emit) -> controller,
+// and cancelWorkflowRuns(sessionId) for the no-controller bulk path. So index.ts
+// owns the controller registry and the workflowId -> session resolution.
+
+// Per-node delegate timeout for the real dispatcher (seconds). Generous: a
+// node is a full agent run, not a single tool call. Matches the upper end of
+// the consensus per-call budget.
+const WORKFLOW_NODE_TIMEOUT_SEC = 600;
+
+// The authoring prompt handed to the active runner when the user types
+// /workflow <goal>. It is shown to the user as "/workflow <goal>" (runTurn's
+// displayText), but the runner receives this fuller instruction so it reaches
+// for the workflow tools and encodes the per-node isolation contract.
+function buildWorkflowAuthoringPrompt(goal: string): string {
+  return [
+    "The user invoked /workflow with this goal:",
+    "",
+    goal,
+    "",
+    "Design a DAG of agent nodes that accomplishes it, then assemble it with the",
+    "orchestrator workflow tools - do NOT do the work yourself, your only job is to",
+    "author the graph:",
+    "- Call workflow_add_node once per step: give it a short id, a title, the runner",
+    "  to use, a self-contained prompt, and dependsOn (ids of steps whose output it",
+    "  needs).",
+    "- Each node runs as a FRESH, ISOLATED agent that shares no context with any",
+    "  other node. The only thing a node receives from a dependency is that",
+    "  dependency's final output text, which the engine injects automatically. So",
+    "  write each prompt to stand alone and never reference another node by name.",
+    "- Steps that do not depend on each other must NOT list each other in dependsOn,",
+    "  so they run in parallel.",
+    "- When the graph is complete, call workflow_run with a one-line goal summary to",
+    "  propose it for the user's approval, then stop.",
+    "If the goal is too small to split into 2+ steps, say so plainly instead of",
+    "forcing a graph.",
+  ].join("\n");
+}
+
+function handleWorkflowProposed(
+  sessionId: string,
+  run: WorkflowRun,
+): { ok: true } | { ok: false; error: string } {
+  const existing = getWorkflowRun(sessionId);
+  if (isWorkflowActive(existing) && existing.id !== run.id) {
+    return {
+      ok: false,
+      error: `a workflow is already ${existing.status}; approve/cancel it before proposing another`,
+    };
+  }
+  clearWorkflowCompletionContext(sessionId);
+  setWorkflowRun(run);
+  sessions.broadcast({ type: "workflow_state", run });
+  return { ok: true };
+}
+
+// Resolve a workflowId to its session. The store is keyed by sessionId (one
+// active workflow per session), but the wire keys approve/cancel on
+// workflowId, so scan the live sessions for the run whose id matches.
+function findWorkflowSession(
+  workflowId: string,
+): { sessionId: string; run: WorkflowRun } | null {
+  for (const s of sessions.list()) {
+    const run = getWorkflowRun(s.id);
+    if (run && run.id === workflowId) return { sessionId: s.id, run };
+  }
+  return null;
+}
+
+// Approve a proposed run: flip it to running by starting the scheduler. The
+// scheduler is detached from any turn, so this opens its own host assistant
+// message to carry per-node peer event text (spec: per-node streaming rides
+// the onPeerEvent -> tool_log path) and pushes a fresh snapshot on every node
+// transition via `emit`. The controller is retained so workflow_cancel /
+// /clear / delete_session can stop it.
+function handleWorkflowApprove(workflowId: string): void {
+  const found = findWorkflowSession(workflowId);
+  if (!found) {
+    sessions.broadcast({
+      type: "error",
+      message: `no workflow awaiting approval: ${workflowId}`,
+    });
+    return;
+  }
+  const { sessionId, run } = found;
+  if (run.status !== "proposed") {
+    sessions.broadcast({
+      type: "error",
+      sessionId,
+      message: `workflow ${workflowId} is not awaiting approval (status: ${run.status})`,
+    });
+    return;
+  }
+  const session = sessions.get(sessionId);
+  if (!session) {
+    sessions.broadcast({
+      type: "error",
+      sessionId,
+      message: `unknown session: ${sessionId}`,
+    });
+    return;
+  }
+
+  // Host assistant message for the detached scheduler's per-node events.
+  const asst = sessions.startMessage(sessionId, "assistant", "");
+  if (!asst) return;
+  const onEvent = (event: RunEvent): void => {
+    sessions.appendEvent(sessionId, asst.id, event);
+  };
+  const forwardPeerEvent = buildPeerEventForwarder(onEvent);
+  // Node runs spawn with parentSessionId = this session, so the existing
+  // cancelRunsForSession sweep (delete/clear/turn-abort) also catches in-flight
+  // node runs; the controller still owns stopping the loop + marking nodes.
+  const dispatcher = createRealDispatcher({
+    parentRunner: session.activeRunner,
+    parentSessionId: sessionId,
+    parentCwd: session.cwd,
+    depth: 0,
+    timeoutSec: WORKFLOW_NODE_TIMEOUT_SEC,
+    onPeerEvent: forwardPeerEvent,
+  });
+
+  // emit broadcasts the live snapshot: the engine mutates the run in place, and
+  // it's the same reference the store holds (set at proposal), so getWorkflowRun
+  // stays current for reconnect replay without an explicit re-set here.
+  //
+  // Guard against late emits after teardown: /clear (or delete) can race an
+  // in-flight node that settles async and emits a terminal `cancelled` snapshot
+  // AFTER clearWorkflowForClear has already broadcast `workflow_cleared`. That
+  // would re-add a card the client just dropped. clearWorkflowRun nulls the
+  // store, so once this run is no longer the stored one we stop broadcasting.
+  const emit = (r: WorkflowRun): void => {
+    if (getWorkflowRun(sessionId) !== r) return;
+    sessions.broadcast({ type: "workflow_state", run: r });
+  };
+
+  const controller = runWorkflow(run, dispatcher, emit);
+  workflowControllers.set(sessionId, controller);
+  void controller.done.then(() => {
+    const stillCurrent = getWorkflowRun(sessionId) === run;
+    if (stillCurrent) {
+      const completionContext = buildWorkflowCompletionContext(run);
+      if (completionContext) {
+        rememberWorkflowCompletionContext(sessionId, completionContext);
+        onEvent({ type: "text_delta", delta: `\n\n${completionContext}` });
+      }
+    }
+    // Guard: a delete/clear may have raced and replaced/removed the entry.
+    if (workflowControllers.get(sessionId) === controller) {
+      workflowControllers.delete(sessionId);
+    }
+    sessions.finishMessage(sessionId, asst.id);
+  });
+}
+
+// Cancel a workflow by id: prefer the live controller (purpose-built - aborts
+// in-flight node runs, marks pending nodes skipped, settles, and emits the
+// terminal snapshot), falling back to cancelWorkflowRuns for a proposed run
+// that was never approved (no controller, so push the terminal snapshot here).
+function handleWorkflowCancel(workflowId: string): void {
+  const found = findWorkflowSession(workflowId);
+  if (!found) {
+    sessions.broadcast({
+      type: "error",
+      message: `no workflow to cancel: ${workflowId}`,
+    });
+    return;
+  }
+  const { sessionId, run } = found;
+  const controller = workflowControllers.get(sessionId);
+  if (controller) {
+    controller.cancel();
+    workflowControllers.delete(sessionId);
+    // controller.cancel() emits the terminal cancelled snapshot via `emit`.
+    return;
+  }
+  // No live scheduler (proposed, or already settled). Mark the stored run
+  // cancelled and push the terminal snapshot so the approval modal tears down.
+  cancelWorkflowRuns(sessionId);
+  sessions.broadcast({ type: "workflow_state", run });
+}
+
+// delete_session teardown: stop the scheduler and drop the store. No snapshot
+// broadcast - session_deleted drops all client-side state for the session.
+function teardownWorkflow(sessionId: string): void {
+  const controller = workflowControllers.get(sessionId);
+  if (controller) {
+    controller.cancel();
+    workflowControllers.delete(sessionId);
+  } else {
+    cancelWorkflowRuns(sessionId);
+  }
+  clearWorkflowRun(sessionId);
+  clearDraft(sessionId);
+}
+
+// /clear teardown: stop the scheduler, drop the store, and tell every client to
+// remove the card/panel/approval-modal. A terminal `cancelled` snapshot is NOT
+// enough - the inline card renders every non-`proposed` status (the "pill on
+// completion" state), so it would just flip to "cancelled" and linger. The
+// explicit `workflow_cleared` removal signal is what actually tears it down.
+function clearWorkflowForClear(sessionId: string): void {
+  const controller = workflowControllers.get(sessionId);
+  if (controller) {
+    controller.cancel();
+    workflowControllers.delete(sessionId);
+  } else {
+    cancelWorkflowRuns(sessionId);
+  }
+  const had = getWorkflowRun(sessionId) !== null;
+  clearWorkflowRun(sessionId);
+  clearDraft(sessionId);
+  if (had) {
+    sessions.broadcast({ type: "workflow_cleared", sessionId });
+  }
+}
+
+function rememberWorkflowCompletionContext(sessionId: string, context: string): void {
+  const runtime = sessions.runtime(sessionId);
+  if (!runtime) return;
+  runtime.pendingWorkflowCompletionContext = context;
+  sessions.markDirty();
+}
+
+function clearWorkflowCompletionContext(sessionId: string): void {
+  const runtime = sessions.runtime(sessionId);
+  if (!runtime?.pendingWorkflowCompletionContext) return;
+  delete runtime.pendingWorkflowCompletionContext;
+  sessions.markDirty();
 }
 
 // Build the `updatedInput` payload the SDK requires when the AskUserQuestion

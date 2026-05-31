@@ -65,6 +65,27 @@ describe("/ollama runner command", () => {
   });
 });
 
+describe("/workflow parsing", () => {
+  test("bare goal threads through to workflow authoring", () => {
+    expect(parseSlash("/workflow ship the login page")).toEqual({
+      type: "workflow",
+      action: { goal: "ship the login page" },
+    });
+  });
+  test("a leading --planner flag is no longer special - it stays in the goal", () => {
+    expect(parseSlash("/workflow --planner codex refactor auth")).toEqual({
+      type: "workflow",
+      action: { goal: "--planner codex refactor auth" },
+    });
+  });
+  test("empty goal yields empty string (App shows usage)", () => {
+    expect(parseSlash("/workflow")).toEqual({
+      type: "workflow",
+      action: { goal: "" },
+    });
+  });
+});
+
 describe("toggleRunner cycle", () => {
   test("cycles claude -> codex -> vercel -> ollama -> claude", () => {
     expect(toggleRunner("claude")).toBe("codex");

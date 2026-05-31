@@ -84,6 +84,13 @@ export type NewAction = {
   runner: RunnerKind | null;
 };
 
+// /workflow grammar:
+//   /workflow <goal>   — active runner authors a DAG via the workflow tools
+//   (no goal)          — App prints a usage notice
+export type WorkflowAction = {
+  goal: string;
+};
+
 export type SlashCommand =
   | { type: "claude"; rest: string }
   | { type: "codex"; rest: string }
@@ -108,6 +115,7 @@ export type SlashCommand =
   | { type: "skills"; action: SkillsAction }
   | { type: "mcp"; action: McpAction }
   | { type: "new"; action: NewAction }
+  | { type: "workflow"; action: WorkflowAction }
   | { type: "unknown"; name: string; rest: string };
 
 // Allow letters, digits, hyphens, dots, underscores, and colons so
@@ -166,6 +174,8 @@ export function parseSlash(text: string): SlashCommand | null {
       return { type: "mcp", action: parseMcpAction(rest) };
     case "new":
       return { type: "new", action: parseNewAction(rest) };
+    case "workflow":
+      return { type: "workflow", action: parseWorkflowAction(rest) };
     default:
       // `name` preserves the user-typed case so callers can match it against
       // case-sensitive lists (e.g. plugin-qualified skill names).
@@ -255,6 +265,12 @@ function parseNewAction(rest: string): NewAction {
     runner = runnerStr;
   }
   return { title, runner };
+}
+
+// /workflow takes just a goal - the active runner authors the DAG via the
+// workflow tools, so there is no planner flag to parse.
+function parseWorkflowAction(rest: string): WorkflowAction {
+  return { goal: rest.trim() };
 }
 
 function parsePlanAction(rest: string): PlanAction {
@@ -413,4 +429,5 @@ export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/skills [add|import|remove|info]", help: "manage skills for the active runner (~/.claude/skills or ~/.codex/skills); `import <claude|codex> [name]` copies from the other runner" },
   { name: "/mcp [add|remove|test]", help: "manage MCP servers for the active runner via its CLI" },
   { name: "/new [title] [runner]", help: "create a new session (optional: title and runner—claude|codex|vercel|ollama)" },
+  { name: "/workflow <goal>", help: "author + run a DAG of agent nodes" },
 ];

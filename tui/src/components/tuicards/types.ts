@@ -10,7 +10,7 @@
 // `notice` it owns — but every card still goes through ChatItem, so this is
 // the contract that matters in practice.
 
-export type TuiCardKind = "tool" | "task" | "collab" | "notice" | "welcome";
+export type TuiCardKind = "tool" | "task" | "collab" | "workflow" | "notice" | "welcome";
 
 export type TuiCardBaseProps = {
   id: string;

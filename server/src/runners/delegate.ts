@@ -1,8 +1,6 @@
 // TS port of agent-orc/agent-runtime/runtime/toolkit/builtins/delegate.go.
-// Exposes three tools as an in-process Claude SDK MCP server:
-//   - delegate_run: spawn a peer agent (claude or codex) with a prompt
-//   - get_run:     poll a previously spawned peer run
-//   - cancel_run:  cancel a peer run
+// Exposes the in-process Claude SDK orchestrator MCP server: peer delegation,
+// validation, task/collab helpers, and workflow authoring.
 //
 // There is no separate conductor service — peers are spawned in-process via
 // runClaude / runCodex. Run state lives in a process-local Map; it does not
@@ -16,8 +14,7 @@
 //   2. Codex CLI is a separate process and only accepts stdio MCP servers.
 //      We spawn `modules/mcp-codex-orchestrator.mjs` as that stdio child; it proxies
 //      tool calls back to us via `POST /internal/delegate` on the Hono
-//      server, which calls into `executeDelegate` / `executeGetRun` /
-//      `executeCancelRun` below.
+//      server, which calls into the execute* helpers below.
 //
 // Both transports share the same `runs` Map, `sessionStats` Map, and
 // parent-callback registry so peer events and stats stay coherent regardless
@@ -30,11 +27,19 @@ import type {
   DelegationStats,
   RunEvent,
   RunnerKind,
+  WorkflowRun,
 } from "../../../shared/events.js";
 import { runClaude } from "./claude.js";
 import { runCodex } from "./codex.js";
+import { runOllama } from "./ollama.js";
 import { runVercel } from "./vercel.js";
 import { executeValidate } from "./validate.js";
+import {
+  executeWorkflowAddNode,
+  executeWorkflowReset,
+  executeWorkflowRun,
+  type WorkflowAddNodeInput,
+} from "../orchestrator/workflow-tools.js";
 import {
   awaitTask,
   cancelTask,
@@ -167,11 +172,16 @@ export type DelegateContext = {
   depth: number;
   onPeerEvent?: (record: DelegateRunRecord, event: RunEvent) => void;
   onStatsChange?: (stats: DelegationStats) => void;
+  // Invoked by the workflow_run tool with a `proposed` WorkflowRun. The caller
+  // (index.ts) stores it and broadcasts workflow_state so the approval modal
+  // mounts. Absent on runners that don't surface /workflow.
+  onWorkflowProposed?: (run: WorkflowRun) => { ok: true } | { ok: false; error: string };
 };
 
 function startRun(
   args: {
     runner: RunnerKind;
+    model?: string;
     prompt: string;
     sessionId?: string;
     claudePermissionMode?: ClaudePermissionMode | "dontAsk";
@@ -213,6 +223,7 @@ function startRun(
           prompt: args.prompt,
           cwd: ctx.parentCwd,
           resumeId: args.sessionId,
+          model: args.model,
           abortController: abort,
           permissionMode: args.claudePermissionMode,
           maxTurns: args.claudeMaxTurns,
@@ -227,10 +238,33 @@ function startRun(
           prompt: args.prompt,
           cwd: ctx.parentCwd,
           threadId: args.sessionId,
+          model: args.model,
           signal: abort.signal,
           onEvent,
           onThreadId: (id) => {
             if (id) record.sessionId = id;
+          },
+        });
+      } else if (args.runner === "ollama") {
+        // Ollama peers mirror the vercel peer path below: ephemeral
+        // conversation (no session resume), bypassPermissions so tool calls
+        // execute without an interactive gate this detached run can't answer,
+        // and no PermissionStore (the parent already gated). Without this
+        // branch an "ollama" delegation fell through to the runVercel `else`
+        // and executed on the WRONG SDK entirely - every workflow/consensus
+        // ollama node ran as vercel, surfacing as "[ollama] vercel sdk: ..."
+        // errors and tool-call stream drops.
+        await runOllama({
+          prompt: args.prompt,
+          cwd: ctx.parentCwd,
+          priorMessages: [],
+          model: args.model,
+          signal: abort.signal,
+          sessionId: ctx.parentSessionId,
+          permissionMode: "bypassPermissions",
+          onEvent,
+          onMessages: () => {
+            // Discarded - peer messages don't outlive the run.
           },
         });
       } else {
@@ -242,6 +276,7 @@ function startRun(
           prompt: args.prompt,
           cwd: ctx.parentCwd,
           priorMessages: [],
+          model: args.model,
           signal: abort.signal,
           sessionId: ctx.parentSessionId,
           permissionMode: "bypassPermissions",
@@ -401,6 +436,7 @@ export async function executeDelegate(
 // Claude->Claude and Codex->Codex fan-out). Depth guard still applies.
 export type StartSubtaskRunArgs = {
   runner: RunnerKind;
+  model?: string;
   prompt: string;
   sessionId?: string;
   parentRunner: RunnerKind;
@@ -433,6 +469,7 @@ export function startSubtaskRun(
   const record = startRun(
     {
       runner: args.runner,
+      model: args.model,
       prompt: args.prompt,
       sessionId: args.sessionId,
       claudePermissionMode: args.claudePermissionMode,
@@ -517,17 +554,26 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
       "Delegate subtasks to a peer agent. Use `delegate_run` to spawn the peer (claude or codex) " +
       "with a natural-language prompt. By default it waits for completion and returns the peer's " +
       "final text. Use `get_run` to poll a previously-spawned run, and `cancel_run` to stop one. " +
-      "Use `validate_run` as your FINAL step before declaring a task complete — it asks a peer " +
-      "agent to adversarially review your work and returns a structured verdict (pass / fail / " +
-      "needs_changes) you can act on. " +
+      "Optionally use `validate_run` when you want a peer agent to adversarially review your work " +
+      "and return a structured verdict (pass / fail / needs_changes) you can act on — it is an " +
+      "available tool, not a required step. " +
       "For structured fan-out: `task_create` opens a Task, `task_spawn` starts parallel SubTasks " +
       "(each a peer run via the same machinery as delegate_run), `task_await` blocks until they " +
       "settle, `task_observe` peeks without blocking, `task_done` marks the Task complete, and " +
       "`task_cancel` aborts running SubTasks. For active Claude <-> Codex collaboration, use " +
       "`plan_create` to write a shared repo plan, then `collab_start`, phase tools, and " +
       "`collab_ask_peer` for bounded peer turns. Use the Task path when you want fan-out under a " +
-      "single live tool card. When referring to these tools in your responses, use the " +
-      "bare names (e.g. `delegate_run`, `validate_run`, `task_spawn`, `collab_start`) — not the SDK's namespaced wire form.",
+      "single live tool card. " +
+      "For a dependency-ordered, multi-stage DAG, use the workflow tools: `workflow_add_node` " +
+      "declares each step (id, runner, self-contained prompt, dependsOn), then `workflow_run` " +
+      "proposes the graph for the user's approval and the engine runs it autonomously. " +
+      "Boundary vs `task_spawn`: use `task_spawn` for fire-and-forget parallel siblings you await " +
+      "and synthesize yourself (no data flows between them); use the workflow tools when later " +
+      "steps must consume earlier steps' outputs - the engine auto-injects each node's final " +
+      "output into its dependents and runs the whole graph after one approval. In a workflow each " +
+      "node is a fresh isolated agent that shares NO context with the others. " +
+      "When referring to these tools in your responses, use the " +
+      "bare names (e.g. `delegate_run`, `validate_run`, `task_spawn`, `workflow_add_node`) — not the SDK's namespaced wire form.",
     tools: [
       tool(
         "delegate_run",
@@ -589,11 +635,11 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
       ),
       tool(
         "validate_run",
-        "Adversarial peer review of your just-completed work. Call this as the FINAL step " +
-          "before declaring a task done. A peer agent (default: the other runner) reads the " +
-          "actual repo state, tries to find flaws in your claim, and returns a structured " +
-          "verdict (pass / fail / needs_changes) plus an issues list. Treat fail and " +
-          "needs_changes as work to do.",
+        "Optional adversarial peer review of your just-completed work. Call this when you want " +
+          "a second opinion before declaring a task done — it is not required. A peer agent " +
+          "(default: the other runner) reads the actual repo state, tries to find flaws in your " +
+          "claim, and returns a structured verdict (pass / fail / needs_changes) plus an issues " +
+          "list. Treat fail and needs_changes as work to do.",
         {
           peer: z
             .enum(["claude", "codex", "vercel"])
@@ -965,6 +1011,85 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
         async ({ collabId }) => {
           const r = cancelCollab(collabId);
           return jsonContent(r.ok ? r : { error: r.error }, !r.ok);
+        },
+      ),
+      tool(
+        "workflow_add_node",
+        "Add one node to the workflow DAG you are assembling. A node is a SINGLE " +
+          "isolated agent run: it shares NO context with any other node. The only " +
+          "thing a node receives from a dependency is that dependency's final " +
+          "output text, auto-injected into this node's prompt by the engine - so " +
+          "write `prompt` to be self-contained and use `dependsOn` to declare which " +
+          "upstream outputs this node needs. Steps that do not depend on each other " +
+          "must NOT list each other in dependsOn, so the engine runs them in " +
+          "parallel. Call this once per step, then call workflow_run.",
+        {
+          id: z
+            .string()
+            .min(1)
+            .describe("Short unique id for this node (e.g. 'recon', 'fixA'). Referenced by other nodes' dependsOn."),
+          title: z.string().min(1).describe("Human-readable label shown in the DAG card/panel"),
+          runner: z
+            .enum(["claude", "codex", "vercel", "ollama"])
+            .describe("Which runner spawns this node's isolated agent"),
+          model: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Optional per-node model override. Omit to use the runner default."),
+          prompt: z
+            .string()
+            .min(1)
+            .describe(
+              "Self-contained task for this node's agent. Do NOT reference other " +
+                "nodes by name - their outputs are injected automatically based on dependsOn.",
+            ),
+          dependsOn: z
+            .array(z.string())
+            .optional()
+            .describe("Ids of nodes whose final output this node needs. Omit/empty for a root node."),
+        },
+        async (input) => {
+          const r = executeWorkflowAddNode(input as WorkflowAddNodeInput, {
+            parentSessionId: ctx.parentSessionId,
+          });
+          return jsonContent(r.payload, !r.ok);
+        },
+      ),
+      tool(
+        "workflow_run",
+        "Finalize the workflow DAG you assembled with workflow_add_node and propose " +
+          "it for the user's approval. Validates the graph (unique ids, resolvable " +
+          "dependsOn, no cycles); on success the user sees the DAG and approves it, " +
+          "then the engine runs it autonomously - you do NOT run the nodes yourself. " +
+          "On a validation error the draft is kept so you can fix it (e.g. " +
+          "workflow_add_node a missing node) and call workflow_run again.",
+        {
+          goal: z
+            .string()
+            .min(1)
+            .describe("One-line description of what this whole workflow accomplishes (shown on the card)."),
+        },
+        async ({ goal }) => {
+          const r = executeWorkflowRun(
+            { goal },
+            {
+              parentSessionId: ctx.parentSessionId,
+              parentRunner: ctx.parentRunner,
+              onWorkflowProposed: ctx.onWorkflowProposed,
+            },
+          );
+          return jsonContent(r.payload, !r.ok);
+        },
+      ),
+      tool(
+        "workflow_reset",
+        "Discard the workflow DAG draft you have been assembling (the accumulated " +
+        "workflow_add_node nodes), so you can start the graph over.",
+        {},
+        async () => {
+          const r = executeWorkflowReset({ parentSessionId: ctx.parentSessionId });
+          return jsonContent(r.payload, !r.ok);
         },
       ),
     ],
