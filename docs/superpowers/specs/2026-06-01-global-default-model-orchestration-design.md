@@ -46,11 +46,18 @@ a new config file.
 
 ## Injected resolver -- one chokepoint, no per-site edits
 
-`startSubtaskRun` (in `server/src/runners/delegate.ts`) is the single funnel that
-every peer-spawn path already routes through with `parentSessionId` in scope
-(verified spawn sites: `delegate_run`, `task_spawn`/`tasks.ts`,
-`consensus.ts`, `collab.ts`, workflow dispatch in `orchestrator/workflow.ts`,
-and `validate_run` via `validate.ts`). So the resolution happens there, once.
+`startRun` (in `server/src/runners/delegate.ts`) is the single funnel that every
+peer spawn reaches: it holds the only calls to `runClaude` / `runCodex` /
+`runOllama` / `runVercel` for peers. Two paths feed it -- `executeDelegate`
+(behind `delegate_run`, and `validate_run` via `executeValidate`) calls
+`startRun` directly, while `task_spawn`, `consensus.ts`, `collab.ts`, and
+workflow dispatch call it through the `startSubtaskRun` wrapper. Both carry
+`ctx.parentSessionId` / `args.runner`, so the resolution happens in `startRun`,
+once, and cannot be bypassed.
+
+(An earlier draft placed the hook in `startSubtaskRun`; that would have missed
+`delegate_run` and `validate_run`, which skip the wrapper and call `startRun`
+directly -- hence the move one layer down.)
 
 Add a module-level registrable resolver mirroring the existing
 `registerParentCallbacks` pattern:
@@ -65,13 +72,15 @@ export function registerModelResolver(
 }
 ```
 
-Inside `startSubtaskRun`, when `args.model` is undefined, resolve it:
+Inside `startRun`, resolve the model before invoking the runner:
 
 ```ts
-const model = args.model ?? modelResolver(args.parentSessionId, args.runner);
+const model = resolvePeerModel(args.model, ctx.parentSessionId, args.runner);
 ```
 
-and pass that to `startRun`. Because `workflow_add_node` supplies an explicit
+where `resolvePeerModel` is the exported, unit-testable helper
+`(explicit) => explicit ?? modelResolver(sessionId, runner)`. Because
+`workflow_add_node` supplies an explicit
 per-node `model`, that value is already present in `args.model` and still wins;
 only an undefined model triggers the resolver. No spawn-site call sites need to
 change.
@@ -122,9 +131,11 @@ Server `index.ts` handles `set_global_model` by calling
   `StoreFile`; broadcast fires on set.
 - Resolver precedence: session override > global default > undefined;
   `workflow_add_node` explicit model still wins over both.
-- `startSubtaskRun`: with no `args.model` and a registered resolver, the
-  resolved model reaches `startRun`; with `args.model` set, the resolver is not
-  consulted.
+- `resolvePeerModel`: with no explicit model and a registered resolver, the
+  resolved model is returned; with an explicit model set, the resolver is not
+  consulted; with neither, returns undefined. Structural guarantee that the
+  four peer-runner calls live only in `startRun` (so the hook can't be
+  bypassed) is covered by code review, not a spawning test.
 - `slash.ts`: parsing for `global <name>`, `global reset`,
   `global <runner> <name>`, `global <runner> reset`.
 - All test/source strings ASCII, no emojis (repo convention).
