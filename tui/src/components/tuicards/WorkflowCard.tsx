@@ -1,4 +1,3 @@
-import { Fragment } from "react";
 import { TextAttributes } from "@opentui/core";
 import type {
   NodeStatus,
@@ -17,38 +16,22 @@ const MAX_NODE_ROWS = 8;
 // Inline card for a model-authored DAG run. Unlike TaskCard/CollabCard this
 // card is driven by a `WorkflowRun` from session client state (not a ToolLog
 // snapshot), so it takes the run directly and updates in place on each
-// `workflow_state` push. Expansion into the 2D DAG view is owned by the
-// full-screen WorkflowPanel (Tab key, wired in app.tsx), so the underlying
-// ChatItem stays non-expandable to keep ctrl+e from fighting Tab.
-// Per-node caps for the ctrl+e-expanded output view. Generous enough to show a
-// normal node's full result, bounded so a long output can't grow the floating
-// card past the screen (it has no scroll). Overflow gets a "+N more lines" tail.
-const OUTPUT_MAX_LINES = 12;
-const OUTPUT_MAX_LINE_LEN = 200;
-
-function clampOutput(s: string): { lines: string[]; more: number } {
-  const all = s.replace(/\r/g, "").replace(/\s+$/, "").split("\n");
-  const lines = all
-    .slice(0, OUTPUT_MAX_LINES)
-    .map((l) => (l.length > OUTPUT_MAX_LINE_LEN ? l.slice(0, OUTPUT_MAX_LINE_LEN - 1) + "…" : l));
-  return { lines, more: Math.max(0, all.length - OUTPUT_MAX_LINES) };
-}
-
+// `workflow_state` push. It is the live status pill: a one-line `→ <preview>`
+// per node. The full per-node agent work lives in the transcript's persistent
+// WorkflowRunCard (ctrl+e), and the 2D DAG view in the full-screen
+// WorkflowPanel (Tab) - both wired in app.tsx - so this ChatItem stays
+// non-expandable to keep ctrl+e/Tab from fighting it.
 export function WorkflowCard({
   id,
   run,
   selected = false,
   hint = null,
-  outputsExpanded = false,
   onActivate,
 }: {
   id: string;
   run: WorkflowRun;
   selected?: boolean;
   expanded?: boolean;
-  // ctrl+e: show each settled node's full (clamped) output below its row
-  // instead of the one-line `→ <preview>` summary.
-  outputsExpanded?: boolean;
   hint?: string | null;
   onActivate?: () => void;
 }) {
@@ -65,7 +48,7 @@ export function WorkflowCard({
     >
       <CardHeader
         status={workflowDotStatus(run.status)}
-        verb="workflow"
+        verb="Workflow"
         verbColor={theme.toolTask}
         title={truncate(run.goal, 64)}
         id={shortId(run.id)}
@@ -97,39 +80,25 @@ export function WorkflowCard({
             : node.output
               ? { raw: node.output, color: theme.textFaint, mark: "→" }
               : null;
-        const expandedOutput =
-          outputsExpanded && detail ? clampOutput(detail.raw) : null;
         return (
-          <Fragment key={node.id}>
-            <SubRow
-              last={i === shown.length - 1 && overflow <= 0}
-              status={nodeDotStatus(node.status)}
-              fadeIn
-            >
-              <text fg={runnerColor(node.runner)} attributes={TextAttributes.BOLD}>{` [${node.runner}]`}</text>
-              {node.runId && (
-                <text fg={theme.textFaint}>{`[${shortId(node.runId)}]`}</text>
-              )}
-              <text fg={theme.textMuted}>{` ${truncate(node.title, 48)}`}</text>
-              {node.dependsOn && node.dependsOn.length > 0 && (
-                <text fg={theme.textMuted}>{`  ← ${truncate(node.dependsOn.join(", "), 20)}`}</text>
-              )}
-              {/* One-line preview unless ctrl+e is showing the full output below. */}
-              {!expandedOutput && detail && (
-                <text fg={detail.color}>{`  ${detail.mark} ${truncate(detail.raw, 60)}`}</text>
-              )}
-            </SubRow>
-            {expandedOutput && (
-              <box flexDirection="column" paddingLeft={8}>
-                {expandedOutput.lines.map((ln, j) => (
-                  <text key={j} fg={detail!.color}>{ln || " "}</text>
-                ))}
-                {expandedOutput.more > 0 && (
-                  <text fg={theme.textFaint}>{`… +${expandedOutput.more} more lines`}</text>
-                )}
-              </box>
+          <SubRow
+            key={node.id}
+            last={i === shown.length - 1 && overflow <= 0}
+            status={nodeDotStatus(node.status)}
+            fadeIn
+          >
+            <text fg={runnerColor(node.runner)} attributes={TextAttributes.BOLD}>{` [${node.runner}]`}</text>
+            {node.runId && (
+              <text fg={theme.textFaint}>{`[${shortId(node.runId)}]`}</text>
             )}
-          </Fragment>
+            <text fg={theme.textMuted}>{` ${truncate(node.title, 48)}`}</text>
+            {node.dependsOn && node.dependsOn.length > 0 && (
+              <text fg={theme.textMuted}>{`  ← ${truncate(node.dependsOn.join(", "), 20)}`}</text>
+            )}
+            {detail && (
+              <text fg={detail.color}>{`  ${detail.mark} ${truncate(detail.raw, 60)}`}</text>
+            )}
+          </SubRow>
         );
       })}
       {overflow > 0 && (

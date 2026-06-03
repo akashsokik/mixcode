@@ -268,3 +268,72 @@ describe("peerBlockRunId", () => {
     expect(blocksFromEvents(events).map(peerBlockRunId)).toEqual([null, null]);
   });
 });
+
+describe("workflow_run grouping", () => {
+  // The detached scheduler appends every node's peer events to ONE host
+  // message; parallel nodes A and B interleave in stream order.
+  const hostEvents: RunEvent[] = [
+    { type: "tool_log", log: { name: "[ollama][nodeAAAA…] reply", output: "A says hi" } },
+    { type: "tool_log", log: { name: "[ollama][nodeBBBB…] reply", output: "B says hi" } },
+    { type: "tool_log", log: { name: "[ollama][nodeAAAA…] Bash", input: {}, output: "ranA" } },
+    { type: "tool_log", log: { name: "[ollama][nodeBBBB…] Bash", input: {}, output: "ranB" } },
+  ];
+
+  test("folds settled node peer blocks into a single workflow_run group", () => {
+    const settled = new Set(["nodeAAAA…", "nodeBBBB…"]);
+    const grouped = groupDelegations(blocksFromEvents(hostEvents), "wf1", false, settled);
+    expect(grouped).toHaveLength(1);
+    const g = grouped[0];
+    expect(g.kind).toBe("workflow_run");
+    if (g.kind !== "workflow_run") throw new Error("expected workflow_run");
+    expect(g.id).toBe("wf1:wfrun");
+    // All four interleaved blocks are captured, in stream order.
+    expect(g.children).toHaveLength(4);
+    expect(g.children.map(peerBlockRunId)).toEqual([
+      "nodeAAAA…",
+      "nodeBBBB…",
+      "nodeAAAA…",
+      "nodeBBBB…",
+    ]);
+  });
+
+  test("leaves a still-running node's blocks as loose passthroughs", () => {
+    // Only node A has settled; node B is still streaming and must stay visible.
+    const settled = new Set(["nodeAAAA…"]);
+    const grouped = groupDelegations(blocksFromEvents(hostEvents), "wf1", false, settled);
+    const kinds = grouped.map((g) => g.kind);
+    expect(kinds.filter((k) => k === "workflow_run")).toHaveLength(1);
+    // Node B's two blocks remain as passthroughs.
+    const loose = grouped.filter(
+      (g) => g.kind === "passthrough",
+    );
+    expect(loose).toHaveLength(2);
+    const wf = grouped.find((g) => g.kind === "workflow_run");
+    if (!wf || wf.kind !== "workflow_run") throw new Error("expected workflow_run");
+    expect(wf.children).toHaveLength(2);
+    expect(wf.children.every((b) => peerBlockRunId(b) === "nodeAAAA…")).toBe(true);
+  });
+
+  test("is a no-op when no foldRunIds are given", () => {
+    const grouped = groupDelegations(blocksFromEvents(hostEvents), "wf1", false);
+    expect(grouped.every((g) => g.kind !== "workflow_run")).toBe(true);
+  });
+
+  test("collectChatItemIds and latestDelegationId surface the workflow_run id", () => {
+    const settled = new Set(["nodeAAAA…", "nodeBBBB…"]);
+    const session: Session = {
+      ...makeSession(),
+      messages: [
+        {
+          id: "wf1",
+          role: "assistant",
+          text: "",
+          events: hostEvents,
+          createdAt: "2026-05-25T10:00:09.000Z",
+        },
+      ],
+    };
+    expect(collectChatItemIds(session, [], settled)).toContain("wf1:wfrun");
+    expect(latestDelegationId(session, settled)).toBe("wf1:wfrun");
+  });
+});

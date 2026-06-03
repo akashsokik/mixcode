@@ -1,5 +1,6 @@
 import type {
   ClaudePermissionMode,
+  ModelOverrides,
   RunnerKind,
   Session,
   TurnUsage,
@@ -7,6 +8,7 @@ import type {
 import { SLASH_COMMANDS } from "./slash";
 import { basename, shortPath } from "./path";
 import type { SkillEntry, SkillFrontmatter } from "./skills";
+import { THEME_LABELS, THEME_NAMES, type ThemeName } from "../theme";
 
 export type Notice = {
   id: string;
@@ -182,6 +184,25 @@ export function planLines(session: Session | null, headline?: string): string[] 
   ];
 }
 
+export function themeLines(active: ThemeName, headline?: string): string[] {
+  const header = headline ? [headline, ""] : [];
+  const rows = THEME_NAMES.map((name) => {
+    const marker = name === active ? "•" : " ";
+    return `  ${marker} ${name.padEnd(11, " ")}${THEME_LABELS[name]}`;
+  });
+  return [
+    ...header,
+    "color palette  (monochrome base, swappable accents)",
+    "",
+    ...rows,
+    "",
+    "usage",
+    "  /theme          open the palette picker",
+    "  /theme <name>   set directly (e.g. /theme nord)",
+    "  /theme list     show this list",
+  ];
+}
+
 export function claudeModeLabel(mode: ClaudePermissionMode): string {
   switch (mode) {
     case "default":
@@ -198,18 +219,52 @@ export function claudeModeLabel(mode: ClaudePermissionMode): string {
 export function modelLines(
   session: Session | null,
   headline?: string,
+  globalModels?: ModelOverrides,
 ): string[] {
   const header = headline ? [headline, ""] : [];
-  const claudeModel = session?.models?.claude ?? "(default)";
-  const codexModel = session?.models?.codex ?? "(default)";
-  const vercelModel = session?.models?.vercel ?? "(default → gpt-4o)";
-  const ollamaModel = session?.models?.ollama ?? "(auto → first pulled)";
+  // Label for the runner's own internal default, used when neither a session
+  // override nor a global default is set.
+  const runnerDefault: Record<RunnerKind, string> = {
+    claude: "claude SDK default",
+    codex: "codex SDK default",
+    vercel: "gpt-4o",
+    ollama: "auto (first pulled)",
+  };
+  const order: RunnerKind[] = ["claude", "codex", "vercel", "ollama"];
+
+  // Per runner: the configured layers, plus the resolved effective model and
+  // its source, so there is never ambiguity about what a spawned tool runs on.
+  const configRows = order.map((runner) => {
+    const sess = session?.models?.[runner];
+    const glob = globalModels?.[runner];
+    return `  ${runner.padEnd(8, " ")}${(sess ?? "(none)").padEnd(22, " ")}${glob ?? "(none)"}`;
+  });
+  const effectiveRows = order.map((runner) => {
+    const sess = session?.models?.[runner];
+    const glob = globalModels?.[runner];
+    const [model, source] = sess
+      ? [sess, "this session"]
+      : glob
+        ? [glob, "global default"]
+        : [runnerDefault[runner], "runner default"];
+    return `  ${runner.padEnd(8, " ")}${model.padEnd(22, " ")}(${source})`;
+  });
+
+  const colHeader = `  ${"".padEnd(8, " ")}${"session override".padEnd(22, " ")}global default`;
   return [
     ...header,
-    `claude   ${claudeModel}`,
-    `codex    ${codexModel}`,
-    `vercel   ${vercelModel}`,
-    `ollama   ${ollamaModel}`,
+    "configured layers",
+    colHeader,
+    ...configRows,
+    "",
+    "effective model — what every spawned tool runs on",
+    ...effectiveRows,
+    "",
+    "these tools run on the effective model for whichever runner they spawn:",
+    "  validate_run   delegate_run   task_spawn   workflow nodes",
+    "  (a workflow node with its own model override uses that instead)",
+    "",
+    "precedence: per-node override -> session override -> global default -> runner default",
     "",
     "usage",
     "  /model                     show current models",
@@ -223,6 +278,9 @@ export function modelLines(
     "  /model codex reset         clear codex's override",
     "  /model vercel reset        clear vercel's override",
     "  /model ollama reset        clear ollama's override",
+    "  /model global <name>       set the machine-wide default (active runner)",
+    "  /model global <runner> <name>  set the machine-wide default for a runner",
+    "  /model global reset        clear the active runner's global default",
     "",
     "common claude models   claude-opus-4-8, claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001",
     "common codex models    gpt-5-codex, gpt-5, gpt-5-mini",

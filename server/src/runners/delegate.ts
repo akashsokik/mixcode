@@ -36,6 +36,8 @@ import { runVercel } from "./vercel.js";
 import { executeValidate } from "./validate.js";
 import {
   executeWorkflowAddNode,
+  executeWorkflowCancel,
+  executeWorkflowObserve,
   executeWorkflowReset,
   executeWorkflowRun,
   type WorkflowAddNodeInput,
@@ -76,6 +78,10 @@ export type DelegateRunStatus = "running" | "ok" | "error" | "cancelled" | "time
 export type DelegateRunRecord = {
   runId: string;
   runner: RunnerKind;
+  // The model this peer actually ran on, resolved at spawn time
+  // (explicit override -> per-session -> global default). Undefined means the
+  // runner picked its own default internally (nothing was configured).
+  model?: string;
   status: DelegateRunStatus;
   result: string;
   error?: string;
@@ -118,6 +124,31 @@ export function registerParentCallbacks(sessionId: string, cb: ParentCallbacks):
 }
 export function unregisterParentCallbacks(sessionId: string): void {
   parentCallbacks.delete(sessionId);
+}
+
+// Resolves the default model for a spawned peer when the caller did not pass an
+// explicit one. Injected by the server at startup (index.ts) so this module
+// stays free of a SessionManager import. Default no-op returns undefined, which
+// means "let the runner pick its own default" — the pre-existing behavior.
+// Every peer-spawn path funnels through startSubtaskRun, so this single hook
+// covers delegate_run, validate_run, task_spawn, consensus, collab, and
+// workflow dispatch uniformly.
+type ModelResolver = (sessionId: string, runner: RunnerKind) => string | undefined;
+let modelResolver: ModelResolver = () => undefined;
+export function registerModelResolver(fn: ModelResolver): void {
+  modelResolver = fn;
+}
+
+// Picks the model for a spawned peer: an explicit per-call model (e.g. a
+// workflow node's override) always wins; otherwise consult the registered
+// resolver (per-session override -> global default -> undefined). Exported so
+// the precedence is unit-testable without spawning a runner.
+export function resolvePeerModel(
+  explicit: string | undefined,
+  sessionId: string,
+  runner: RunnerKind,
+): string | undefined {
+  return explicit ?? modelResolver(sessionId, runner);
 }
 
 export function getRun(runId: string): DelegateRunRecord | undefined {
@@ -176,6 +207,11 @@ export type DelegateContext = {
   // (index.ts) stores it and broadcasts workflow_state so the approval modal
   // mounts. Absent on runners that don't surface /workflow.
   onWorkflowProposed?: (run: WorkflowRun) => { ok: true } | { ok: false; error: string };
+  // Invoked by the workflow_cancel tool with the parent sessionId. index.ts owns
+  // the live WorkflowController registry, so it does the actual teardown.
+  onWorkflowCancel?: (
+    sessionId: string,
+  ) => { ok: true; cancelled: boolean } | { ok: false; error: string };
 };
 
 function startRun(
@@ -195,9 +231,16 @@ function startRun(
   ctx: DelegateContext,
 ): DelegateRunRecord {
   const abort = new AbortController();
+  // Resolve the peer's model here — startRun is the single chokepoint every
+  // spawn path reaches (delegate_run/validate_run via executeDelegate, and
+  // task_spawn/consensus/collab/workflow via startSubtaskRun). An explicit
+  // model (e.g. a workflow node's override) wins; otherwise the injected
+  // resolver supplies the per-session override or the global default.
+  const model = resolvePeerModel(args.model, ctx.parentSessionId, args.runner);
   const record: DelegateRunRecord = {
     runId: nanoid(),
     runner: args.runner,
+    model,
     status: "running",
     result: "",
     sessionId: args.sessionId,
@@ -223,7 +266,7 @@ function startRun(
           prompt: args.prompt,
           cwd: ctx.parentCwd,
           resumeId: args.sessionId,
-          model: args.model,
+          model,
           abortController: abort,
           permissionMode: args.claudePermissionMode,
           maxTurns: args.claudeMaxTurns,
@@ -238,7 +281,7 @@ function startRun(
           prompt: args.prompt,
           cwd: ctx.parentCwd,
           threadId: args.sessionId,
-          model: args.model,
+          model,
           signal: abort.signal,
           onEvent,
           onThreadId: (id) => {
@@ -258,7 +301,7 @@ function startRun(
           prompt: args.prompt,
           cwd: ctx.parentCwd,
           priorMessages: [],
-          model: args.model,
+          model,
           signal: abort.signal,
           sessionId: ctx.parentSessionId,
           permissionMode: "bypassPermissions",
@@ -276,7 +319,7 @@ function startRun(
           prompt: args.prompt,
           cwd: ctx.parentCwd,
           priorMessages: [],
-          model: args.model,
+          model,
           signal: abort.signal,
           sessionId: ctx.parentSessionId,
           permissionMode: "bypassPermissions",
@@ -316,6 +359,11 @@ function summarize(r: DelegateRunRecord): Record<string, unknown> {
   return {
     runId: r.runId,
     runner: r.runner,
+    // The model this peer ran on. Surfaced so the calling agent (and the
+    // transcript) can see exactly which model produced the result, never
+    // leaving it ambiguous. Omitted only when nothing was configured and the
+    // runner picked its own default internally.
+    ...(r.model ? { model: r.model } : {}),
     sessionId: r.sessionId,
     status: r.status,
     // Only surface the final text when terminal — partial text is misleading
@@ -395,6 +443,7 @@ export async function executeDelegate(
       payload: {
         runId: record.runId,
         runner: record.runner,
+        ...(record.model ? { model: record.model } : {}),
         sessionId: record.sessionId,
         status: "pending",
       },
@@ -417,6 +466,7 @@ export async function executeDelegate(
       payload: {
         runId: record.runId,
         runner: record.runner,
+        ...(record.model ? { model: record.model } : {}),
         sessionId: record.sessionId,
         status: "timeout",
         error: "delegate_run wait timed out",
@@ -469,6 +519,9 @@ export function startSubtaskRun(
   const record = startRun(
     {
       runner: args.runner,
+      // Model resolution (explicit override -> per-session -> global default)
+      // happens inside startRun, the single chokepoint shared with the direct
+      // executeDelegate path. Pass the explicit value through untouched.
       model: args.model,
       prompt: args.prompt,
       sessionId: args.sessionId,
@@ -551,7 +604,7 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
     name: "orchestrator",
     version: "0.1.0",
     instructions:
-      "Delegate subtasks to a peer agent. Use `delegate_run` to spawn the peer (claude or codex) " +
+      "Delegate subtasks to a peer agent. Use `delegate_run` to spawn the peer (claude, codex, vercel, or ollama) " +
       "with a natural-language prompt. By default it waits for completion and returns the peer's " +
       "final text. Use `get_run` to poll a previously-spawned run, and `cancel_run` to stop one. " +
       "Optionally use `validate_run` when you want a peer agent to adversarially review your work " +
@@ -566,23 +619,25 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
       "single live tool card. " +
       "For a dependency-ordered, multi-stage DAG, use the workflow tools: `workflow_add_node` " +
       "declares each step (id, runner, self-contained prompt, dependsOn), then `workflow_run` " +
-      "proposes the graph for the user's approval and the engine runs it autonomously. " +
+      "proposes the graph for the user's approval and the engine runs it autonomously. While it " +
+      "runs, `workflow_observe` polls per-node progress and `workflow_cancel` stops it. " +
       "Boundary vs `task_spawn`: use `task_spawn` for fire-and-forget parallel siblings you await " +
       "and synthesize yourself (no data flows between them); use the workflow tools when later " +
       "steps must consume earlier steps' outputs - the engine auto-injects each node's final " +
       "output into its dependents and runs the whole graph after one approval. In a workflow each " +
       "node is a fresh isolated agent that shares NO context with the others. " +
       "When referring to these tools in your responses, use the " +
-      "bare names (e.g. `delegate_run`, `validate_run`, `task_spawn`, `workflow_add_node`) — not the SDK's namespaced wire form.",
+      "bare names (e.g. `delegate_run`, `validate_run`, `task_spawn`, `workflow_add_node`, " +
+      "`workflow_observe`) — not the SDK's namespaced wire form.",
     tools: [
       tool(
         "delegate_run",
-        "Spawn a peer agent (claude or codex) with a natural-language prompt. " +
+        "Spawn a peer agent (claude, codex, vercel, or ollama) with a natural-language prompt. " +
           "By default waits for completion and returns the peer's final text. " +
           "Set wait=false to return immediately with a runId you can poll via get_run.",
         {
           profileName: z
-            .enum(["claude", "codex", "vercel"])
+            .enum(["claude", "codex", "vercel", "ollama"])
             .describe("Which peer agent to spawn (the other one — cannot delegate to self)"),
           prompt: z.string().min(1).describe("Natural-language task for the peer agent"),
           sessionId: z
@@ -642,7 +697,7 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
           "list. Treat fail and needs_changes as work to do.",
         {
           peer: z
-            .enum(["claude", "codex", "vercel"])
+            .enum(["claude", "codex", "vercel", "ollama"])
             .optional()
             .describe(
               "Which peer to use as the reviewer. Defaults to the other runner (the cross-pair). " +
@@ -730,7 +785,7 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
             .array(
               z.object({
                 runner: z
-                  .enum(["claude", "codex", "vercel"])
+                  .enum(["claude", "codex", "vercel", "ollama"])
                   .describe("Which peer agent runs this SubTask"),
                 prompt: z.string().min(1).describe("Natural-language task for the peer"),
                 sessionId: z
@@ -1089,6 +1144,34 @@ export function buildDelegateMcpServer(ctx: DelegateContext) {
         {},
         async () => {
           const r = executeWorkflowReset({ parentSessionId: ctx.parentSessionId });
+          return jsonContent(r.payload, !r.ok);
+        },
+      ),
+      tool(
+        "workflow_observe",
+        "Non-blocking peek at the workflow you proposed: each node's current " +
+          "status (pending/ready/running/ok/error/skipped/cancelled), a short " +
+          "preview of finished nodes' output, and aggregate counts. Use this to " +
+          "check progress while the engine runs the DAG autonomously - the engine " +
+          "runs nodes for you, so this is how you watch without blocking.",
+        {},
+        async () => {
+          const r = executeWorkflowObserve({ parentSessionId: ctx.parentSessionId });
+          return jsonContent(r.payload, !r.ok);
+        },
+      ),
+      tool(
+        "workflow_cancel",
+        "Cancel the workflow you proposed. Aborts in-flight node runs, marks the " +
+          "rest skipped, and settles the run cancelled. No-op if it has already " +
+          "finished. Use this to stop a workflow that is going wrong instead of " +
+          "letting it run to completion.",
+        {},
+        async () => {
+          const r = executeWorkflowCancel({
+            parentSessionId: ctx.parentSessionId,
+            onWorkflowCancel: ctx.onWorkflowCancel,
+          });
           return jsonContent(r.payload, !r.ok);
         },
       ),

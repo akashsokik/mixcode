@@ -5,6 +5,7 @@ import type {
   ClientMsg,
   ConsensusReady,
   EffortLevel,
+  ModelOverrides,
   PermissionDecision,
   PermissionRequest,
   RunnerKind,
@@ -59,6 +60,10 @@ type State = {
   // terminal one. The server is the single source of truth (full-snapshot on
   // every transition), so the client just stores the latest.
   workflows: Record<string, WorkflowRun>;
+  // Machine-wide per-runner default models. Set from `hello` and replaced on
+  // every `global_models_updated`. A session's own models[] override still
+  // takes precedence; this is the fallback shown in the model picker.
+  globalModels: ModelOverrides;
 };
 
 const initialState: State = {
@@ -70,6 +75,7 @@ const initialState: State = {
   sessionSkills: {},
   consensusReady: {},
   workflows: {},
+  globalModels: {},
 };
 
 function reduce(state: State, msg: ServerMsg): State {
@@ -86,7 +92,12 @@ function reduce(state: State, msg: ServerMsg): State {
         rules: msg.permissions,
         helloReceived: true,
         sessionSkills: msg.sessionSkills ?? {},
+        globalModels: msg.globalModels ?? {},
       };
+    }
+
+    case "global_models_updated": {
+      return { ...state, globalModels: msg.globalModels ?? {} };
     }
 
     case "session_updated": {
@@ -337,6 +348,7 @@ export function useSessions() {
     sessionSkills: state.sessionSkills,
     consensusReady: state.consensusReady,
     workflows: state.workflows,
+    globalModels: state.globalModels,
 
     setActive(id: string): void {
       setActiveOverride(id);
@@ -369,6 +381,11 @@ export function useSessions() {
     setModel(runner: RunnerKind, model: string | null): void {
       if (!activeId) return;
       send(client, { type: "set_model", sessionId: activeId, runner, model });
+    },
+    // Machine-wide default model for a runner. Not session-scoped, so no
+    // activeId guard. A per-session setModel override still wins over this.
+    setGlobalModel(runner: RunnerKind, model: string | null): void {
+      send(client, { type: "set_global_model", runner, model });
     },
     setEffort(runner: RunnerKind, effort: EffortLevel | null): void {
       if (!activeId) return;

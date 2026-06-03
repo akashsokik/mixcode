@@ -1,5 +1,5 @@
 import { SyntaxStyle, type MarkdownTableOptions } from "@opentui/core";
-import { theme } from "./theme";
+import { subscribeTheme, theme } from "./theme";
 
 // Custom markdown SyntaxStyle. OpenTUI's markdown renderer looks up these
 // token groups (discovered in the core bundle): markup.heading, markup.strong,
@@ -17,21 +17,34 @@ export const markdownTableOptions: MarkdownTableOptions = {
   wrapMode: "word",
 };
 
-export const markdownStyle = SyntaxStyle.fromStyles({
-  default: { fg: theme.text },
+function buildMarkdownStyle(): SyntaxStyle {
+  return SyntaxStyle.fromStyles({
+    default: { fg: theme.text },
 
-  "markup.heading": { fg: theme.mdHeading, bold: true },
-  "markup.strong": { fg: theme.accent, bold: true },
-  "markup.italic": { fg: theme.text, italic: true },
-  "markup.strikethrough": { fg: theme.mdStrikethrough, dim: true },
+    "markup.heading": { fg: theme.mdHeading, bold: true },
+    "markup.strong": { fg: theme.accent, bold: true },
+    "markup.italic": { fg: theme.text, italic: true },
+    "markup.strikethrough": { fg: theme.mdStrikethrough, dim: true },
 
-  "markup.raw": { fg: theme.mdCode },
-  "markup.raw.block": { fg: theme.mdCode },
+    "markup.raw": { fg: theme.mdCode },
+    "markup.raw.block": { fg: theme.mdCode },
 
-  "markup.link": { fg: theme.mdLink, underline: true },
-  "markup.link.label": { fg: theme.mdLink },
-  "markup.link.url": { fg: theme.mdLinkUrl, underline: true },
+    "markup.link": { fg: theme.mdLink, underline: true },
+    "markup.link.label": { fg: theme.mdLink },
+    "markup.link.url": { fg: theme.mdLinkUrl, underline: true },
 
-  "markup.list": { fg: theme.mdListMarker },
-  "markup.quote": { fg: theme.mdQuote, italic: true },
+    "markup.list": { fg: theme.mdListMarker },
+    "markup.quote": { fg: theme.mdQuote, italic: true },
+  });
+}
+
+// `markdownStyle` is a `let` rather than a `const`: ES module named exports are
+// live bindings, so reassigning it here updates every `import { markdownStyle }`
+// consumer on their next render. /theme switches mutate the accent tokens then
+// notify; we rebuild the cached SyntaxStyle so markdown code/link colors follow
+// the active palette. Transcript re-renders on switch (app subscribes too), so
+// it reads the rebuilt binding.
+export let markdownStyle = buildMarkdownStyle();
+subscribeTheme(() => {
+  markdownStyle = buildMarkdownStyle();
 });

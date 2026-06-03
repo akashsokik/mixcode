@@ -10,12 +10,6 @@ const TIP = "Use /sessions to browse previous conversations";
 const HINTS_TOP = "ctrl+k for palette  ·  shift+tab to cycle modes";
 const HINTS_BOT = "@ to insert files  ·  /help for commands";
 
-type Runner = readonly [name: string, ready: boolean];
-const RUNNERS: ReadonlyArray<Runner> = [
-  ["Claude", true],
-  ["Codex", true],
-  ["Vercel", true],
-];
 
 const SETTLE_FRAME = LOGO.length + 4;
 
@@ -147,20 +141,6 @@ export function Welcome() {
         <box marginTop={2} flexDirection="column" alignItems="center">
           <text fg={theme.textMuted}>{HINTS_TOP}</text>
           <text fg={theme.textMuted}>{HINTS_BOT}</text>
-        </box>
-
-        <box marginTop={2} flexDirection="row">
-          {RUNNERS.map(([name, ok], i) => (
-            <box key={name} flexDirection="row">
-              {i > 0 && <text fg={theme.textFaint}>{"   "}</text>}
-              <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                {name}
-              </text>
-              <text fg={ok ? theme.toolEdit : theme.toolError}>
-                {ok ? " ✓" : " ✗"}
-              </text>
-            </box>
-          ))}
         </box>
       </box>
     </box>

@@ -336,6 +336,10 @@ export type NodeResult = {
 
 export type DispatchHandle = {
   runId: string;
+  // The model the spawned run resolved to (per-node override -> session ->
+  // global default). Undefined when nothing was configured and the runner
+  // picked its own default. Surfaced onto the node so the card is unambiguous.
+  resolvedModel?: string;
   // resolves exactly once: ok | error | cancelled
   done: Promise<NodeResult>;
 };
@@ -407,7 +411,7 @@ export function createRealDispatcher(ctx: RealDispatcherContext): Dispatcher {
           };
         });
 
-      return { runId: record.runId, done };
+      return { runId: record.runId, resolvedModel: record.model, done };
     },
     cancel(runId: string): void {
       if (runId) executeCancelRun(runId);
@@ -566,6 +570,7 @@ export function runWorkflow(
       prompt,
     });
     n.runId = handle.runId;
+    n.resolvedModel = handle.resolvedModel;
     emit(run);
 
     const settle = handle.done.then((res) => {

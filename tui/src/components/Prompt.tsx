@@ -707,6 +707,8 @@ function describeSlashCommand(
       const extra = slashExtras.find((s) => s.name.slice(1) === command.name);
       return extra ? `skill ${extra.name}` : `unknown /${command.name}`;
     }
+    default:
+      throw new Error(`Unknown command type: ${(command as any).type}`);
   }
 }
 
@@ -732,6 +734,10 @@ function describeModelAction(
     case "setRunner": return `${action.runner} model`;
     case "reset": return `reset ${runner ?? "active"} model`;
     case "resetRunner": return `reset ${action.runner} model`;
+    case "setGlobal": return `global ${runner ?? "active"} model`;
+    case "setGlobalRunner": return `global ${action.runner} model`;
+    case "resetGlobal": return `reset global ${runner ?? "active"} model`;
+    case "resetGlobalRunner": return `reset global ${action.runner} model`;
   }
 }
 

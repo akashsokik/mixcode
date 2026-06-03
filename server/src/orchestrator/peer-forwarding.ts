@@ -19,7 +19,7 @@ export type PeerEventForwarder = (
   event: RunEvent,
 ) => void;
 
-type PeerState = { textBuf: string; chunk: number };
+type PeerState = { textBuf: string; chunk: number; headerEmitted: boolean };
 
 // Short run-id for the transcript chip, matching the TUI's shortId() so a peer
 // block in the transcript reads the same id as its node on the workflow card
@@ -45,7 +45,7 @@ export function buildPeerEventForwarder(
   const stateFor = (runId: string): PeerState => {
     let s = peerStates.get(runId);
     if (!s) {
-      s = { textBuf: "", chunk: 0 };
+      s = { textBuf: "", chunk: 0, headerEmitted: false };
       peerStates.set(runId, s);
     }
     return s;
@@ -60,6 +60,23 @@ export function buildPeerEventForwarder(
   return (record, event) => {
     const s = stateFor(record.runId);
     const tag = peerTag(record.runner, record.runId);
+    // One-time per-peer header naming the model this run is on, so the model
+    // is never ambiguous in the transcript. Emitted on the first event we see
+    // for the run (skipped when nothing was configured and the runner picked
+    // its own default, since we have no concrete name to show).
+    if (!s.headerEmitted) {
+      s.headerEmitted = true;
+      if (record.model) {
+        onEvent({
+          type: "tool_log",
+          log: {
+            id: `peer:${record.runId}:model`,
+            name: `${tag} model`,
+            output: record.model,
+          },
+        });
+      }
+    }
     if (event.type === "text_delta") {
       s.textBuf += event.delta;
       onEvent({

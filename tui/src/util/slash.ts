@@ -13,13 +13,21 @@ export type PermissionsAction =
 //   setRunner <runner> <name>     — set for a specific runner
 //   reset                          — clear the active runner's override
 //   resetRunner <runner>          — clear a specific runner's override
+//   global <name>                 — set the machine-wide default (active runner)
+//   global <runner> <name>        — set the machine-wide default for a runner
+//   global reset                  — clear the active runner's global default
+//   global <runner> reset         — clear a runner's global default
 export type ModelAction =
   | { kind: "picker" } // open the interactive model picker for active runner
   | { kind: "show" }   // print a notice listing current models for both runners
   | { kind: "set"; model: string }
   | { kind: "setRunner"; runner: RunnerKind; model: string }
   | { kind: "reset" }
-  | { kind: "resetRunner"; runner: RunnerKind };
+  | { kind: "resetRunner"; runner: RunnerKind }
+  | { kind: "setGlobal"; model: string }
+  | { kind: "setGlobalRunner"; runner: RunnerKind; model: string }
+  | { kind: "resetGlobal" }
+  | { kind: "resetGlobalRunner"; runner: RunnerKind };
 
 // /effort grammar mirrors /model:
 //   (no args)                  — open the interactive slider for the active runner
@@ -91,6 +99,17 @@ export type WorkflowAction = {
   goal: string;
 };
 
+// /theme grammar:
+//   (no args)              — open the interactive palette picker
+//   list | show | status   — print available palettes as a notice
+//   <name>                  — set the palette directly (alias-resolved)
+// `name` is the raw token; the App resolves it via resolveThemeName and falls
+// back to the list notice when it doesn't match a palette.
+export type ThemeAction =
+  | { kind: "picker" }
+  | { kind: "list" }
+  | { kind: "set"; name: string };
+
 export type SlashCommand =
   | { type: "claude"; rest: string }
   | { type: "codex"; rest: string }
@@ -116,6 +135,7 @@ export type SlashCommand =
   | { type: "mcp"; action: McpAction }
   | { type: "new"; action: NewAction }
   | { type: "workflow"; action: WorkflowAction }
+  | { type: "theme"; action: ThemeAction }
   | { type: "unknown"; name: string; rest: string };
 
 // Allow letters, digits, hyphens, dots, underscores, and colons so
@@ -176,6 +196,8 @@ export function parseSlash(text: string): SlashCommand | null {
       return { type: "new", action: parseNewAction(rest) };
     case "workflow":
       return { type: "workflow", action: parseWorkflowAction(rest) };
+    case "theme":
+      return { type: "theme", action: parseThemeAction(rest) };
     default:
       // `name` preserves the user-typed case so callers can match it against
       // case-sensitive lists (e.g. plugin-qualified skill names).
@@ -273,6 +295,16 @@ function parseWorkflowAction(rest: string): WorkflowAction {
   return { goal: rest.trim() };
 }
 
+function parseThemeAction(rest: string): ThemeAction {
+  const v = rest.trim();
+  if (!v) return { kind: "picker" };
+  const verb = v.toLowerCase();
+  if (verb === "list" || verb === "show" || verb === "status") {
+    return { kind: "list" };
+  }
+  return { kind: "set", name: v };
+}
+
 function parsePlanAction(rest: string): PlanAction {
   const v = rest.trim().toLowerCase();
   if (!v) return { kind: "toggle" };
@@ -280,6 +312,11 @@ function parsePlanAction(rest: string): PlanAction {
   if (v === "off" || v === "disable") return { kind: "off" };
   if (v === "status") return { kind: "status" };
   return { kind: "toggle" };
+}
+
+const RUNNER_TOKENS = ["claude", "codex", "vercel", "ollama"] as const;
+function isRunnerToken(v: string): v is RunnerKind {
+  return (RUNNER_TOKENS as readonly string[]).includes(v);
 }
 
 function parseModelAction(rest: string): ModelAction {
@@ -291,6 +328,22 @@ function parseModelAction(rest: string): ModelAction {
   }
   if (first === "reset" || first === "clear") {
     return { kind: "reset" };
+  }
+  if (first === "global") {
+    // /model global [<runner>] <name | reset>
+    const rta = tokens[1]?.toLowerCase() ?? "";
+    if (isRunnerToken(rta)) {
+      const tail = tokens.slice(2).join(" ").trim();
+      if (!tail || tail.toLowerCase() === "reset" || tail.toLowerCase() === "clear") {
+        return { kind: "resetGlobalRunner", runner: rta };
+      }
+      return { kind: "setGlobalRunner", runner: rta, model: tail };
+    }
+    const tail = tokens.slice(1).join(" ").trim();
+    if (!tail || tail.toLowerCase() === "reset" || tail.toLowerCase() === "clear") {
+      return { kind: "resetGlobal" };
+    }
+    return { kind: "setGlobal", model: tail };
   }
   if (
     first === "claude" ||
@@ -423,11 +476,12 @@ export const SLASH_COMMANDS: ReadonlyArray<{ name: string; help: string }> = [
   { name: "/tree [depth]", help: "show project tree of the session's cwd (default depth 3)" },
   { name: "/consensus <task>", help: "single actor/critic cycle (claude↔codex); writes one draft, critic reviews once" },
   { name: "/permissions [add|remove|clear]", help: "manage Claude tool-permission rules (Claude only)" },
-  { name: "/model [show | <name> | <runner> <name> | reset]", help: "open model picker for active runner; show prints status; <name> sets directly" },
+  { name: "/model [show | <name> | <runner> <name> | reset | global <name>]", help: "open model picker (tab toggles session/global); show prints status; global sets the machine-wide default" },
   { name: "/effort [show | <level> | <runner> <level> | reset]", help: "open effort slider for active runner; levels depend on the active model" },
   { name: "/plan [on|off]", help: "plan-only mode — model proposes a plan, no tools run (Claude only)" },
   { name: "/skills [add|import|remove|info]", help: "manage skills for the active runner (~/.claude/skills or ~/.codex/skills); `import <claude|codex> [name]` copies from the other runner" },
   { name: "/mcp [add|remove|test]", help: "manage MCP servers for the active runner via its CLI" },
   { name: "/new [title] [runner]", help: "create a new session (optional: title and runner—claude|codex|vercel|ollama)" },
   { name: "/workflow <goal>", help: "author + run a DAG of agent nodes" },
+  { name: "/theme [list | <name>]", help: "switch color palette: material | gruvbox | catppuccin | nord | tokyonight" },
 ];

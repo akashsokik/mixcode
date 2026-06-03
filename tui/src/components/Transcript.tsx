@@ -1,6 +1,10 @@
 import { useEffect, useRef } from "react";
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
-import type { Session, SessionMessage } from "../../../shared/events.ts";
+import type {
+  Session,
+  SessionMessage,
+  WorkflowRun,
+} from "../../../shared/events.ts";
 import {
   ChatItem,
   CollabCard,
@@ -9,6 +13,7 @@ import {
   TaskCard,
   ToolCard,
   Welcome,
+  WorkflowRunCard,
 } from "./tuicards";
 import { theme } from "../theme";
 import { markdownStyle, markdownTableOptions } from "../markdown-style";
@@ -22,7 +27,6 @@ import {
 import {
   blocksFromEvents,
   groupDelegations,
-  peerBlockRunId,
   type Block,
   type GroupedBlock,
 } from "../util/blocks";
@@ -33,7 +37,8 @@ export function Transcript({
   selectedItemId,
   expandedItems,
   onItemActivate,
-  suppressPeerRunIds,
+  workflowFoldRunIds,
+  workflowRun,
 }: {
   session: Session | null;
   notices: Notice[];
@@ -41,10 +46,15 @@ export function Transcript({
   expandedItems: Set<string>;
   onItemActivate?: (itemId: string) => void;
   // Short run-ids of workflow nodes that have SETTLED. Their loose peer
-  // reply/thinking/tool rows are dropped from the transcript - the floating
-  // WorkflowCard owns each settled node's output instead. Empty when there is
-  // no active workflow, so non-workflow transcripts are untouched.
-  suppressPeerRunIds?: ReadonlySet<string>;
+  // reply/thinking/tool rows are folded out of the live flow into one
+  // persistent, expandable WorkflowRunCard (so the agents' work stays in the
+  // transcript). Running nodes are excluded so their rows keep streaming.
+  // Empty when there is no active workflow, so non-workflow transcripts are
+  // untouched.
+  workflowFoldRunIds?: ReadonlySet<string>;
+  // The active workflow run, used by WorkflowRunCard to label each folded
+  // node section with its title/status and order them by the DAG.
+  workflowRun?: WorkflowRun | null;
 }) {
   if (!session) {
     return <Welcome />;
@@ -124,7 +134,8 @@ export function Transcript({
             selectedItemId={selectedItemId}
             expandedItems={expandedItems}
             onItemActivate={onItemActivate}
-            suppressPeerRunIds={suppressPeerRunIds}
+            workflowFoldRunIds={workflowFoldRunIds}
+            workflowRun={workflowRun}
           />
         ) : (
           <NoticeCard
@@ -149,14 +160,16 @@ function Message({
   selectedItemId,
   expandedItems,
   onItemActivate,
-  suppressPeerRunIds,
+  workflowFoldRunIds,
+  workflowRun,
 }: {
   message: SessionMessage;
   messageStreaming: boolean;
   selectedItemId: string | null;
   expandedItems: Set<string>;
   onItemActivate?: (itemId: string) => void;
-  suppressPeerRunIds?: ReadonlySet<string>;
+  workflowFoldRunIds?: ReadonlySet<string>;
+  workflowRun?: WorkflowRun | null;
 }) {
   if (message.role === "user") {
     const id = `msg:${message.id}`;
@@ -175,7 +188,8 @@ function Message({
       selectedItemId={selectedItemId}
       expandedItems={expandedItems}
       onItemActivate={onItemActivate}
-      suppressPeerRunIds={suppressPeerRunIds}
+      workflowFoldRunIds={workflowFoldRunIds}
+      workflowRun={workflowRun}
     />
   );
 }
@@ -213,33 +227,33 @@ function AssistantMessage({
   selectedItemId,
   expandedItems,
   onItemActivate,
-  suppressPeerRunIds,
+  workflowFoldRunIds,
+  workflowRun,
 }: {
   message: SessionMessage;
   messageStreaming: boolean;
   selectedItemId: string | null;
   expandedItems: Set<string>;
   onItemActivate?: (itemId: string) => void;
-  suppressPeerRunIds?: ReadonlySet<string>;
+  workflowFoldRunIds?: ReadonlySet<string>;
+  workflowRun?: WorkflowRun | null;
 }) {
-  const rawBlocks = blocksFromEvents(message.events);
-  // Drop loose peer rows whose workflow node has settled (the floating
-  // WorkflowCard now shows that node's output). Running nodes keep their rows
-  // so live streaming stays visible.
-  const blocks =
-    suppressPeerRunIds && suppressPeerRunIds.size > 0
-      ? rawBlocks.filter((b) => {
-          const rid = peerBlockRunId(b);
-          return !(rid && suppressPeerRunIds.has(rid));
-        })
-      : rawBlocks;
-  const grouped = groupDelegations(blocks, message.id, messageStreaming);
+  const blocks = blocksFromEvents(message.events);
+  // Fold settled workflow-node peer rows into a single persistent, expandable
+  // WorkflowRunCard (so the agents' work persists instead of vanishing when a
+  // node finishes). Running nodes are excluded by the caller, so their rows
+  // keep streaming live as passthroughs.
+  const grouped = groupDelegations(
+    blocks,
+    message.id,
+    messageStreaming,
+    workflowFoldRunIds,
+  );
 
   if (grouped.length === 0) {
-    // The whole message was suppressed (every node settled) - render nothing,
-    // not the "…" pending placeholder, so the end-state is clean. The
-    // placeholder is reserved for a genuinely empty (still-streaming) message.
-    if (rawBlocks.length > 0) return null;
+    // A genuinely empty (still-streaming) message: show the pending "…"
+    // placeholder. Folding never empties a message, so this only triggers
+    // before the first block lands.
     return (
       <box flexDirection="column" marginTop={1}>
         <box flexDirection="row" paddingLeft={1} paddingRight={1}>
@@ -308,6 +322,27 @@ function AssistantMessage({
             <WorkflowAuthoringCard
               key={`wf-${g.id}`}
               id={g.id}
+              blocks={g.children}
+              selected={isSelected}
+              expanded={isExpanded}
+              hint={hint}
+              onActivate={onItemActivate ? () => onItemActivate(g.id) : undefined}
+            />
+          );
+        }
+        if (g.kind === "workflow_run") {
+          const isSelected = g.id === selectedItemId;
+          const isExpanded = expandedItems.has(g.id);
+          const hint = isSelected
+            ? isExpanded
+              ? "click or ctrl+e to collapse"
+              : "click or ctrl+e to expand"
+            : null;
+          return (
+            <WorkflowRunCard
+              key={`wfrun-${g.id}`}
+              id={g.id}
+              run={workflowRun ?? null}
               blocks={g.children}
               selected={isSelected}
               expanded={isExpanded}

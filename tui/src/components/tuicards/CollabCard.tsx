@@ -9,8 +9,8 @@ import {
   stripPeerPrefix,
 } from "../../util/format";
 import { ChatItem } from "./ChatItem";
+import { ExpandedBlocks } from "./ExpandedBlocks";
 import { toolLogStatus } from "./StatusDot";
-import { ToolCard } from "./ToolCard";
 import {
   CardHeader,
   Counter,
@@ -222,64 +222,6 @@ function PhaseRowView({ phase, active, last }: { phase: PhaseRow; active: boolea
   );
 }
 
-function ExpandedBlocks({ groupId, blocks }: { groupId: string; blocks: Block[] }) {
-  return (
-    <box flexDirection="column" paddingLeft={2} marginTop={0}>
-      <text fg={theme.textFaint}>{"tool calls"}</text>
-      {blocks.map((block, i) => (
-        <ExpandedBlock key={`${groupId}:child:${i}`} id={`${groupId}:child:${i}`} block={block} />
-      ))}
-    </box>
-  );
-}
-
-function ExpandedBlock({ id, block }: { id: string; block: Block }) {
-  if (block.kind === "tool") {
-    return <ToolCard id={id} log={block.log} nested />;
-  }
-  if (block.kind === "peer_reply" || block.kind === "peer_thinking") {
-    const label = block.kind === "peer_reply" ? "reply" : "thinking";
-    const text = cleanModelText(block.text).trim();
-    return (
-      <box flexDirection="column" marginTop={0}>
-        <box flexDirection="row">
-          <text fg={theme.textFaint}>{"• "}</text>
-          <text fg={runnerColor(block.runner)} attributes={TextAttributes.BOLD}>{`[${block.runner}] ${label}`}</text>
-        </box>
-        {text && (
-          <box flexDirection="column" paddingLeft={2}>
-            {tailLines(text, 8).map((line, i) => (
-              <text key={`${id}:line:${i}`} fg={theme.textMuted}>{line || " "}</text>
-            ))}
-          </box>
-        )}
-      </box>
-    );
-  }
-  if (block.kind === "error") {
-    return (
-      <box flexDirection="row">
-        <text fg={theme.textFaint}>{"• "}</text>
-        <text fg={theme.toolError}>{`error: ${block.message}`}</text>
-      </box>
-    );
-  }
-  if (block.kind === "thinking") {
-    return (
-      <box flexDirection="row">
-        <text fg={theme.textFaint}>{"• "}</text>
-        <text fg={theme.textSubtle}>{`thought (${block.seconds}s)`}</text>
-      </box>
-    );
-  }
-  return (
-    <box flexDirection="row">
-      <text fg={theme.textFaint}>{"• "}</text>
-      <text fg={theme.textMuted}>{truncate(cleanModelText(block.text), 160)}</text>
-    </box>
-  );
-}
-
 function coerceSnapshot(output: unknown): Snapshot | null {
   let raw: unknown = output;
   if (typeof raw === "string") {
@@ -350,9 +292,4 @@ function fallbackStatus(blocks: Block[]): string {
   if (blocks.some((b) => b.kind === "tool" && toolLogStatus(b.log) === "running")) return "running";
   if (blocks.some((b) => b.kind === "tool" && b.log.isError === true)) return "error";
   return blocks.length > 0 ? "ok" : "unknown";
-}
-
-function tailLines(text: string, max: number): string[] {
-  const lines = text.split("\n");
-  return lines.slice(Math.max(0, lines.length - max)).map((line) => truncate(line, 180));
 }

@@ -52,6 +52,9 @@ const WRITE_DEBOUNCE_MS = 200;
 type StoreFile = {
   version: number;
   sessions: Stored[];
+  // Machine-wide per-runner default models. Absent in stores written before
+  // this field existed -> loaded as an empty map.
+  globalModels?: ModelOverrides;
 };
 
 function defaultStorePath(): string {
@@ -61,6 +64,7 @@ function defaultStorePath(): string {
 
 export class SessionManager {
   private sessions: Stored[] = [];
+  private globalModels: ModelOverrides = {};
   private subscribers = new Set<WSContext>();
   private storePath: string;
   private writeTimer: NodeJS.Timeout | null = null;
@@ -199,6 +203,27 @@ export class SessionManager {
     this.broadcast({ type: "session_updated", session: toWire(s) });
     this.markDirty();
     return s;
+  }
+
+  // Machine-wide default model for a runner. Read by the model resolver as the
+  // fallback beneath a per-session override (see registerModelResolver in
+  // index.ts). Returns undefined when unset.
+  getGlobalModel(runner: RunnerKind): string | undefined {
+    return this.globalModels[runner];
+  }
+
+  getGlobalModels(): ModelOverrides {
+    return { ...this.globalModels };
+  }
+
+  setGlobalModel(runner: RunnerKind, model: string | null): ModelOverrides {
+    const next: ModelOverrides = { ...this.globalModels };
+    if (model && model.trim()) next[runner] = model.trim();
+    else delete next[runner];
+    this.globalModels = next;
+    this.broadcast({ type: "global_models_updated", globalModels: { ...next } });
+    this.markDirty();
+    return { ...next };
   }
 
   setEffort(id: string, runner: RunnerKind, effort: EffortLevel | null): Stored | null {
@@ -345,7 +370,11 @@ export class SessionManager {
   flush(): void {
     if (!this.dirty) return;
     this.dirty = false;
-    const payload: StoreFile = { version: STORE_VERSION, sessions: this.sessions };
+    const payload: StoreFile = {
+      version: STORE_VERSION,
+      sessions: this.sessions,
+      globalModels: this.globalModels,
+    };
     const dir = path.dirname(this.storePath);
     try {
       mkdirSync(dir, { recursive: true });
@@ -405,6 +434,8 @@ export class SessionManager {
       this.backupCorrupt();
       return;
     }
+    const gm = (parsed as StoreFile).globalModels;
+    if (gm && typeof gm === "object") this.globalModels = { ...gm };
     const loaded = (parsed as StoreFile).sessions;
     // Any session marked streaming was mid-turn at shutdown — the runner is
     // gone, no more events are coming, so settle it.

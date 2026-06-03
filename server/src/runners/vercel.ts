@@ -52,9 +52,12 @@ import {
 } from "../orchestrator/tasks.js";
 import {
   executeWorkflowAddNode,
+  executeWorkflowCancel,
+  executeWorkflowObserve,
   executeWorkflowReset,
   executeWorkflowRun,
   type WorkflowAddNodeInput,
+  type WorkflowCancelHandler,
   type WorkflowProposedHandler,
 } from "../orchestrator/workflow-tools.js";
 import { loadMcpForVercel } from "./vercel-mcp.js";
@@ -122,7 +125,8 @@ export function buildBaseSystemPrompt(cwd: string, isTopLevel: boolean): string 
       "  - task_create / task_spawn / task_await / task_observe /",
       "    task_done / task_cancel — fan-out multiple peers under one card",
       "  - workflow_add_node / workflow_run / workflow_reset — author a",
-      "    dependency-ordered DAG for user approval",
+      "    dependency-ordered DAG for user approval; workflow_observe polls",
+      "    its progress and workflow_cancel stops it once running",
       "",
       "User-configured MCP servers (loaded from ~/.claude.json) may also",
       "appear in your tool list — use them like any other tool.",
@@ -183,6 +187,7 @@ export type VercelRunArgs = {
   // orchestrator MCP).
   depth?: number;
   onWorkflowProposed?: WorkflowProposedHandler;
+  onWorkflowCancel?: WorkflowCancelHandler;
   onEvent: (ev: RunEvent) => void;
   // Fires once on the SDK's `finish` part, sourced from `part.totalUsage`
   // (the cumulative-across-steps aggregate — `part.usage` in v5 is final-step
@@ -314,6 +319,7 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
     maxSteps,
     depth,
     onWorkflowProposed,
+    onWorkflowCancel,
     onEvent,
     onTurnUsage,
     onContextUsage,
@@ -377,6 +383,7 @@ export async function runVercel(args: VercelRunArgs): Promise<void> {
         parentCwd: cwd,
         depth: depth ?? 0,
         onWorkflowProposed,
+        onWorkflowCancel,
       })
     : {};
 
@@ -1072,12 +1079,14 @@ type OrchestratorDeps = {
   parentCwd: string;
   depth: number;
   onWorkflowProposed?: WorkflowProposedHandler;
+  onWorkflowCancel?: WorkflowCancelHandler;
 };
 
 export function buildWorkflowAiTools(deps: {
   parentSessionId: string;
   parentRunner: RunnerKind;
   onWorkflowProposed?: WorkflowProposedHandler;
+  onWorkflowCancel?: WorkflowCancelHandler;
 }): ToolSet {
   return {
     workflow_add_node: tool({
@@ -1124,6 +1133,29 @@ export function buildWorkflowAiTools(deps: {
         return r.payload;
       },
     }),
+
+    workflow_observe: tool({
+      description:
+        "Non-blocking peek at the workflow you proposed: each node's status, a short output preview for finished nodes, and aggregate counts. Use it to watch progress while the engine runs the DAG.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const r = executeWorkflowObserve({ parentSessionId: deps.parentSessionId });
+        return r.payload;
+      },
+    }),
+
+    workflow_cancel: tool({
+      description:
+        "Cancel the workflow you proposed. Aborts in-flight node runs and settles the run cancelled. No-op if it has already finished.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const r = executeWorkflowCancel({
+          parentSessionId: deps.parentSessionId,
+          onWorkflowCancel: deps.onWorkflowCancel,
+        });
+        return r.payload;
+      },
+    }),
   } as ToolSet;
 }
 
@@ -1140,13 +1172,14 @@ function buildOrchestratorTools(deps: OrchestratorDeps): ToolSet {
       parentSessionId: deps.parentSessionId,
       parentRunner: ctx.parentRunner,
       onWorkflowProposed: deps.onWorkflowProposed,
+      onWorkflowCancel: deps.onWorkflowCancel,
     }),
 
     delegate_run: tool({
       description:
-        "Spawn a peer agent (claude, codex, or vercel — must differ from this runner) with a natural-language task. By default waits for completion and returns the peer's final text. Set wait=false to return immediately with a runId you can poll via get_run.",
+        "Spawn a peer agent (claude, codex, vercel, or ollama — must differ from this runner) with a natural-language task. By default waits for completion and returns the peer's final text. Set wait=false to return immediately with a runId you can poll via get_run.",
       inputSchema: z.object({
-        profileName: z.enum(["claude", "codex", "vercel"]),
+        profileName: z.enum(["claude", "codex", "vercel", "ollama"]),
         prompt: z.string().min(1),
         sessionId: z.string().optional(),
         wait: z.boolean().default(true),
@@ -1185,7 +1218,7 @@ function buildOrchestratorTools(deps: OrchestratorDeps): ToolSet {
       description:
         "Optional adversarial peer review of your just-completed work. Call it when you want a second opinion before declaring a task done — it is not required. A peer agent reads the repo, looks for flaws in your claim, and returns a structured verdict (pass / fail / needs_changes) plus an issues list.",
       inputSchema: z.object({
-        peer: z.enum(["claude", "codex", "vercel"]).optional(),
+        peer: z.enum(["claude", "codex", "vercel", "ollama"]).optional(),
         claim: z.string().min(1),
         context: z.string().optional(),
         files: z.array(z.string()).max(20).optional(),
@@ -1223,7 +1256,7 @@ function buildOrchestratorTools(deps: OrchestratorDeps): ToolSet {
         subtasks: z
           .array(
             z.object({
-              runner: z.enum(["claude", "codex", "vercel"]),
+              runner: z.enum(["claude", "codex", "vercel", "ollama"]),
               prompt: z.string().min(1),
               sessionId: z.string().optional(),
             }),

@@ -7,7 +7,15 @@ import {
 import { createRoot } from "@opentui/react";
 import { startServer } from "../../server/src/index.ts";
 import { App } from "./app";
-import { theme } from "./theme";
+import { applyPalette, theme } from "./theme";
+import { loadThemePref } from "./util/theme-prefs";
+
+// Apply the persisted palette before the first render. Static imports above are
+// hoisted, so markdown-style.ts has already built its style from the default
+// palette; applyPalette mutates the accent tokens and notifies subscribers
+// (markdown-style rebuilds), so launch colors match the saved theme. Falls back
+// to the default when no/invalid preference is stored.
+applyPalette(loadThemePref());
 
 // Dim the default mouse-drag selection highlight. Without this opentui falls
 // back to fg/bg inversion, which on this dark palette looks like a glaring

@@ -40,6 +40,7 @@ import {
   executeCancelRun,
   executeDelegate,
   executeGetRun,
+  registerModelResolver,
   registerParentCallbacks,
   unregisterParentCallbacks,
 } from "./runners/delegate.js";
@@ -96,6 +97,8 @@ import {
 import { clearDraft } from "./orchestrator/workflow-draft.js";
 import {
   executeWorkflowAddNode,
+  executeWorkflowCancel,
+  executeWorkflowObserve,
   executeWorkflowReset,
   executeWorkflowRun,
   type WorkflowAddNodeInput,
@@ -130,6 +133,21 @@ const ADVERSARIA_SYSTEM_PROMPT_APPEND =
 
 const sessions = new SessionManager();
 const permissions = new PermissionStore();
+
+// Single model-resolution rule shared by the top-level active agent and every
+// spawned peer: per-session override first, then the machine-wide global
+// default, then undefined (runner's own default). Spawned peers reach this via
+// the resolver registered into the delegate module below.
+function resolveModel(
+  session: { models: { [k in RunnerKind]?: string } },
+  runner: RunnerKind,
+): string | undefined {
+  return session.models[runner] ?? sessions.getGlobalModel(runner);
+}
+registerModelResolver((sessionId, runner) => {
+  const s = sessions.get(sessionId);
+  return s ? resolveModel(s, runner) : sessions.getGlobalModel(runner);
+});
 // Map sessionId -> AbortController for the in-flight turn, so deleting a
 // session or starting a new turn can cancel pending permission prompts.
 const turnAborts = new Map<string, AbortController>();
@@ -351,7 +369,9 @@ app.post("/internal/delegate", async (c) => {
     const result = await executeValidate(
       {
         peer:
-          args.peer === "claude" || args.peer === "codex"
+          args.peer === "claude" ||
+          args.peer === "codex" ||
+          args.peer === "ollama"
             ? (args.peer as RunnerKind)
             : undefined,
         claim: String(args.claim ?? ""),
@@ -423,6 +443,31 @@ app.post("/internal/delegate", async (c) => {
     }
     return c.json(
       executeWorkflowReset({ parentSessionId: body.parentSessionId }),
+    );
+  }
+  if (action === "workflow_observe") {
+    if (!body.parentSessionId) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    return c.json(
+      executeWorkflowObserve({ parentSessionId: body.parentSessionId }),
+    );
+  }
+  if (action === "workflow_cancel") {
+    if (!body.parentSessionId) {
+      return c.json(
+        { ok: false, payload: { error: "missing parent context" } },
+        400,
+      );
+    }
+    return c.json(
+      executeWorkflowCancel({
+        parentSessionId: body.parentSessionId,
+        onWorkflowCancel: (sid) => cancelWorkflowForSession(sid),
+      }),
     );
   }
   if (action === "task_create") {
@@ -659,6 +704,7 @@ app.get(
         sessions: sessions.list(),
         permissions: permissions.list(),
         sessionSkills: Object.fromEntries(sessionSkills.entries()),
+        globalModels: sessions.getGlobalModels(),
       });
       // Replay any prompts still waiting on a decision so a fresh client can
       // act on them.
@@ -789,6 +835,10 @@ async function handleClientMsg(msg: ClientMsg): Promise<void> {
 
     case "set_effort":
       sessions.setEffort(msg.sessionId, msg.runner, msg.effort);
+      return;
+
+    case "set_global_model":
+      sessions.setGlobalModel(msg.runner, msg.model);
       return;
 
     case "set_claude_mode":
@@ -973,12 +1023,13 @@ async function runTurn(
         // too because workflow tools are available to any top-level Claude turn,
         // not just /workflow.
         onWorkflowProposed: (run) => handleWorkflowProposed(sessionId, run),
+        onWorkflowCancel: (sid) => cancelWorkflowForSession(sid),
       });
       await runClaude({
         prompt: runnerPrompt,
         cwd: session.cwd,
         resumeId: runtime.claudeSessionId,
-        model: session.models.claude,
+        model: resolveModel(session, "claude"),
         effort: clampedEffort ?? undefined,
         allowRules: permissions.list(),
         permissionMode: session.claudeMode,
@@ -1066,7 +1117,7 @@ async function runTurn(
         prompt: runnerPrompt,
         cwd: session.cwd,
         threadId: runtime.codexThreadId,
-        model: session.models.codex,
+        model: resolveModel(session, "codex"),
         effort: clampedEffort ?? undefined,
         signal: abort.signal,
         onEvent,
@@ -1104,7 +1155,7 @@ async function runTurn(
       // content blocks are shaped per-provider; reset history when the
       // provider family changes.
       const requestedModelId =
-        session.models.vercel || process.env.VERCEL_MODEL || "gpt-4o";
+        resolveModel(session, "vercel") || process.env.VERCEL_MODEL || "gpt-4o";
       const currentProvider = requestedModelId.startsWith("claude-")
         ? "anthropic"
         : "openai";
@@ -1135,7 +1186,7 @@ async function runTurn(
         prompt: runnerPrompt,
         cwd: session.cwd,
         priorMessages: prior,
-        model: session.models.vercel,
+        model: resolveModel(session, "vercel"),
         effort: clampedEffort ?? undefined,
         systemPromptAppend: ADVERSARIA_SYSTEM_PROMPT_APPEND,
         signal: abort.signal,
@@ -1145,6 +1196,7 @@ async function runTurn(
         allowRules: permissions.list(),
         depth: 0,
         onWorkflowProposed: (run) => handleWorkflowProposed(sessionId, run),
+        onWorkflowCancel: (sid) => cancelWorkflowForSession(sid),
         onEvent,
         onTurnUsage,
         onContextUsage,
@@ -1170,13 +1222,14 @@ async function runTurn(
         prompt: runnerPrompt,
         cwd: session.cwd,
         priorMessages: priorOllama,
-        model: session.models.ollama,
+        model: resolveModel(session, "ollama"),
         signal: abort.signal,
         sessionId,
         permissionMode: session.claudeMode,
         permissions,
         allowRules: permissions.list(),
         onWorkflowProposed: (run) => handleWorkflowProposed(sessionId, run),
+        onWorkflowCancel: (sid) => cancelWorkflowForSession(sid),
         onEvent,
         onTurnUsage,
         onContextUsage,
@@ -1656,6 +1709,23 @@ function handleWorkflowCancel(workflowId: string): void {
   // cancelled and push the terminal snapshot so the approval modal tears down.
   cancelWorkflowRuns(sessionId);
   sessions.broadcast({ type: "workflow_state", run });
+}
+
+// Session-keyed cancel for the workflow_cancel orchestrator tool. The model that
+// proposed the DAG knows its own session, not the workflowId, so this resolves
+// the active run by session and reuses handleWorkflowCancel's controller-or-
+// fallback teardown. Returns whether anything was actually cancelled (a settled
+// run is a no-op) so the tool can report it.
+function cancelWorkflowForSession(
+  sessionId: string,
+): { ok: true; cancelled: boolean } | { ok: false; error: string } {
+  const run = getWorkflowRun(sessionId);
+  if (!run) return { ok: false, error: "no active workflow for this session" };
+  if (run.status !== "running" && run.status !== "proposed") {
+    return { ok: true, cancelled: false };
+  }
+  handleWorkflowCancel(run.id);
+  return { ok: true, cancelled: true };
 }
 
 // delete_session teardown: stop the scheduler and drop the store. No snapshot

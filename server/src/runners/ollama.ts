@@ -29,7 +29,10 @@ import type {
   TurnUsage,
 } from "../../../shared/events.js";
 import type { PermissionStore } from "../permissions.js";
-import type { WorkflowProposedHandler } from "../orchestrator/workflow-tools.js";
+import type {
+  WorkflowCancelHandler,
+  WorkflowProposedHandler,
+} from "../orchestrator/workflow-tools.js";
 import {
   buildWorkflowAiTools,
   buildBaseSystemPrompt,
@@ -147,6 +150,7 @@ export type OllamaRunArgs = {
   permissions?: PermissionStore;
   allowRules?: string[];
   onWorkflowProposed?: WorkflowProposedHandler;
+  onWorkflowCancel?: WorkflowCancelHandler;
   // Per-call override of STEP_LIMIT.
   maxSteps?: number;
   onEvent: (ev: RunEvent) => void;
@@ -168,6 +172,7 @@ export async function runOllama(args: OllamaRunArgs): Promise<void> {
     permissions,
     allowRules,
     onWorkflowProposed,
+    onWorkflowCancel,
     maxSteps,
     onEvent,
     onTurnUsage,
@@ -227,6 +232,7 @@ export async function runOllama(args: OllamaRunArgs): Promise<void> {
       parentSessionId: sessionId,
       parentRunner: "ollama",
       onWorkflowProposed,
+      onWorkflowCancel,
     }),
     ...buildCodingTools({ cwd, signal, gate, onEvent }),
   } as ToolSet;

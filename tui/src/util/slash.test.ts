@@ -65,6 +65,39 @@ describe("/ollama runner command", () => {
   });
 });
 
+describe("/model global parsing", () => {
+  test("/model global <name> sets the active runner's global default", () => {
+    expect(parseSlash("/model global qwen3:8b")).toEqual({
+      type: "model",
+      action: { kind: "setGlobal", model: "qwen3:8b" },
+    });
+  });
+  test("/model global <runner> <name> targets a specific runner", () => {
+    expect(parseSlash("/model global ollama qwen2.5-coder:7b")).toEqual({
+      type: "model",
+      action: { kind: "setGlobalRunner", runner: "ollama", model: "qwen2.5-coder:7b" },
+    });
+  });
+  test("/model global reset clears the active runner's global default", () => {
+    expect(parseSlash("/model global reset")).toEqual({
+      type: "model",
+      action: { kind: "resetGlobal" },
+    });
+  });
+  test("/model global <runner> reset clears that runner's global default", () => {
+    expect(parseSlash("/model global ollama reset")).toEqual({
+      type: "model",
+      action: { kind: "resetGlobalRunner", runner: "ollama" },
+    });
+  });
+  test("/model global with no tail resets the active runner", () => {
+    expect(parseSlash("/model global")).toEqual({
+      type: "model",
+      action: { kind: "resetGlobal" },
+    });
+  });
+});
+
 describe("/workflow parsing", () => {
   test("bare goal threads through to workflow authoring", () => {
     expect(parseSlash("/workflow ship the login page")).toEqual({
@@ -92,5 +125,28 @@ describe("toggleRunner cycle", () => {
     expect(toggleRunner("codex")).toBe("vercel");
     expect(toggleRunner("vercel")).toBe("ollama");
     expect(toggleRunner("ollama")).toBe("claude");
+  });
+});
+
+describe("/theme parsing", () => {
+  test("bare /theme opens the picker", () => {
+    expect(parseSlash("/theme")).toEqual({ type: "theme", action: { kind: "picker" } });
+  });
+  test("list/show/status print the palette list", () => {
+    expect(parseSlash("/theme list")).toEqual({ type: "theme", action: { kind: "list" } });
+    expect(parseSlash("/theme show")).toEqual({ type: "theme", action: { kind: "list" } });
+    expect(parseSlash("/theme status")).toEqual({ type: "theme", action: { kind: "list" } });
+  });
+  test("a name sets it directly (resolution happens in the App)", () => {
+    expect(parseSlash("/theme nord")).toEqual({
+      type: "theme",
+      action: { kind: "set", name: "nord" },
+    });
+  });
+  test("preserves the raw name token incl. casing for the resolver", () => {
+    expect(parseSlash("/theme TokyoNight")).toEqual({
+      type: "theme",
+      action: { kind: "set", name: "TokyoNight" },
+    });
   });
 });

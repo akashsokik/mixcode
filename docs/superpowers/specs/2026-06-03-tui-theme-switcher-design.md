@@ -15,7 +15,7 @@ already carry hue change.
 
 In scope:
 - Split `tui/src/theme.ts` into a fixed BASE and swappable ACCENT layer.
-- Ship four palettes: Gruvbox (default), Catppuccin Mocha, Nord, Tokyo Night.
+- Ship five palettes: Material (default), Gruvbox, Catppuccin Mocha, Nord, Tokyo Night.
 - `/theme` interactive picker, `/theme <name>` direct set, `/theme list` notice.
 - Persist the chosen palette and restore it on launch.
 - Live re-render on switch (no restart, scroll position preserved).
@@ -62,7 +62,27 @@ All hexes below are ACCENT values only; BASE is unchanged. Where a palette's
 limited range forces `toolTask` and `runnerOllama` onto the same purple, that is
 accepted — they never render adjacent in a confusing way.
 
-### Gruvbox (default)
+### Material (default)
+| token | hex |
+|-------|-----|
+| toolEdit | #c3e88d |
+| toolRead | #b2ccd6 |
+| toolBash | #ffcb6b |
+| toolWeb | #82aaff |
+| toolTask | #c792ea |
+| toolError | #ff5370 |
+| mdCode | #89ddff |
+| mdLink | #82aaff |
+| mdLinkUrl | #5c7ec7 |
+| diffAddFg | #c3e88d |
+| diffRemFg | #ff5370 |
+| runnerClaude / Idle | #c3e88d / #5e7240 |
+| runnerCodex / Idle | #f78c6c / #7a4a39 |
+| runnerVercel / Idle | #89ddff / #3f6b7a |
+| runnerOllama / Idle | #c792ea / #634a78 |
+| gitDirty | #ff9cac |
+
+### Gruvbox
 | token | hex |
 |-------|-----|
 | toolEdit | #b8bb26 |
@@ -220,7 +240,7 @@ under the user's config directory (`XDG_CONFIG_HOME` or `~/.config`, app subdir)
 
 ## Notes / decisions
 
-- Default on fresh install is **Gruvbox**, not the previous grayscale-accent set;
+- Default on fresh install is **Material**, not the previous grayscale-accent set;
   this intentionally changes first-launch accent colors. The Mono accent set is
   retired and not offered as a selectable palette.
 - Mechanism tradeoff accepted: live re-render depends on the transcript subtree

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useKeyboard, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
 import { Transcript } from "./components/Transcript";
 import { Prompt } from "./components/Prompt";
@@ -9,6 +16,7 @@ import { ConsensusModal } from "./components/ConsensusModal";
 import { WorkflowPanel, WorkflowApprovalModal } from "./components/WorkflowPanel";
 import { WorkflowCard } from "./components/tuicards";
 import { ModelPicker } from "./components/ModelPicker";
+import { ThemePicker } from "./components/ThemePicker";
 import { EffortSlider } from "./components/EffortSlider";
 import { Palette, type PaletteItem } from "./components/Palette";
 import type { ClaudePermissionMode, RunnerKind, SessionSkillEntry } from "../../shared/events.ts";
@@ -29,6 +37,7 @@ import {
   sessionsLines,
   skillInfoLines,
   skillsLines,
+  themeLines,
   type Notice,
 } from "./util/notice";
 import {
@@ -49,7 +58,15 @@ import {
   type SkillEntry,
 } from "./util/skills";
 import { addMcp, listMcp, removeMcp, testMcp } from "./util/mcp";
-import { theme } from "./theme";
+import {
+  applyPalette,
+  getThemeName,
+  resolveThemeName,
+  subscribeTheme,
+  THEME_LABELS,
+  theme,
+} from "./theme";
+import { saveThemePref } from "./util/theme-prefs";
 import { basename } from "./util/path";
 import { collectChatItemIds, latestDelegationId, resolveItemContent } from "./util/blocks";
 import { writeClipboard } from "./util/clipboard";
@@ -86,6 +103,15 @@ export function App() {
   // App only needs to track which runner it's for so it can keep the selected
   // model up to date if the user switches runners while it's open (closes).
   const [modelPicker, setModelPicker] = useState<{ runner: RunnerKind } | null>(null);
+  // True when the /theme palette picker overlay is open.
+  const [themePicker, setThemePicker] = useState(false);
+  // Subscribe to palette switches. applyPalette mutates the shared `theme`
+  // object's accent tokens in place and notifies; this snapshot change re-renders
+  // App (and, since nothing in the transcript subtree is React.memo'd, the whole
+  // tree), so every `theme.*` read picks up the new accents. Do NOT wrap the
+  // transcript subtree in React.memo without moving it to a useTheme() hook, or
+  // it would keep stale colors through this re-render.
+  const themeName = useSyncExternalStore(subscribeTheme, getThemeName);
   // Live model list for the ollama picker, fetched from the daemon when the
   // picker opens (the hosted runners use the static catalog instead).
   const [ollamaModels, setOllamaModels] = useState<{
@@ -121,12 +147,6 @@ export function App() {
   const [workflowExpandedBySession, setWorkflowExpandedBySession] = useState<
     Record<string, boolean>
   >({});
-  // Which sessions have their floating WorkflowCard ctrl+e-expanded to show
-  // each node's full (clamped) output. Separate from the Tab-driven panel
-  // above; the inline card isn't in the transcript selection model, so its
-  // expansion is its own App-local toggle.
-  const [workflowOutputsExpandedBySession, setWorkflowOutputsExpandedBySession] =
-    useState<Record<string, boolean>>({});
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
   const [mcpServerNames, setMcpServerNames] = useState<string[]>([]);
   const [mcpLoading, setMcpLoading] = useState(false);
@@ -229,15 +249,13 @@ export function App() {
   const activeWorkflowExpanded = api.activeId
     ? !!workflowExpandedBySession[api.activeId]
     : false;
-  const activeWorkflowOutputsExpanded = api.activeId
-    ? !!workflowOutputsExpandedBySession[api.activeId]
-    : false;
 
-  // Short run-ids of SETTLED workflow nodes. The transcript drops these nodes'
-  // loose peer reply/tool rows (the floating WorkflowCard shows their output
-  // instead); running nodes are excluded so their live streaming stays. Short
-  // form matches what the onPeerEvent bridge embeds in the chip name.
-  const suppressPeerRunIds = useMemo(() => {
+  // Short run-ids of SETTLED workflow nodes. The transcript folds these nodes'
+  // loose peer reply/tool rows into the persistent, expandable WorkflowRunCard
+  // (the agents' work stays in the transcript); running nodes are excluded so
+  // their live streaming stays loose. Short form matches what the onPeerEvent
+  // bridge embeds in the chip name.
+  const workflowFoldRunIds = useMemo(() => {
     const s = new Set<string>();
     if (!activeWorkflow) return s;
     for (const n of activeWorkflow.nodes) {
@@ -267,8 +285,8 @@ export function App() {
   }, [api.activeId, api.workflows]);
 
   const activeItemIds = useMemo(
-    () => collectChatItemIds(api.active ?? null, activeNotices),
-    [api.active, activeNotices],
+    () => collectChatItemIds(api.active ?? null, activeNotices, workflowFoldRunIds),
+    [api.active, activeNotices, workflowFoldRunIds],
   );
 
   const activeSelectedItemId = useMemo(() => {
@@ -355,7 +373,7 @@ export function App() {
   const toggleLatestDelegation = useCallback(() => {
     const sid = api.activeId;
     if (!sid) return;
-    const groupId = latestDelegationId(api.active ?? null);
+    const groupId = latestDelegationId(api.active ?? null, workflowFoldRunIds);
     if (!groupId) return;
     setExpandedItems((prev) => {
       const cur = prev[sid] ?? new Set<string>();
@@ -364,7 +382,7 @@ export function App() {
       else next.add(groupId);
       return { ...prev, [sid]: next };
     });
-  }, [api.activeId, api.active]);
+  }, [api.activeId, api.active, workflowFoldRunIds]);
 
   const promptMeta = useMemo(() => {
     const s = api.active;
@@ -740,7 +758,12 @@ export function App() {
       addNotification("nothing to copy", "info", 2500);
       return;
     }
-    const text = resolveItemContent(api.active ?? null, activeNotices, id);
+    const text = resolveItemContent(
+      api.active ?? null,
+      activeNotices,
+      id,
+      workflowFoldRunIds,
+    );
     if (!text) {
       addNotification("nothing to copy", "info", 2500);
       return;
@@ -755,7 +778,7 @@ export function App() {
         4000,
       );
     });
-  }, [activeSelectedItemId, api.active, activeNotices, addNotification]);
+  }, [activeSelectedItemId, api.active, activeNotices, addNotification, workflowFoldRunIds]);
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "k") {
@@ -774,21 +797,10 @@ export function App() {
       return;
     }
     // ctrl+e: prefer expanding the selected chat item when one is selected;
-    // then the floating workflow card's per-node outputs (it isn't in the
-    // selection model); otherwise fall back to the delegation-group toggle.
+    // otherwise fall back to the latest collapsible group, which includes the
+    // persistent WorkflowRunCard (the settled workflow's per-node agent work).
     if (key.ctrl && key.name === "e") {
       if (toggleSelectedItemExpansion()) return;
-      if (
-        activeWorkflow &&
-        activeWorkflow.status !== "proposed" &&
-        !activeWorkflowExpanded
-      ) {
-        const sid = api.activeId;
-        if (sid) {
-          setWorkflowOutputsExpandedBySession((p) => ({ ...p, [sid]: !p[sid] }));
-        }
-        return;
-      }
       toggleLatestDelegation();
       return;
     }
@@ -979,7 +991,7 @@ export function App() {
               setModelPicker({ runner: api.active.activeRunner });
               return;
             case "show":
-              addNotice(sid, "/model", modelLines(api.active));
+              addNotice(sid, "/model", modelLines(api.active, undefined, api.globalModels));
               return;
             case "set": {
               const runner = api.active.activeRunner;
@@ -1035,6 +1047,54 @@ export function App() {
                   { ...api.active, models: next },
                   `${action.runner} → (default)`,
                 ),
+              );
+              return;
+            }
+            case "setGlobal": {
+              const runner = api.active.activeRunner;
+              api.setGlobalModel(runner, action.model);
+              addNotice(
+                sid,
+                "/model",
+                modelLines(api.active, `global ${runner} → ${action.model}`, {
+                  ...api.globalModels,
+                  [runner]: action.model,
+                }),
+              );
+              return;
+            }
+            case "setGlobalRunner": {
+              api.setGlobalModel(action.runner, action.model);
+              addNotice(
+                sid,
+                "/model",
+                modelLines(api.active, `global ${action.runner} → ${action.model}`, {
+                  ...api.globalModels,
+                  [action.runner]: action.model,
+                }),
+              );
+              return;
+            }
+            case "resetGlobal": {
+              const runner = api.active.activeRunner;
+              api.setGlobalModel(runner, null);
+              const nextGlobal = { ...api.globalModels };
+              delete nextGlobal[runner];
+              addNotice(
+                sid,
+                "/model",
+                modelLines(api.active, `global ${runner} → (runner default)`, nextGlobal),
+              );
+              return;
+            }
+            case "resetGlobalRunner": {
+              api.setGlobalModel(action.runner, null);
+              const nextGlobal = { ...api.globalModels };
+              delete nextGlobal[action.runner];
+              addNotice(
+                sid,
+                "/model",
+                modelLines(api.active, `global ${action.runner} → (runner default)`, nextGlobal),
               );
               return;
             }
@@ -1285,6 +1345,34 @@ export function App() {
           api.createSession(title ?? undefined, runner ?? undefined);
           return;
         }
+        case "theme": {
+          const action = slash.action;
+          if (action.kind === "picker") {
+            setThemePicker(true);
+            return;
+          }
+          if (action.kind === "list") {
+            if (sid) addNotice(sid, "/theme", themeLines(getThemeName()));
+            return;
+          }
+          const resolved = resolveThemeName(action.name);
+          if (!resolved) {
+            if (sid) {
+              addNotice(
+                sid,
+                "/theme",
+                themeLines(getThemeName(), `unknown theme "${action.name}"`),
+              );
+            }
+            return;
+          }
+          applyPalette(resolved);
+          saveThemePref(resolved);
+          if (sid) {
+            addNotice(sid, "/theme", themeLines(resolved, `theme -> ${THEME_LABELS[resolved]}`));
+          }
+          return;
+        }
         case "unknown": {
           // Known skill names pass through to the runner verbatim. The
           // Claude/Codex CLIs route /<skill-name> through their Skill tool;
@@ -1348,7 +1436,8 @@ export function App() {
         selectedItemId={activeSelectedItemId}
         expandedItems={activeExpandedItems}
         onItemActivate={handleItemActivate}
-        suppressPeerRunIds={suppressPeerRunIds}
+        workflowFoldRunIds={workflowFoldRunIds}
+        workflowRun={activeWorkflow}
       />
       <Notifications items={notifications} />
       <Spinner active={api.active} />
@@ -1388,7 +1477,14 @@ export function App() {
           onCancel={() => api.cancelWorkflow(activeWorkflow.id)}
         />
       )}
-      {activeWorkflow && activeWorkflow.status !== "proposed" && !activeWorkflowExpanded && (
+      {activeWorkflow &&
+        activeWorkflow.status !== "proposed" &&
+        // On success the floating pill is dismissed: the run's per-node agent
+        // work persists in the transcript's WorkflowRunCard (ctrl+e), so the
+        // pill has nothing left to report. Non-success terminals (failed/
+        // cancelled) keep it so the failure stays visible above the Prompt.
+        activeWorkflow.status !== "done" &&
+        !activeWorkflowExpanded && (
         // ChatItem is built to live inside the transcript scrollbox; mounted as
         // a bare sibling of the full-height root column it would be flex-shrunk
         // to nothing and its transparent text would paint over the Prompt. Wrap
@@ -1400,11 +1496,10 @@ export function App() {
             id={`workflow:${activeWorkflow.id}`}
             run={activeWorkflow}
             selected={false}
-            outputsExpanded={activeWorkflowOutputsExpanded}
             hint={
               activeWorkflow.status === "running"
-                ? "tab expand DAG · ctrl+e outputs"
-                : "ctrl+e outputs"
+                ? "tab expand DAG · ctrl+e agents' work"
+                : "ctrl+e agents' work"
             }
           />
         </box>
@@ -1413,6 +1508,7 @@ export function App() {
         <ModelPicker
           runner={modelPicker.runner}
           currentId={api.active.models[modelPicker.runner]}
+          globalCurrentId={api.globalModels[modelPicker.runner]}
           entries={
             modelPicker.runner === "ollama"
               ? ollamaModels.entries
@@ -1420,45 +1516,83 @@ export function App() {
           }
           loading={modelPicker.runner === "ollama" ? ollamaModels.loading : false}
           error={modelPicker.runner === "ollama" ? ollamaModels.error : null}
-          onSelect={(modelId) => {
+          onSelect={(modelId, scope) => {
             if (!api.active) return;
-            api.setModel(modelPicker.runner, modelId);
-            if (api.activeId) {
-              addNotice(
-                api.activeId,
-                "/model",
-                modelLines(
-                  {
-                    ...api.active,
-                    models: {
-                      ...api.active.models,
-                      [modelPicker.runner]: modelId,
+            const runner = modelPicker.runner;
+            if (scope === "global") {
+              api.setGlobalModel(runner, modelId);
+              if (api.activeId) {
+                addNotice(
+                  api.activeId,
+                  "/model",
+                  modelLines(api.active, `global ${runner} → ${modelId}`, {
+                    ...api.globalModels,
+                    [runner]: modelId,
+                  }),
+                );
+              }
+            } else {
+              api.setModel(runner, modelId);
+              if (api.activeId) {
+                addNotice(
+                  api.activeId,
+                  "/model",
+                  modelLines(
+                    {
+                      ...api.active,
+                      models: { ...api.active.models, [runner]: modelId },
                     },
-                  },
-                  `${modelPicker.runner} → ${modelId}`,
-                ),
-              );
+                    `${runner} → ${modelId}`,
+                    api.globalModels,
+                  ),
+                );
+              }
             }
             setModelPicker(null);
           }}
-          onReset={() => {
+          onReset={(scope) => {
             if (!api.active) return;
-            api.setModel(modelPicker.runner, null);
-            if (api.activeId) {
-              const next = { ...api.active.models };
-              delete next[modelPicker.runner];
-              addNotice(
-                api.activeId,
-                "/model",
-                modelLines(
-                  { ...api.active, models: next },
-                  `${modelPicker.runner} → (default)`,
-                ),
-              );
+            const runner = modelPicker.runner;
+            if (scope === "global") {
+              api.setGlobalModel(runner, null);
+              if (api.activeId) {
+                const nextGlobal = { ...api.globalModels };
+                delete nextGlobal[runner];
+                addNotice(
+                  api.activeId,
+                  "/model",
+                  modelLines(api.active, `global ${runner} → (runner default)`, nextGlobal),
+                );
+              }
+            } else {
+              api.setModel(runner, null);
+              if (api.activeId) {
+                const next = { ...api.active.models };
+                delete next[runner];
+                addNotice(
+                  api.activeId,
+                  "/model",
+                  modelLines({ ...api.active, models: next }, `${runner} → (default)`, api.globalModels),
+                );
+              }
             }
             setModelPicker(null);
           }}
           onCancel={() => setModelPicker(null)}
+        />
+      )}
+      {themePicker && (
+        <ThemePicker
+          current={themeName}
+          onSelect={(name) => {
+            applyPalette(name);
+            saveThemePref(name);
+            if (api.activeId) {
+              addNotice(api.activeId, "/theme", themeLines(name, `theme -> ${THEME_LABELS[name]}`));
+            }
+            setThemePicker(false);
+          }}
+          onCancel={() => setThemePicker(false)}
         />
       )}
       {effortSlider && api.active && (
@@ -1524,6 +1658,7 @@ export function App() {
         locked={
           api.pendingPermissions.length > 0 ||
           modelPicker !== null ||
+          themePicker ||
           effortSlider !== null ||
           paletteMode !== null ||
           (api.activeId !== null && !!api.consensusReady[api.activeId]) ||

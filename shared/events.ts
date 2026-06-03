@@ -259,7 +259,11 @@ export type WorkflowNode = {
   id: string;
   title: string;
   runner: RunnerKind;        // which runner spawns this node's isolated agent
-  model?: string;            // optional per-node model override
+  model?: string;            // optional per-node model override (author-set)
+  // The model the node actually ran on, resolved at dispatch (per-node
+  // override -> session -> global default). Set when the node starts so the
+  // card can show a concrete model for every node, not just overridden ones.
+  resolvedModel?: string;
   prompt: string;            // self-contained task; upstream outputs are
                              // auto-injected by the engine, not templated
   dependsOn?: string[];
@@ -336,6 +340,16 @@ export type ClientMsg =
       // null clears the override and returns to the SDK default
       effort: EffortLevel | null;
     }
+  | {
+      // Machine-wide default model for a runner. Applies to the active agent
+      // AND every orchestration tool it spawns (delegate_run, validate_run,
+      // task_spawn, workflow nodes, consensus, collab). Not session-scoped — a
+      // per-session set_model override still wins over this.
+      type: "set_global_model";
+      runner: RunnerKind;
+      // null clears the global default and returns to the runner's own default
+      model: string | null;
+    }
   | { type: "set_claude_mode"; sessionId: string; mode: ClaudePermissionMode }
   | { type: "send"; sessionId: string; text: string }
   | { type: "interrupt"; sessionId: string }
@@ -393,8 +407,14 @@ export type ServerMsg =
         string,
         { runner: RunnerKind; entries: SessionSkillEntry[] }
       >;
+      // Machine-wide per-runner default models in effect at connect. Empty map
+      // means every runner falls back to its own hardcoded default.
+      globalModels: ModelOverrides;
     }
   | { type: "session_updated"; session: Session }
+  // Machine-wide default models changed (via set_global_model). Carries the
+  // full map so clients can replace their copy wholesale.
+  | { type: "global_models_updated"; globalModels: ModelOverrides }
   | { type: "session_deleted"; sessionId: string }
   | { type: "message_started"; sessionId: string; message: SessionMessage }
   | {

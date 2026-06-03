@@ -92,11 +92,11 @@ server.registerTool(
   "delegate_run",
   {
     description:
-      "Spawn a peer agent (claude or codex) with a natural-language prompt. " +
+      "Spawn a peer agent (claude, codex, or ollama) with a natural-language prompt. " +
       "By default waits for completion and returns the peer's final text. " +
       "Set wait=false to return immediately with a runId you can poll via get_run.",
     inputSchema: {
-      profileName: z.enum(["claude", "codex"]),
+      profileName: z.enum(["claude", "codex", "ollama"]),
       prompt: z.string().min(1),
       sessionId: z.string().optional(),
       wait: z.boolean().default(true),
@@ -136,7 +136,7 @@ server.registerTool(
       "claim, and returns a structured verdict (pass / fail / needs_changes) plus an issues " +
       "list. Treat fail and needs_changes as work to do.",
     inputSchema: {
-      peer: z.enum(["claude", "codex"]).optional(),
+      peer: z.enum(["claude", "codex", "ollama"]).optional(),
       claim: z.string().min(1),
       context: z.string().optional(),
       files: z.array(z.string()).max(20).optional(),
@@ -172,7 +172,7 @@ server.registerTool(
       subtasks: z
         .array(
           z.object({
-            runner: z.enum(["claude", "codex"]),
+            runner: z.enum(["claude", "codex", "ollama"]),
             prompt: z.string().min(1),
             sessionId: z.string().optional(),
           }),

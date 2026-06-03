@@ -7,22 +7,31 @@ import { theme } from "../theme";
 
 const ENTER_KEYS = new Set(["return", "enter", "linefeed", "kpenter"]);
 
+// Which layer a pick writes to. "session" is the per-session override (wins
+// over everything); "global" is the machine-wide default applied to the active
+// agent and every spawned orchestration tool.
+export type ModelScope = "session" | "global";
+
 type Props = {
   runner: RunnerKind;
+  // Current per-session override for this runner (undefined = none).
   currentId: string | undefined;
+  // Current machine-wide global default for this runner (undefined = none).
+  globalCurrentId: string | undefined;
   // Selectable models. For ollama this is fetched live from the daemon; for the
   // hosted runners it's the static catalog. The picker stays presentational.
   entries: ModelEntry[];
   loading?: boolean;
   error?: string | null;
-  onSelect: (modelId: string) => void;
-  onReset: () => void;
+  onSelect: (modelId: string, scope: ModelScope) => void;
+  onReset: (scope: ModelScope) => void;
   onCancel: () => void;
 };
 
 export function ModelPicker({
   runner,
   currentId,
+  globalCurrentId,
   entries,
   loading = false,
   error = null,
@@ -31,20 +40,31 @@ export function ModelPicker({
   onCancel,
 }: Props) {
   const [index, setIndex] = useState(0);
+  // Default to the machine-wide global default: opening the bare picker and
+  // hitting Enter sets the model everywhere (active agent + every spawned
+  // tool). Tab flips to "this session only" for one-off exceptions.
+  const [scope, setScope] = useState<ModelScope>("global");
 
-  // Re-sync the cursor onto the current model whenever the entry set changes
-  // (e.g. an async ollama fetch resolves after open) so Enter is a no-op
-  // confirm rather than landing on an arbitrary row.
+  // The "current" model depends on which layer we're editing.
+  const activeCurrentId = scope === "session" ? currentId : globalCurrentId;
+
+  // Re-sync the cursor onto the current model whenever the entry set or the
+  // active scope changes so Enter is a no-op confirm rather than landing on an
+  // arbitrary row.
   useEffect(() => {
-    setIndex(Math.max(0, entries.findIndex((e) => e.id === currentId)));
-  }, [entries, currentId]);
+    setIndex(Math.max(0, entries.findIndex((e) => e.id === activeCurrentId)));
+  }, [entries, activeCurrentId]);
 
   const selectable = !loading && !error && entries.length > 0;
 
   useKeyboard((key) => {
     const name = key.name;
     if (name === "escape") return onCancel();
-    if (name === "r") return onReset();
+    if (name === "tab") {
+      setScope((s) => (s === "session" ? "global" : "session"));
+      return;
+    }
+    if (name === "r") return onReset(scope);
     if (!selectable) return;
     if (name === "up" || name === "k") {
       setIndex((i) => Math.max(0, i - 1));
@@ -56,7 +76,7 @@ export function ModelPicker({
     }
     if (ENTER_KEYS.has(name)) {
       const e = entries[index];
-      if (e) onSelect(e.id);
+      if (e) onSelect(e.id, scope);
       return;
     }
   });
@@ -73,6 +93,10 @@ export function ModelPicker({
         ? "no models found — pull one with `ollama pull <id>`"
         : null;
 
+  const scopeLabel = scope === "session" ? "this session" : "global default";
+  const otherCurrent = scope === "session" ? globalCurrentId : currentId;
+  const otherLabel = scope === "session" ? "global default" : "session override";
+
   return (
     <box
       flexDirection="column"
@@ -88,6 +112,12 @@ export function ModelPicker({
           {"select model"}
         </text>
         <text fg={theme.textMuted}>{`  ${runner}`}</text>
+        <text fg={theme.accent}>{`   scope: ${scopeLabel}`}</text>
+      </box>
+      <box flexDirection="row">
+        <text fg={theme.textFaint}>
+          {`${otherLabel}: ${otherCurrent ?? "(unset)"}`}
+        </text>
       </box>
       {statusRow ? (
         <box flexDirection="row">
@@ -99,7 +129,7 @@ export function ModelPicker({
             key={entry.id}
             entry={entry}
             selected={i === index}
-            current={entry.id === currentId}
+            current={entry.id === activeCurrentId}
             labelWidth={labelWidth}
           />
         ))
@@ -107,8 +137,8 @@ export function ModelPicker({
       <box flexDirection="row" marginTop={0}>
         <text fg={theme.textFaint}>
           {selectable
-            ? "↑↓ navigate   enter select   r reset to default   esc cancel"
-            : "r reset to default   esc cancel"}
+            ? "↑↓ navigate   enter select   tab session/global   r reset   esc cancel"
+            : "tab session/global   r reset   esc cancel"}
         </text>
       </box>
     </box>

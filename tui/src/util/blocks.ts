@@ -151,6 +151,21 @@ export type GroupedBlock =
       id: string;
       index: number;
       children: Block[];
+    }
+  | {
+      // The per-node agent work for a running workflow's SETTLED nodes, folded
+      // into one persistent, expandable card. The detached workflow scheduler
+      // appends every node's peer events to a single host assistant message;
+      // parallel nodes interleave in stream order, so the WorkflowRunCard
+      // de-interleaves `children` back into per-node sections (by runId, in
+      // run.nodes order). Folding keeps the agents' actual work in the
+      // transcript instead of dropping it once a node finishes. `index` is the
+      // first folded block's index (anchor for ordering against loose,
+      // still-running node rows that remain passthroughs).
+      kind: "workflow_run";
+      id: string;
+      index: number;
+      children: Block[];
     };
 
 // The three DAG-authoring tools, by bare (MCP-stripped) name. A run of these
@@ -248,9 +263,25 @@ export function groupDelegations(
   // be misleading. We let the peer events render as plain passthrough
   // blocks so the user sees what actually happened.
   messageStreaming = true,
+  // Short run-ids of workflow nodes that have SETTLED. Their loose peer
+  // reply/thinking/tool rows are folded out of the main flow into a single
+  // `workflow_run` group (the persistent WorkflowRunCard). Running nodes are
+  // excluded by the caller so their rows keep streaming live as passthroughs.
+  // Empty/undefined for non-workflow transcripts, which are left untouched.
+  foldRunIds?: ReadonlySet<string>,
 ): GroupedBlock[] {
   const items: GroupedBlock[] = [];
   let currentCollab: Extract<GroupedBlock, { kind: "collab_group" }> | null = null;
+
+  // A settled workflow-node block destined for the workflow_run fold. These
+  // must not be swept into a delegate "pending"/trailing group or a collab
+  // group first, or foldWorkflowRun (which only folds loose passthroughs)
+  // would never see them.
+  const isFoldRun = (b: Block): boolean => {
+    if (!foldRunIds || foldRunIds.size === 0) return false;
+    const rid = peerBlockRunId(b);
+    return rid !== null && foldRunIds.has(rid);
+  };
 
   const consumeTrailingPeers = (): Block[] => {
     const children: Block[] = [];
@@ -258,6 +289,7 @@ export function groupDelegations(
       const last = items[items.length - 1];
       if (last.kind !== "passthrough") break;
       if (!isPeerBlock(last.block)) break;
+      if (isFoldRun(last.block)) break;
       items.pop();
       children.unshift(last.block);
     }
@@ -287,7 +319,7 @@ export function groupDelegations(
       ensureCollabGroup(i).children.push(b);
       return;
     }
-    if (currentCollab && isPeerBlock(b) && collabMayCapturePeer(currentCollab)) {
+    if (currentCollab && isPeerBlock(b) && !isFoldRun(b) && collabMayCapturePeer(currentCollab)) {
       currentCollab.children.push(b);
       return;
     }
@@ -340,7 +372,47 @@ export function groupDelegations(
     }
   }
 
-  return foldWorkflowAuthoring(items, messageId);
+  return foldWorkflowRun(foldWorkflowAuthoring(items, messageId), messageId, foldRunIds);
+}
+
+// Fold the loose peer passthroughs of SETTLED workflow nodes (runId in
+// `foldRunIds`) into one `workflow_run` group, preserving stream order in
+// `children` (the card de-interleaves parallel nodes by runId itself). The
+// group lands where the first folded block was, so it sits in the same spot the
+// node work occupied. Running nodes (not in `foldRunIds`) stay as passthroughs
+// so their live streaming remains visible. A no-op when nothing matches.
+function foldWorkflowRun(
+  items: GroupedBlock[],
+  messageId: string,
+  foldRunIds?: ReadonlySet<string>,
+): GroupedBlock[] {
+  if (!foldRunIds || foldRunIds.size === 0) return items;
+  const isFold = (g: GroupedBlock): g is Extract<GroupedBlock, { kind: "passthrough" }> => {
+    if (g.kind !== "passthrough" || !isPeerBlock(g.block)) return false;
+    const rid = peerBlockRunId(g.block);
+    return rid !== null && foldRunIds.has(rid);
+  };
+  const folded = items.filter(isFold);
+  if (folded.length === 0) return items;
+  const group: GroupedBlock = {
+    kind: "workflow_run",
+    id: `${messageId}:wfrun`,
+    index: folded[0].index,
+    children: folded.map((g) => g.block),
+  };
+  const out: GroupedBlock[] = [];
+  let inserted = false;
+  for (const g of items) {
+    if (isFold(g)) {
+      if (!inserted) {
+        out.push(group);
+        inserted = true;
+      }
+      continue;
+    }
+    out.push(g);
+  }
+  return out;
 }
 
 // Collapse maximal runs of 2+ consecutive workflow-authoring passthrough tool
@@ -392,15 +464,23 @@ function inferRunner(children: Block[]): string | null {
 // Walk the active session backwards and return the id of the most recent
 // collapsible orchestration group. Used by the ctrl+e binding to know which
 // group to toggle when the user has no explicit selection.
-export function latestDelegationId(session: Session | null): string | null {
+export function latestDelegationId(
+  session: Session | null,
+  foldRunIds?: ReadonlySet<string>,
+): string | null {
   if (!session) return null;
   for (let mi = session.messages.length - 1; mi >= 0; mi--) {
     const m = session.messages[mi];
     if (m.role !== "assistant") continue;
-    const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
+    const grouped = groupDelegations(blocksFromEvents(m.events), m.id, true, foldRunIds);
     for (let i = grouped.length - 1; i >= 0; i--) {
       const g = grouped[i];
-      if (g.kind === "delegation_group" || g.kind === "collab_group") return g.id;
+      if (
+        g.kind === "delegation_group" ||
+        g.kind === "collab_group" ||
+        g.kind === "workflow_run"
+      )
+        return g.id;
     }
   }
   return null;
@@ -413,6 +493,7 @@ export function latestDelegationId(session: Session | null): string | null {
 export function collectChatItemIds(
   session: Session | null,
   notices: Notice[],
+  foldRunIds?: ReadonlySet<string>,
 ): string[] {
   if (!session) return [];
   type Entry =
@@ -434,12 +515,13 @@ export function collectChatItemIds(
       out.push(`msg:${m.id}`);
       continue;
     }
-    const grouped = groupDelegations(blocksFromEvents(m.events), m.id);
+    const grouped = groupDelegations(blocksFromEvents(m.events), m.id, true, foldRunIds);
     for (const g of grouped) {
       if (
         g.kind === "delegation_group" ||
         g.kind === "collab_group" ||
-        g.kind === "workflow_authoring"
+        g.kind === "workflow_authoring" ||
+        g.kind === "workflow_run"
       ) {
         out.push(g.id);
         continue;
@@ -463,6 +545,7 @@ export function resolveItemContent(
   session: Session | null,
   notices: Notice[],
   id: string,
+  foldRunIds?: ReadonlySet<string>,
 ): string | null {
   if (id.startsWith("msg:")) {
     if (!session) return null;
@@ -477,6 +560,17 @@ export function resolveItemContent(
     return [n.command, ...n.lines].join("\n");
   }
   if (!session) return null;
+  // Workflow-run group: id is `${messageId}:wfrun`. The tail isn't an int, so
+  // handle it before the index-parse path below.
+  if (id.endsWith(":wfrun")) {
+    const messageId = id.slice(0, -":wfrun".length);
+    const m = session.messages.find((x) => x.id === messageId);
+    if (!m) return null;
+    const grouped = groupDelegations(blocksFromEvents(m.events), m.id, true, foldRunIds);
+    const g = grouped.find((x) => x.kind === "workflow_run");
+    if (!g || g.kind !== "workflow_run") return null;
+    return g.children.map((child) => renderBlockPlain(child)).join("\n\n");
+  }
   // Assistant-block ids have shape `${messageId}:${index}`,
   // `${messageId}:d:${anchorIndex}`, or `${messageId}:c:${anchorIndex}`.
   // The message id itself can contain colons, so split from the right.
