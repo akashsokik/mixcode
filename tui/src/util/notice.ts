@@ -9,6 +9,7 @@ import { SLASH_COMMANDS } from "./slash";
 import { basename, shortPath } from "./path";
 import type { SkillEntry, SkillFrontmatter } from "./skills";
 import { THEME_LABELS, THEME_NAMES, type ThemeName } from "../theme";
+import { formatTableMinimal } from "./table";
 
 export type Notice = {
   id: string;
@@ -30,13 +31,11 @@ export function makeNotice(command: string, lines: string[]): Notice {
 }
 
 export function helpLines(): string[] {
-  const colWidth = Math.max(...SLASH_COMMANDS.map((c) => c.name.length));
-  const cmds = SLASH_COMMANDS.map(
-    (c) => `  ${c.name.padEnd(colWidth, " ")}   ${c.help}`,
-  );
+  const cmdRows = SLASH_COMMANDS.map((c) => [c.name, c.help]);
+  const cmdTable = formatTableMinimal(cmdRows, ["command", "description"]);
   return [
     "slash commands (work with both claude and codex)",
-    ...cmds,
+    ...cmdTable,
     "",
     "keys",
     "  enter        send",
@@ -72,19 +71,21 @@ export function sessionsLines(
     20,
     Math.max(...sessions.map((s) => basename(s.cwd).length || 1)),
   );
-  const rows = sessions.map((s) => {
-    const marker = s.id === activeId ? "▸" : " ";
-    const stream = s.streaming ? "●" : " ";
-    const runner = s.activeRunner.padEnd(6, " ");
-    const title = clip(s.title, titleWidth).padEnd(titleWidth, " ");
-    const cwd = clip(basename(s.cwd) || "~", cwdWidth).padEnd(cwdWidth, " ");
-    const msgs = `${s.messages.length} msg`;
-    return `${marker} ${stream} ${runner}  ${title}  ${cwd}  ${msgs}  ${s.id.slice(0, 8)}`;
-  });
+  const rows = sessions.map((s) => [
+    s.id === activeId ? "▸" : " ",
+    s.streaming ? "●" : " ",
+    s.activeRunner,
+    clip(s.title, titleWidth),
+    clip(basename(s.cwd) || "~", cwdWidth),
+    `${s.messages.length} msg`,
+    s.id.slice(0, 8),
+  ]);
+
+  const tableLines = formatTableMinimal(rows, ["", "", "runner", "title", "cwd", "messages", "id"]);
   return [
     `sessions (${sessions.length}) — ▸ active, ● streaming`,
     "",
-    ...rows,
+    ...tableLines,
     "",
     "browse mode: ctrl-b to enter, j/k to move, n new, dd delete",
   ];
@@ -103,24 +104,26 @@ export function contextLines(session: Session | null): string[] {
   const userTurns = session.messages.filter((m) => m.role === "user").length;
   const created = new Date(session.createdAt).toLocaleString();
   const ctx = session.contextUsage ?? null;
-  const ctxLine = ctx
-    ? `context     ${formatNumber(ctx.totalTokens)} / ${formatNumber(ctx.maxTokens)} (${ctx.percentage.toFixed(1)}%)`
-    : `context     —`;
+  const ctxValue = ctx
+    ? `${formatNumber(ctx.totalTokens)} / ${formatNumber(ctx.maxTokens)} (${ctx.percentage.toFixed(1)}%)`
+    : "—";
 
-  return [
-    `title       ${session.title}`,
-    `id          ${session.id.slice(0, 12)}`,
-    `runner      ${session.activeRunner}`,
-    `cwd         ${shortPath(session.cwd)}`,
-    `messages    ${turns} (${userTurns} user / ${turns - userTurns} assistant)`,
-    `tokens in   ${formatNumber(totals.input)}`,
-    `tokens out  ${formatNumber(totals.output)}`,
-    `cache read  ${formatNumber(totals.cacheRead)}`,
-    `cache write ${formatNumber(totals.cacheWrite)}`,
-    ctxLine,
-    `created     ${created}`,
-    `streaming   ${session.streaming ? "yes" : "no"}`,
+  const rows = [
+    ["title", session.title],
+    ["id", session.id.slice(0, 12)],
+    ["runner", session.activeRunner],
+    ["cwd", shortPath(session.cwd)],
+    ["messages", `${turns} (${userTurns} user / ${turns - userTurns} assistant)`],
+    ["tokens in", formatNumber(totals.input)],
+    ["tokens out", formatNumber(totals.output)],
+    ["cache read", formatNumber(totals.cacheRead)],
+    ["cache write", formatNumber(totals.cacheWrite)],
+    ["context", ctxValue],
+    ["created", created],
+    ["streaming", session.streaming ? "yes" : "no"],
   ];
+
+  return formatTableMinimal(rows);
 }
 
 // Straight per-field summation of the SDK-reported `turnUsage` on each
@@ -186,15 +189,16 @@ export function planLines(session: Session | null, headline?: string): string[] 
 
 export function themeLines(active: ThemeName, headline?: string): string[] {
   const header = headline ? [headline, ""] : [];
-  const rows = THEME_NAMES.map((name) => {
-    const marker = name === active ? "•" : " ";
-    return `  ${marker} ${name.padEnd(11, " ")}${THEME_LABELS[name]}`;
-  });
+  const rows = THEME_NAMES.map((name) => [
+    name === active ? "•" : " ",
+    name,
+    THEME_LABELS[name],
+  ]);
+  const tableLines = formatTableMinimal(rows, ["", "palette", "description"]);
   return [
     ...header,
     "color palette  (monochrome base, swappable accents)",
-    "",
-    ...rows,
+    ...tableLines,
     "",
     "usage",
     "  /theme          open the palette picker",
@@ -234,11 +238,12 @@ export function modelLines(
 
   // Per runner: the configured layers, plus the resolved effective model and
   // its source, so there is never ambiguity about what a spawned tool runs on.
-  const configRows = order.map((runner) => {
-    const sess = session?.models?.[runner];
-    const glob = globalModels?.[runner];
-    return `  ${runner.padEnd(8, " ")}${(sess ?? "(none)").padEnd(22, " ")}${glob ?? "(none)"}`;
-  });
+  const configRows = order.map((runner) => [
+    runner,
+    session?.models?.[runner] ?? "(none)",
+    globalModels?.[runner] ?? "(none)",
+  ]);
+
   const effectiveRows = order.map((runner) => {
     const sess = session?.models?.[runner];
     const glob = globalModels?.[runner];
@@ -247,18 +252,19 @@ export function modelLines(
       : glob
         ? [glob, "global default"]
         : [runnerDefault[runner], "runner default"];
-    return `  ${runner.padEnd(8, " ")}${model.padEnd(22, " ")}(${source})`;
+    return [runner, model, source];
   });
 
-  const colHeader = `  ${"".padEnd(8, " ")}${"session override".padEnd(22, " ")}global default`;
+  const configTable = formatTableMinimal(configRows, ["runner", "session override", "global default"]);
+  const effectiveTable = formatTableMinimal(effectiveRows, ["runner", "model", "source"]);
+
   return [
     ...header,
     "configured layers",
-    colHeader,
-    ...configRows,
+    ...configTable,
     "",
     "effective model — what every spawned tool runs on",
-    ...effectiveRows,
+    ...effectiveTable,
     "",
     "these tools run on the effective model for whichever runner they spawn:",
     "  validate_run   delegate_run   task_spawn   workflow nodes",
@@ -298,11 +304,13 @@ export function effortLines(session: Session | null, headline?: string): string[
   const lines: string[] = [];
   if (headline) lines.push(headline, "");
   const order: RunnerKind[] = ["claude", "codex", "vercel", "ollama"];
-  for (const runner of order) {
-    const marker = runner === session.activeRunner ? "›" : " ";
-    const value = session.efforts?.[runner] ?? "(default)";
-    lines.push(`${marker} ${runner.padEnd(7, " ")} ${value}`);
-  }
+  const rows = order.map((runner) => [
+    runner === session.activeRunner ? "›" : " ",
+    runner,
+    session.efforts?.[runner] ?? "(default)",
+  ]);
+  const tableLines = formatTableMinimal(rows, ["", "runner", "level"]);
+  lines.push(...tableLines);
   const info = session.effortInfo;
   if (info) {
     lines.push("");
@@ -339,7 +347,6 @@ export function skillsLines(
   if (entries.length === 0) {
     return [...header, `no skills installed for ${runner}.`, ...usage];
   }
-  const nameWidth = Math.max(...entries.map((e) => e.name.length));
   const rows = entries.map((e) => {
     const flag = e.isSymlink ? (e.source ? "→" : "✗") : " ";
     const detail = e.isSymlink
@@ -347,13 +354,15 @@ export function skillsLines(
         ? shortPath(e.source)
         : "(broken link)"
       : "(real dir)";
-    const desc = e.description ? `  ${clip(e.description, 60)}` : "";
-    return `  ${flag} ${e.name.padEnd(nameWidth, " ")}   ${detail}${desc}`;
+    const desc = e.description ? clip(e.description, 60) : "";
+    return [flag, e.name, detail, desc];
   });
+
+  const tableLines = formatTableMinimal(rows, ["", "name", "location", "description"]);
   return [
     ...header,
     `${runner} skills (${entries.length}) — → symlink, ✗ broken`,
-    ...rows,
+    ...tableLines,
     ...usage,
   ];
 }
@@ -364,16 +373,17 @@ export function skillInfoLines(
   fm: SkillFrontmatter | null,
 ): string[] {
   if (!fm) return [`no such skill or unreadable SKILL.md: ${runner}/${name}`];
-  const lines = [
+  const rows = [
+    ["name", fm.name ?? name],
+    ["description", fm.description ?? "(none)"],
+    ...Object.entries(fm.extra),
+  ];
+  const tableLines = formatTableMinimal(rows);
+  return [
     `${runner} skill: ${name}`,
     "",
-    `name         ${fm.name ?? name}`,
-    `description  ${fm.description ?? "(none)"}`,
+    ...tableLines,
   ];
-  for (const [k, v] of Object.entries(fm.extra)) {
-    lines.push(`${k.padEnd(12, " ")} ${v}`);
-  }
-  return lines;
 }
 
 export function mcpListLines(
@@ -457,10 +467,12 @@ export function permissionsLines(rules: string[], action?: string): string[] {
   if (rules.length === 0) {
     return [...header, "no rules configured.", ...usage];
   }
+  const rows = rules.map((r, i) => [`${i + 1}`, r]);
+  const tableLines = formatTableMinimal(rows, ["#", "rule"]);
   return [
     ...header,
     `rules (${rules.length})`,
-    ...rules.map((r) => `  ${r}`),
+    ...tableLines,
     ...usage,
   ];
 }
